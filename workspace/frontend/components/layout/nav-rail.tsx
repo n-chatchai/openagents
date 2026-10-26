@@ -3,9 +3,9 @@ import { FirstDeviceHint, SETUP_STEP_BUTTON } from './first-device-hint';
 import { useFirstDeviceGuide } from '@/hooks/use-first-device-guide';
 import { MoreAgents } from './more-agents';
 import { DmUnreadBadge } from './dm-unread-badge';
+import { WorkspaceInitial } from './brand';
 
 import * as React from 'react';
-import Image from 'next/image';
 import {
   BookOpen, Bot, CircleDot, CalendarClock, ChevronDown, ChevronLeft, ChevronRight, FileText, Globe,
   Inbox, KanbanSquare, MessageSquare, Settings, PlusSquare, Sparkles, Users, Waypoints,
@@ -270,52 +270,39 @@ export function NavRail() {
         railDragWidth === null && 'transition-[width] duration-200 ease-linear',
       )}
     >
-      {/* Brand. The expand/collapse control lives in the footer now — a fixed
+      {/* Brand: the team's name over the product's, as text; the collapsed
+          rail has no room for words, so it shows the name's first letter.
+          The expand/collapse control lives in the footer now — a fixed
           bottom-left button, plus the draggable seam on the trailing edge. */}
       <SidebarHeader className="py-3">
         <div
           className={cn(
             'flex items-center',
-            showLabels ? 'w-full gap-2 px-1' : 'justify-center',
+            showLabels ? 'w-full px-1' : 'justify-center',
           )}
         >
-          <span
-            className="flex size-8 shrink-0 items-center justify-center overflow-hidden"
-            title={workspaceLabel}
-          >
-            <Image
-              src="/logo-black.png"
-              alt=""
-              width={32}
-              height={32}
-              className="size-full object-contain dark:hidden"
-            />
-            <Image
-              src="/logo-white.png"
-              alt=""
-              width={32}
-              height={32}
-              className="hidden size-full object-contain dark:block"
-            />
-          </span>
-
-          {showLabels && (
-            <span
-              className="min-w-0 flex-1 truncate text-sm font-semibold"
-              aria-label={workspaceLabel}
-              onMouseEnter={(event) => {
-                const label = event.currentTarget;
-                // Keep short names quiet. The native tooltip is added only
-                // when the ellipsis is actually hiding part of the name.
-                if (label.scrollWidth > label.clientWidth) {
-                  label.title = workspaceLabel;
-                } else {
-                  label.removeAttribute('title');
-                }
-              }}
-            >
-              {workspaceLabel}
-            </span>
+          {showLabels ? (
+            <div className="grid min-w-0 flex-1 leading-tight">
+              <span
+                className="truncate text-sm font-semibold"
+                aria-label={workspaceLabel}
+                onMouseEnter={(event) => {
+                  const label = event.currentTarget;
+                  // Keep short names quiet. The native tooltip is added only
+                  // when the ellipsis is actually hiding part of the name.
+                  if (label.scrollWidth > label.clientWidth) {
+                    label.title = workspaceLabel;
+                  } else {
+                    label.removeAttribute('title');
+                  }
+                }}
+              >
+                {workspaceLabel}
+              </span>
+              <span className="truncate text-xs text-muted-foreground">{t('metadata.title')}</span>
+            </div>
+          ) : (
+            <WorkspaceInitial name={workspaceLabel} />
           )}
         </div>
       </SidebarHeader>

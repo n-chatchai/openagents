@@ -10,7 +10,6 @@ import {
 } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Menu, MessageSquare, FileText, Globe } from 'lucide-react';
-import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -61,7 +60,7 @@ export function MobileHeader() {
     <>
       <header className="fixed top-0 start-0 end-0 z-50 flex items-center shrink-0 bg-background/95 backdrop-blur-sm border-b h-[var(--header-height-mobile)]">
         <div className="grow flex items-center justify-between gap-2 px-3">
-          {/* Left: menu + logo + workspace name */}
+          {/* Left: menu + workspace name */}
           <div className="flex items-center gap-2 min-w-0">
             <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
               <SheetTrigger asChild>
@@ -96,11 +95,6 @@ export function MobileHeader() {
                 </SheetBody>
               </SheetContent>
             </Sheet>
-
-            <div className="size-7 shrink-0 overflow-hidden">
-              <Image src="/logo-black.png" alt="" width={28} height={28} className="size-full object-contain dark:hidden" />
-              <Image src="/logo-white.png" alt="" width={28} height={28} className="size-full object-contain hidden dark:block" />
-            </div>
 
             <span className="text-sm font-medium truncate">
               {workspace?.name || t('nav.workspaceFallback')}

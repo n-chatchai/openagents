@@ -56,10 +56,7 @@ function WorkspaceLoadingScreen() {
           alt="Erawan"
           className="size-16 animate-[pulse_2s_ease-in-out_infinite] hidden dark:block"
         />
-        <div className="text-center">
-          <h1 className="text-xl font-semibold tracking-tight">OpenAgents</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{t('nav.workspaceFallback')}</p>
-        </div>
+        <h1 className="text-xl font-semibold tracking-tight">{t('metadata.title')}</h1>
       </div>
       <div className="absolute bottom-0 left-0 right-0 h-1 bg-muted overflow-hidden">
         <div className="h-full w-1/3 bg-primary rounded-full animate-[loading-bar_1.5s_ease-in-out_infinite]" />

@@ -1,13 +1,28 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import Image from 'next/image';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useT } from '@/lib/i18n';
 
 /**
- * Sidebar brand block: logo + workspace name (click to rename) + slug.
- * Collapses to just the logo on the icon rail.
+ * The workspace's first letter in a small tile — the brand mark when there is
+ * no room for its name (the collapsed icon rail).
+ */
+export function WorkspaceInitial({ name }: { name: string }) {
+  return (
+    <span
+      className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground"
+      title={name}
+      aria-hidden
+    >
+      {Array.from(name.trim())[0]?.toUpperCase() || '·'}
+    </span>
+  );
+}
+
+/**
+ * Sidebar brand block: workspace name (click to rename) over the product name.
+ * Collapses to the workspace's first letter on the icon rail.
  */
 export function Brand() {
   const { workspace, renameWorkspace } = useWorkspace();
@@ -32,9 +47,8 @@ export function Brand() {
 
   return (
     <div className="flex items-center gap-2.5 px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-      <span className="relative flex size-8 shrink-0 items-center justify-center overflow-hidden">
-        <Image src="/logo-black.png" alt="" width={32} height={32} className="size-full object-contain dark:hidden" />
-        <Image src="/logo-white.png" alt="" width={32} height={32} className="size-full object-contain hidden dark:block" />
+      <span className="hidden group-data-[collapsible=icon]:flex">
+        <WorkspaceInitial name={workspace?.name || t('nav.workspaceFallback')} />
       </span>
 
       <div className="grid min-w-0 flex-1 leading-tight group-data-[collapsible=icon]:hidden">
@@ -60,7 +74,7 @@ export function Brand() {
             {workspace?.name || t('nav.workspaceFallback')}
           </span>
         )}
-        <span className="truncate font-mono text-xs text-muted-foreground">{workspace?.slug || ''}</span>
+        <span className="truncate text-xs text-muted-foreground">{t('metadata.title')}</span>
       </div>
     </div>
   );
