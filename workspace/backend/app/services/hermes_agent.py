@@ -222,43 +222,70 @@ def _reason(r) -> str:
 
 async def _follow_stream(http, target, headers, run_id, deltas, deadline, notes):
     """Read the run's events until a terminal one -> (status, output, error),
-    or None when the stream ends or goes quiet first."""
+    or None when the stream cannot be had.
+
+    A stream that goes quiet is picked up again from the last event seen
+    (Last-Event-ID): a long tool call sends nothing, and neither Hermes nor
+    the Chang Bot gateway keeps the line alive meanwhile.
+    """
     url = f"{target.root}/runs/{run_id}/events"
     timeout = httpx.Timeout(30.0, read=_STREAM_IDLE)
-    async with http.stream("GET", url, headers=headers, timeout=timeout) as resp:
-        if resp.status_code != 200:
-            return None
-        async for event in _sse_events(resp):
-            name = event.get("event") or ""
-            if name in ("message.delta", "assistant.delta"):
-                deltas.append(event.get("delta") or "")
-            elif name == "approval.request":
-                await _on_approval(http, target, headers, run_id, event, notes)
-            elif name == "run.completed":
-                return "completed", (event.get("output") or "").strip(), None
-            elif name in ("run.failed", "run.cancelled"):
-                return name.split(".", 1)[1], None, event.get("error") or event.get("turn_exit_reason")
-            elif name == "error":
-                return "failed", None, event.get("message")
-            if time.monotonic() > deadline:
-                return "timeout", None, None
-    return None
+    last_id: list[Optional[str]] = [None]
+    while time.monotonic() < deadline:
+        resume = dict(headers)
+        if last_id[0] is not None:
+            resume["Last-Event-ID"] = last_id[0]
+        try:
+            async with http.stream("GET", url, headers=resume, timeout=timeout) as resp:
+                if resp.status_code != 200:
+                    return None
+                async for event in _sse_events(resp, last_id):
+                    name = event.get("event") or ""
+                    if name in ("message.delta", "assistant.delta"):
+                        deltas.append(event.get("delta") or "")
+                    elif name == "approval.request":
+                        await _on_approval(http, target, headers, run_id, event, notes)
+                    elif name == "run.completed":
+                        return "completed", (event.get("output") or "").strip(), None
+                    elif name in ("run.failed", "run.cancelled"):
+                        return name.split(".", 1)[1], None, event.get("error") or event.get("turn_exit_reason")
+                    elif name == "error":
+                        return "failed", None, event.get("message")
+                    if time.monotonic() > deadline:
+                        return "timeout", None, None
+        except httpx.ReadTimeout:
+            if last_id[0] is None:
+                # Nothing to resume from: let the caller poll instead.
+                return None
+            logger.info("hermes_agent: %s quiet for %ds; resuming after event %s", run_id, int(_STREAM_IDLE), last_id[0])
+            continue
+        # Closed without a terminal event: the run's status says the rest.
+        return None
+    return "timeout", None, None
 
 
-async def _sse_events(resp) -> AsyncIterator[dict]:
-    """JSON payloads of a server-sent event stream (comment frames skipped)."""
+async def _sse_events(resp, last_id: Optional[list] = None) -> AsyncIterator[dict]:
+    """JSON payloads of a server-sent event stream (comment frames skipped);
+    each frame's ``id:`` is kept in ``last_id[0]`` for resuming."""
     data: list[str] = []
+    frame_id: Optional[str] = None
     async for line in resp.aiter_lines():
         if not line:
             if data:
                 try:
-                    yield json.loads("\n".join(data))
+                    payload = json.loads("\n".join(data))
                 except ValueError:
-                    pass
-                data = []
+                    payload = None
+                if last_id is not None and frame_id is not None:
+                    last_id[0] = frame_id
+                if payload is not None:
+                    yield payload
+                data, frame_id = [], None
             continue
         if line.startswith("data:"):
             data.append(line[5:].lstrip())
+        elif line.startswith("id:"):
+            frame_id = line[3:].strip()
 
 
 async def _poll(http, target, headers, run_id, deadline):

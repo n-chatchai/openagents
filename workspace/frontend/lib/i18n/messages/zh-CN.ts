@@ -1654,7 +1654,7 @@ export const messages: Messages = {
     hermesKeyHint: '启动 Hermes 时设置的 API_SERVER_KEY',
     changbotSubtitle: '把你在 Erawan 的 Chang Bot 带进这个工作区',
     changbotTokenLabel: '连接令牌',
-    changbotTokenHint: '在 Chang Bot 应用中创建后粘贴到这里，可随时在应用中撤销。',
+    changbotTokenHint: '在 Chang Bot 应用中：ตั้งค่า → เชื่อมต่อเวิร์กสเปซ → สร้างรหัสเชื่อมต่อ。只显示一次；在应用中点 ตัดการเชื่อมต่อ 即可撤销。',
     modelName: '模型名称',
     modelNamePlaceholder: '例如 gpt-4o、deepseek-chat、qwen-turbo',
     model: '模型',

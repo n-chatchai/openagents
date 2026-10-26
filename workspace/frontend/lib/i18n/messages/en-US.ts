@@ -1691,7 +1691,7 @@ export const messages = {
     hermesKeyHint: 'The API_SERVER_KEY Hermes was started with',
     changbotSubtitle: 'Your Chang Bot from Erawan, in this workspace',
     changbotTokenLabel: 'Connection token',
-    changbotTokenHint: 'Make one in the Chang Bot app and paste it here. You can revoke it there at any time.',
+    changbotTokenHint: 'In the Chang Bot app: ตั้งค่า → เชื่อมต่อเวิร์กสเปซ → สร้างรหัสเชื่อมต่อ. It is shown once; ตัดการเชื่อมต่อ there ends it.',
     modelName: 'Model Name',
     modelNamePlaceholder: 'e.g. gpt-4o, deepseek-chat, qwen-turbo',
     model: 'Model',
