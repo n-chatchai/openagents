@@ -37,7 +37,7 @@ def _root() -> str:
 async def invoke_changbot_agent(db, workspace_id: str, event_data: dict, cloud_config, depth: int) -> None:
     """Run the addressed Chang Bot on the trigger message and post its answer."""
     target = RunTarget(root=_root(), api_key=cloud_config.api_key, label=_LABEL,
-                       session_in_body=True, approvals="owner")
+                       session_in_body=True, approvals="owner", own_errors=True)
     await invoke_run_agent(db, workspace_id, event_data, cloud_config, depth, target)
 
 

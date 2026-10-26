@@ -55,6 +55,11 @@ _CONTEXT_CHARS = int(os.environ.get("HERMES_CONTEXT_CHARS", "12000"))
 _TERMINAL = {"completed", "failed", "cancelled"}
 
 
+class AgentRunError(RuntimeError):
+    """A refusal or failure worded by the agent's side for the people in the
+    room, shown in the thread as it is (app/services/cloud_agent.py)."""
+
+
 @dataclass
 class RunTarget:
     """Where a run goes and how it is spoken to.
@@ -71,6 +76,9 @@ class RunTarget:
     session_in_body: bool = False
     approvals: str = "deny"
     headers: dict = field(default_factory=dict)
+    # The far side words its refusals and failures for the room (the Chang Bot
+    # gateway, in Thai): show them as they are, without the room's own frame.
+    own_errors: bool = False
 
 
 def api_base(base_url: Optional[str]) -> str:
@@ -185,6 +193,8 @@ async def _run(target: RunTarget, text: str, session_key: str,
             body["session_key"] = session_key
         r = await http.post(f"{target.root}/runs", headers=start_headers, json=body)
         if r.status_code not in (200, 201, 202):
+            if target.own_errors:
+                raise AgentRunError(_reason(r))
             raise RuntimeError(f"{target.label} refused the run (HTTP {r.status_code}): {_reason(r)}")
         run_id = (r.json() or {}).get("run_id")
         if not run_id:
@@ -205,6 +215,8 @@ async def _run(target: RunTarget, text: str, session_key: str,
         if status == "timeout":
             await _stop(http, target, headers, run_id)
             raise RuntimeError(f"{target.label} did not finish within {int(_RUN_TIMEOUT)} seconds; the run was stopped")
+        if target.own_errors and error:
+            raise AgentRunError(str(error.get("message") or error) if isinstance(error, dict) else str(error))
         raise RuntimeError(f"{target.label} run {status}" + (f": {error}" if error else ""))
 
 

@@ -165,14 +165,16 @@ async def _invoke_cloud_agents(workspace_id: str, event_data: dict) -> None:
                     cloud_config.model,
                 )
                 error_detail = str(exc)[:200] if str(exc) else "Unknown error"
+                from app.services.hermes_agent import AgentRunError
+                # An agent that words its own refusals for the people in the
+                # room (the Chang Bot gateway) is shown as it said it.
+                if isinstance(exc, AgentRunError):
+                    message = str(exc)[:500]
+                else:
+                    message = f"Failed to get a response from {cloud_config.provider}/{cloud_config.model}: " f"{error_detail}"
                 # Use a fresh DB session for error posting — the original
                 # session may be stale after a long async API call.
-                await _post_error_message(
-                    workspace_id,
-                    event_data,
-                    agent_name,
-                    f"Failed to get a response from {cloud_config.provider}/{cloud_config.model}: " f"{error_detail}",
-                )
+                await _post_error_message(workspace_id, event_data, agent_name, message)
     finally:
         db.close()
 
