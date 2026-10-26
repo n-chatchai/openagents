@@ -27,6 +27,7 @@ from app.routers.network import _resolve_workspace, _verify_workspace_access
 from app.config import config
 from app.services.cloud_providers import providers_catalog, validate_provider_model
 from app.services.hermes_agent import HERMES_PROVIDER, probe as hermes_probe
+from app.services.changbot_agent import CHANGBOT_PROVIDER, probe as changbot_probe
 from app.services.yumi import (
     YUMI_CATEGORY,
     YUMI_KEY_PLACEHOLDER,
@@ -208,6 +209,13 @@ def add_cloud_agent(
         if problem:
             return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Hermes: {problem}")
         member_description = "Hermes Agent (bring your own)"
+    # Somebody's own Chang Bot (app/services/changbot_agent.py): the gateway
+    # must take the connection token from the Chang Bot app.
+    if body.provider == CHANGBOT_PROVIDER:
+        problem = asyncio.run(changbot_probe(body.api_key))
+        if problem:
+            return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Chang Bot: {problem}")
+        member_description = "Chang Bot (Erawan)"
 
     # Namespace lock BEFORE the membership read: a concurrent create/rename
     # could otherwise invalidate what we read before we write.

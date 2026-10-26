@@ -1947,6 +1947,8 @@ function CloudAgentsTab({
   const t = useT();
   const isTokenPay = selectedProvider === 'tokenpay';
   const isHermes = selectedProvider === 'hermes';
+  // Somebody's own Chang Bot: a connection token from the Chang Bot app, nothing else.
+  const isChangbot = selectedProvider === 'changbot';
   const tokenPay = useTokenPayModels(isTokenPay, cfgKey);
 
   useEffect(() => {
@@ -1961,7 +1963,8 @@ function CloudAgentsTab({
     { label: t('connect.groupSearch'), names: ['perplexity', 'manus'] },
     { label: t('connect.groupFast'), names: ['groq', 'together', 'fireworks', 'openrouter', 'tokenpay', 'sambanova', 'cerebras'] },
     { label: t('connect.groupMedia'), names: ['stability', 'replicate', 'fal', 'elevenlabs'] },
-    { label: t('connect.groupCustom'), names: ['hermes', 'custom'] },
+    { label: t('connect.groupYourAgents'), names: ['changbot', 'hermes'] },
+    { label: t('connect.groupCustom'), names: ['custom'] },
   ];
 
   // When a provider is selected, show config view instead of grid
@@ -1986,7 +1989,7 @@ function CloudAgentsTab({
               <div>
                 <h3 className="text-sm font-semibold">{selectedProviderInfo.label}</h3>
                 <p className="text-xs text-muted-foreground">
-                  {isHermes ? t('connect.hermesSubtitle') : isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
+                  {isChangbot ? t('connect.changbotSubtitle') : isHermes ? t('connect.hermesSubtitle') : isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
                 </p>
               </div>
             </div>
@@ -2124,16 +2127,17 @@ function CloudAgentsTab({
 
             {/* API Key */}
             {!isTokenPay && <div className="space-y-1.5">
-              <Label htmlFor="cloud-key" className="text-xs">{t('connect.apiKey')}</Label>
+              <Label htmlFor="cloud-key" className="text-xs">{isChangbot ? t('connect.changbotTokenLabel') : t('connect.apiKey')}</Label>
               <Input
                 id="cloud-key"
                 type="password"
                 value={cfgKey}
                 onChange={(e) => setCfgKey(e.target.value)}
-                placeholder={isHermes ? 'API_SERVER_KEY' : t('connect.apiKeyPlaceholder')}
+                placeholder={isHermes ? 'API_SERVER_KEY' : isChangbot ? '' : t('connect.apiKeyPlaceholder')}
                 className="text-sm font-mono h-9"
               />
               {isHermes && <p className="text-xs text-muted-foreground">{t('connect.hermesKeyHint')}</p>}
+              {isChangbot && <p className="text-xs text-muted-foreground">{t('connect.changbotTokenHint')}</p>}
             </div>}
 
             {/* Advanced */}

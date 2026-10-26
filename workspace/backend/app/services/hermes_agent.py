@@ -21,6 +21,10 @@ Hermes keeps its own history of the thread; each run carries only what other
 people said since its last reply. Paperclip's hermes_gateway adapter talks to
 Hermes the same way.
 
+The runner below is shared: Chang Bot (app/services/changbot_agent.py) is a
+Hermes behind Erawan's gateway, which speaks the same runs protocol under its
+own root and keeps approvals for the bot's owner.
+
 Not yet: Hermes asking for approval is answered "deny" with a note in the
 thread (the workspace's approvals are not wired to it), and progress is not
 shown while it works.
@@ -31,6 +35,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 
 import httpx
@@ -44,10 +49,28 @@ HERMES_PROVIDER = "hermes"
 _RUN_TIMEOUT = float(os.environ.get("HERMES_RUN_TIMEOUT_SECONDS", "1800"))
 # Silence on the event stream before falling back to polling the run.
 _STREAM_IDLE = float(os.environ.get("HERMES_STREAM_IDLE_SECONDS", "120"))
-# What other people said since Hermes last spoke, at most.
+# What other people said since the agent last spoke, at most.
 _CONTEXT_CHARS = int(os.environ.get("HERMES_CONTEXT_CHARS", "12000"))
 
 _TERMINAL = {"completed", "failed", "cancelled"}
+
+
+@dataclass
+class RunTarget:
+    """Where a run goes and how it is spoken to.
+
+    ``root`` is the prefix the runs live under ("{base}/v1" for a Hermes API
+    server). ``session_in_body`` puts the thread's conversation key in the
+    start request as ``session_key`` instead of Hermes' X-Hermes-Session-Key
+    header. ``approvals`` is "deny" (answer for the owner, who is not here) or
+    "owner" (somebody else answers; the room only waits).
+    """
+    root: str
+    api_key: str
+    label: str = "Hermes"
+    session_in_body: bool = False
+    approvals: str = "deny"
+    headers: dict = field(default_factory=dict)
 
 
 def api_base(base_url: Optional[str]) -> str:
@@ -61,6 +84,16 @@ def api_base(base_url: Optional[str]) -> str:
 
 async def invoke_hermes_agent(db, workspace_id: str, event_data: dict, cloud_config, depth: int) -> None:
     """Run the addressed Hermes on the trigger message and post its answer."""
+    base = api_base(cloud_config.base_url)
+    if not base:
+        raise ValueError("this Hermes agent has no API server address")
+    target = RunTarget(root=f"{base}/v1", api_key=cloud_config.api_key)
+    await invoke_run_agent(db, workspace_id, event_data, cloud_config, depth, target)
+
+
+async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config, depth: int,
+                           target: RunTarget) -> None:
+    """The trigger message as a run on ``target``; its answer posted in the thread."""
     from app.services.cloud_agent import (
         _build_conversation_context,
         _event_order_boundary,
@@ -70,11 +103,6 @@ async def invoke_hermes_agent(db, workspace_id: str, event_data: dict, cloud_con
 
     channel_target = event_data.get("target", "")
     agent_name = cloud_config.agent_name
-    base = api_base(cloud_config.base_url)
-    api_key = cloud_config.api_key
-    if not base:
-        raise ValueError("this Hermes agent has no API server address")
-
     payload = event_data.get("payload", {}) or {}
     content = (payload.get("content") or "").strip()
     if not content:
@@ -96,23 +124,24 @@ async def invoke_hermes_agent(db, workspace_id: str, event_data: dict, cloud_con
 
     text = _compose_input(history, speaker_label(event_data.get("source") or "", payload), content)
     session_key = f"openagents:{workspace_id}:{channel_target}"
-    logger.info("hermes_agent: run for %s on %s in %s at %s", agent_name, event_data.get("id"), channel_target, base)
+    logger.info("hermes_agent: %s run for %s on %s in %s at %s", target.label, agent_name,
+                event_data.get("id"), channel_target, target.root)
 
     notes: list[str] = []
-    answer = await _run(base, api_key, text, session_key, event_data.get("id"), notes)
+    answer = await _run(target, text, session_key, event_data.get("id"), notes)
     if notes:
         answer = (answer + "\n\n" if answer else "") + "\n".join(notes)
 
     await _post_response(
         db, workspace_id, channel_target, agent_name,
-        answer or "(Hermes finished without a reply)", depth,
+        answer or f"({target.label} finished without a reply)", depth,
         in_reply_to=event_data.get("id"),
         trigger_source=event_data.get("source"),
     )
 
 
 def _compose_input(history: list[dict], speaker: str, content: str) -> str:
-    """The trigger, preceded by what others said since Hermes's last reply.
+    """The trigger, preceded by what others said since the agent's last reply.
 
     Hermes already holds its own earlier turns in this thread's session, so
     resending them would only spend its context.
@@ -134,49 +163,67 @@ def _compose_input(history: list[dict], speaker: str, content: str) -> str:
     )
 
 
-def _headers(api_key: str, session_key: str) -> dict:
-    return {"Authorization": f"Bearer {api_key}", "X-Hermes-Session-Key": session_key}
+def _headers(target: RunTarget, session_key: Optional[str] = None) -> dict:
+    headers = {"Authorization": f"Bearer {target.api_key}", **target.headers}
+    if session_key and not target.session_in_body:
+        headers["X-Hermes-Session-Key"] = session_key
+    return headers
 
 
-async def _run(base: str, api_key: str, text: str, session_key: str,
+async def _run(target: RunTarget, text: str, session_key: str,
                idempotency_key: Optional[str], notes: list) -> str:
     """Start a run and follow it to the end; the answer text, or raise."""
-    headers = _headers(api_key, session_key)
+    headers = _headers(target, session_key)
     deadline = time.monotonic() + _RUN_TIMEOUT
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as http:
         start_headers = dict(headers)
         if idempotency_key:
             # A retried trigger never starts a second run.
             start_headers["Idempotency-Key"] = f"openagents-{idempotency_key}"[:255]
-        r = await http.post(f"{base}/v1/runs", headers=start_headers, json={"input": text})
+        body = {"input": text}
+        if target.session_in_body:
+            body["session_key"] = session_key
+        r = await http.post(f"{target.root}/runs", headers=start_headers, json=body)
         if r.status_code not in (200, 201, 202):
-            raise RuntimeError(f"Hermes refused the run (HTTP {r.status_code}): {r.text[:200]}")
+            raise RuntimeError(f"{target.label} refused the run (HTTP {r.status_code}): {_reason(r)}")
         run_id = (r.json() or {}).get("run_id")
         if not run_id:
-            raise RuntimeError("Hermes did not return a run id")
+            raise RuntimeError(f"{target.label} did not return a run id")
 
         deltas: list[str] = []
         try:
-            outcome = await _follow_stream(http, base, headers, run_id, deltas, deadline, notes)
+            outcome = await _follow_stream(http, target, headers, run_id, deltas, deadline, notes)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             logger.info("hermes_agent: event stream for %s lost (%s); polling", run_id, exc)
             outcome = None
         if outcome is None:
-            outcome = await _poll(http, base, headers, run_id, deadline)
+            outcome = await _poll(http, target, headers, run_id, deadline)
 
         status, output, error = outcome
         if status == "completed":
             return output if output else "".join(deltas).strip()
         if status == "timeout":
-            await _stop(http, base, headers, run_id)
-            raise RuntimeError(f"Hermes did not finish within {int(_RUN_TIMEOUT)} seconds; the run was stopped")
-        raise RuntimeError(f"Hermes run {status}" + (f": {error}" if error else ""))
+            await _stop(http, target, headers, run_id)
+            raise RuntimeError(f"{target.label} did not finish within {int(_RUN_TIMEOUT)} seconds; the run was stopped")
+        raise RuntimeError(f"{target.label} run {status}" + (f": {error}" if error else ""))
 
 
-async def _follow_stream(http, base, headers, run_id, deltas, deadline, notes):
+def _reason(r) -> str:
+    """The message a refusal carries, for the thread."""
+    try:
+        body = r.json() or {}
+        err = body.get("error")
+        if isinstance(err, dict):
+            return str(err.get("message") or err)[:200]
+        return str(body.get("message") or err or r.text)[:200]
+    except ValueError:
+        return r.text[:200]
+
+
+async def _follow_stream(http, target, headers, run_id, deltas, deadline, notes):
     """Read the run's events until a terminal one -> (status, output, error),
     or None when the stream ends or goes quiet first."""
-    url = f"{base}/v1/runs/{run_id}/events"
+    url = f"{target.root}/runs/{run_id}/events"
     timeout = httpx.Timeout(30.0, read=_STREAM_IDLE)
     async with http.stream("GET", url, headers=headers, timeout=timeout) as resp:
         if resp.status_code != 200:
@@ -186,7 +233,7 @@ async def _follow_stream(http, base, headers, run_id, deltas, deadline, notes):
             if name in ("message.delta", "assistant.delta"):
                 deltas.append(event.get("delta") or "")
             elif name == "approval.request":
-                await _deny(http, base, headers, run_id, event, notes)
+                await _on_approval(http, target, headers, run_id, event, notes)
             elif name == "run.completed":
                 return "completed", (event.get("output") or "").strip(), None
             elif name in ("run.failed", "run.cancelled"):
@@ -214,52 +261,64 @@ async def _sse_events(resp) -> AsyncIterator[dict]:
             data.append(line[5:].lstrip())
 
 
-async def _poll(http, base, headers, run_id, deadline):
+async def _poll(http, target, headers, run_id, deadline):
     """GET the run until it ends -> (status, output, error)."""
     while time.monotonic() < deadline:
-        r = await http.get(f"{base}/v1/runs/{run_id}", headers=headers)
+        r = await http.get(f"{target.root}/runs/{run_id}", headers=headers)
         if r.status_code == 200:
             body = r.json() or {}
             status = body.get("status")
             if status in _TERMINAL:
                 return status, (body.get("output") or "").strip(), body.get("error")
         elif r.status_code == 404:
-            return "failed", None, "Hermes no longer knows this run"
+            return "failed", None, f"{target.label} no longer knows this run"
         await asyncio.sleep(3)
     return "timeout", None, None
 
 
-async def _deny(http, base, headers, run_id, event, notes) -> None:
-    """Say no to an approval Hermes asks for, and say so in the thread."""
+async def _on_approval(http, target, headers, run_id, event, notes) -> None:
+    """An approval the agent asks for: answered here, or left to its owner."""
+    what = event.get("description") or event.get("command") or "an action"
+    if target.approvals == "owner":
+        # Somebody else holds the answer (Chang Bot: a card on the owner's
+        # phone). Say once what the run waits on; the stream carries on when
+        # it is answered.
+        note = f"({target.label} asked its owner to approve {what}.)"
+        if note not in notes:
+            notes.append(note)
+        return
     body = {"choice": "deny"}
     request_id = event.get("request_id") or event.get("approval_id")
     if request_id:
         body["request_id"] = request_id
-    what = event.get("description") or event.get("command") or "an action"
     try:
-        await http.post(f"{base}/v1/runs/{run_id}/approval", headers=headers, json=body)
+        await http.post(f"{target.root}/runs/{run_id}/approval", headers=headers, json=body)
     except httpx.HTTPError as exc:
         logger.warning("hermes_agent: could not answer approval on %s: %s", run_id, exc)
-    notes.append(f"(Hermes asked for approval — {what} — which this workspace cannot give yet, so it was declined.)")
+    notes.append(f"({target.label} asked for approval — {what} — which this workspace cannot give yet, so it was declined.)")
 
 
-async def _stop(http, base, headers, run_id) -> None:
+async def _stop(http, target, headers, run_id) -> None:
     try:
-        await http.post(f"{base}/v1/runs/{run_id}/stop", headers=headers)
+        await http.post(f"{target.root}/runs/{run_id}/stop", headers=headers)
     except httpx.HTTPError:
         pass
 
 
-async def probe(base_url: str, api_key: str) -> Optional[str]:
-    """None when a Hermes API server answers at base_url with this key, else why not."""
-    base = api_base(base_url)
+async def probe_root(root: str, api_key: str, label: str = "Hermes", credential: str = "key") -> Optional[str]:
+    """None when a runs server answers {root}/capabilities with this credential, else why not."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as http:
-            r = await http.get(f"{base}/v1/capabilities", headers={"Authorization": f"Bearer {api_key}"})
+            r = await http.get(f"{root}/capabilities", headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
-        return f"no Hermes API server answered at {base} ({exc.__class__.__name__})"
+        return f"no {label} answered at {root} ({exc.__class__.__name__})"
     if r.status_code in (401, 403):
-        return "Hermes refused the key"
+        return f"{label} refused the {credential}"
     if r.status_code != 200:
-        return f"{base}/v1/capabilities answered HTTP {r.status_code}"
+        return f"{root}/capabilities answered HTTP {r.status_code}"
     return None
+
+
+async def probe(base_url: str, api_key: str) -> Optional[str]:
+    """None when a Hermes API server answers at base_url with this key, else why not."""
+    return await probe_root(f"{api_base(base_url)}/v1", api_key)

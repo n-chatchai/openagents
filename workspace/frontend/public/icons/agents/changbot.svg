@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.672 1.422 22.255 22.255" width="24" height="24" role="img" aria-label="Chang Bot">
+  <!-- Chang Bot mark. The Erawan mark (design/erawan-mark.svg) with one change:
+       the eye is a visor, a horizontal capsule 5 × 2 (rx 1) centred where the
+       Erawan eye is (16.6, 9.6). It clears the ear cut and the head's edge by
+       more than 1 unit. Body, ear cut, legs and viewBox are the Erawan mark's,
+       untouched, so the leg gaps keep the pixel tuning described there.
+       Colours and icon framing are Erawan's too (brandkit/README.md).
+       Chosen by the founder on 2026-10-20 from idea/chang-bot-logo.html.
+       Known cost: at 16 px it is hard to tell from Erawan's favicon.
+       Copied from erawan design/chang-bot-mark.svg, filled with the mark green (#2E7A6A): an img tag has no currentColor. -->
+  <defs>
+    <mask id="chang-cuts">
+      <rect width="24" height="24" fill="#fff"/>
+      <g fill="#000">
+        <path d="M9 5.4c2.6 2 3 5 3 7.4 0 2.6 1.2 4 3 4 1.4 0 2.4-1 2.4-2.4"
+              fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round"/>
+        <rect x="14.4" y="8.6" width="5" height="2" rx="1"/>
+        <path d="M5.2 20.8v-3a1.2 1.2 0 0 1 2.4 0v3z"/>
+        <path d="M11.2 20.8v-3a1.2 1.2 0 0 1 2.4 0v3z"/>
+      </g>
+    </mask>
+  </defs>
+  <g mask="url(#chang-cuts)">
+    <path d="M1.6 20.7V13a8.6 8.6 0 0 1 8.6-8.6h3.4A8.4 8.4 0 0 1 22 12.8v7.9z"
+          fill="#2E7A6A"/>
+  </g>
+</svg>

@@ -1,0 +1,15 @@
+{
+  "name": "changbot",
+  "label": "Chang Bot",
+  "description": "Your Chang Bot from Erawan: paste the connection token you made in the Chang Bot app",
+  "description_zh": "你在 Erawan 的 Chang Bot：粘贴在 Chang Bot 应用中创建的连接令牌",
+  "base_url": null,
+  "order": 200,
+  "models": [
+    {
+      "id": "changbot",
+      "category": "chat",
+      "label": "Chang Bot"
+    }
+  ]
+}
