@@ -186,7 +186,10 @@ async def _invoke_single(
 ) -> None:
     """Invoke a single cloud agent and post the response."""
     from app.services.yumi import YUMI_PROVIDER
-    if cloud_config.provider == YUMI_PROVIDER or cloud_config.category == "assistant":
+    from app.services.hermes_agent import HERMES_PROVIDER, invoke_hermes_agent
+    if cloud_config.provider == HERMES_PROVIDER:
+        await invoke_hermes_agent(db, workspace_id, event_data, cloud_config, depth)
+    elif cloud_config.provider == YUMI_PROVIDER or cloud_config.category == "assistant":
         await _invoke_assistant_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.category == "image":
         await _invoke_image_agent(db, workspace_id, event_data, cloud_config)

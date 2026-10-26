@@ -9,6 +9,7 @@ PATCH  /v1/cloud-agents/{name}       Update cloud agent config
 DELETE /v1/cloud-agents/{name}       Remove cloud agent
 """
 
+import asyncio
 import logging
 import re
 from typing import Literal, Optional
@@ -25,6 +26,7 @@ from app.response import ResponseCode, json_response, success_response
 from app.routers.network import _resolve_workspace, _verify_workspace_access
 from app.config import config
 from app.services.cloud_providers import providers_catalog, validate_provider_model
+from app.services.hermes_agent import HERMES_PROVIDER, probe as hermes_probe
 from app.services.yumi import (
     YUMI_CATEGORY,
     YUMI_KEY_PLACEHOLDER,
@@ -195,6 +197,17 @@ def add_cloud_agent(
         category = model_info.category
         effective_key = body.api_key
         member_description = f"Cloud agent: {model_info.label} ({body.provider})"
+
+    # Somebody's own Hermes (app/services/hermes_agent.py): its API server
+    # must answer with this key before it joins — asked now, before any lock
+    # is held across the network call.
+    if body.provider == HERMES_PROVIDER:
+        if not body.base_url:
+            return json_response(ResponseCode.BAD_REQUEST, "Hermes needs its API server address")
+        problem = asyncio.run(hermes_probe(body.base_url, body.api_key))
+        if problem:
+            return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Hermes: {problem}")
+        member_description = "Hermes Agent (bring your own)"
 
     # Namespace lock BEFORE the membership read: a concurrent create/rename
     # could otherwise invalidate what we read before we write.

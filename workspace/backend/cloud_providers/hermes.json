@@ -1,0 +1,16 @@
+{
+  "name": "hermes",
+  "label": "Hermes Agent",
+  "description": "Your own Hermes Agent, wherever it runs: its API server's address and key",
+  "description_zh": "你自己的 Hermes Agent：填入其 API 服务器地址与密钥",
+  "key_url": "https://github.com/NousResearch/hermes-agent",
+  "base_url": null,
+  "order": 210,
+  "models": [
+    {
+      "id": "hermes-agent",
+      "category": "chat",
+      "label": "Hermes"
+    }
+  ]
+}

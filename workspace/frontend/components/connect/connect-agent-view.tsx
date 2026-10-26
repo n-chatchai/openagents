@@ -187,6 +187,8 @@ export function ConnectAgentView({
   );
 
   const isCustomProvider = selectedProvider === 'custom';
+  // Somebody's own Hermes: an address like a custom endpoint, one fixed model.
+  const needsBaseUrl = isCustomProvider || selectedProvider === 'hermes';
 
   // Auto-select first model and generate name when provider changes
   useEffect(() => {
@@ -265,7 +267,7 @@ export function ConnectAgentView({
       toast.error(t('connect.missingFields'));
       return;
     }
-    if (isCustomProvider && !cfgBaseUrl) {
+    if (needsBaseUrl && !cfgBaseUrl) {
       toast.error(t('connect.customNeedsBaseUrl'));
       return;
     }
@@ -1944,6 +1946,7 @@ function CloudAgentsTab({
 }) {
   const t = useT();
   const isTokenPay = selectedProvider === 'tokenpay';
+  const isHermes = selectedProvider === 'hermes';
   const tokenPay = useTokenPayModels(isTokenPay, cfgKey);
 
   useEffect(() => {
@@ -1958,7 +1961,7 @@ function CloudAgentsTab({
     { label: t('connect.groupSearch'), names: ['perplexity', 'manus'] },
     { label: t('connect.groupFast'), names: ['groq', 'together', 'fireworks', 'openrouter', 'tokenpay', 'sambanova', 'cerebras'] },
     { label: t('connect.groupMedia'), names: ['stability', 'replicate', 'fal', 'elevenlabs'] },
-    { label: t('connect.groupCustom'), names: ['custom'] },
+    { label: t('connect.groupCustom'), names: ['hermes', 'custom'] },
   ];
 
   // When a provider is selected, show config view instead of grid
@@ -1983,7 +1986,7 @@ function CloudAgentsTab({
               <div>
                 <h3 className="text-sm font-semibold">{selectedProviderInfo.label}</h3>
                 <p className="text-xs text-muted-foreground">
-                  {isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
+                  {isHermes ? t('connect.hermesSubtitle') : isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
                 </p>
               </div>
             </div>
@@ -2004,18 +2007,18 @@ function CloudAgentsTab({
                 {tokenPay.error && <p className="text-xs text-red-600 dark:text-red-400">{tokenPay.error}</p>}
               </div>
             )}
-            {/* Custom endpoint: Base URL */}
-            {isCustomProvider && (
+            {/* Custom endpoint or Hermes: Base URL */}
+            {(isCustomProvider || isHermes) && (
               <div className="space-y-1.5">
                 <Label htmlFor="cloud-base-url" className="text-xs">{t('connect.endpointUrl')}</Label>
                 <Input
                   id="cloud-base-url"
                   value={cfgBaseUrl}
                   onChange={(e) => setCfgBaseUrl(e.target.value)}
-                  placeholder="https://api.example.com"
+                  placeholder={isHermes ? t('connect.hermesUrlPlaceholder') : 'https://api.example.com'}
                   className="text-sm font-mono h-9"
                 />
-                <p className="text-xs text-muted-foreground">{t('connect.endpointHint')}</p>
+                <p className="text-xs text-muted-foreground">{isHermes ? t('connect.hermesUrlHint') : t('connect.endpointHint')}</p>
               </div>
             )}
 
@@ -2127,9 +2130,10 @@ function CloudAgentsTab({
                 type="password"
                 value={cfgKey}
                 onChange={(e) => setCfgKey(e.target.value)}
-                placeholder={t('connect.apiKeyPlaceholder')}
+                placeholder={isHermes ? 'API_SERVER_KEY' : t('connect.apiKeyPlaceholder')}
                 className="text-sm font-mono h-9"
               />
+              {isHermes && <p className="text-xs text-muted-foreground">{t('connect.hermesKeyHint')}</p>}
             </div>}
 
             {/* Advanced */}
@@ -2157,7 +2161,7 @@ function CloudAgentsTab({
             {/* Add button */}
             <Button
               onClick={onAdd}
-              disabled={saving || !cfgName || !cfgKey || !cfgModel || (isCustomProvider && !cfgBaseUrl) || (isTokenPay && (tokenPay.loading || !!tokenPay.error))}
+              disabled={saving || !cfgName || !cfgKey || !cfgModel || ((isCustomProvider || isHermes) && !cfgBaseUrl) || (isTokenPay && (tokenPay.loading || !!tokenPay.error))}
               className="w-full"
               size="sm"
             >
