@@ -114,6 +114,31 @@ export async function joinWorkspaceSelf(
 }
 
 /**
+ * Behind a door (lib/door.ts) a workspace made by the deployment has no owner
+ * yet, and nothing in the app would ever give it one: the first signed-in
+ * person to open its ?token= link claims it. The backend refuses once anybody
+ * owns it, so later visitors only join as members. Best-effort; failures are
+ * ignored.
+ */
+export async function claimUnownedWorkspace(
+  workspaceId: string,
+  idToken: string,
+  workspaceToken: string,
+): Promise<void> {
+  try {
+    await fetch(`${API_URL}/v1/workspaces/${workspaceId}/claim`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'X-Workspace-Token': workspaceToken,
+      },
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
  * API credits campaign — the signed-in user's milestone checklist. Returns
  * {enabled:false} on self-hosted deployments (campaign off), in which case the
  * UI renders nothing. The first call provisions the user's gateway key (the

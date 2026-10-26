@@ -5,6 +5,7 @@ import { capture, identify } from './analytics';
 import { desktopHost } from './desktop-host';
 import { workspaceApi } from './api';
 import { clearWorkspaceSession, loadWorkspaceSession } from './workspace-session';
+import { DOOR_LOGIN, fetchDoorSession, goToDoorLogin } from './door';
 
 interface OpenAgentsUser {
   email: string;
@@ -51,12 +52,43 @@ export function OpenAgentsAuthProvider({ children }: { children: React.ReactNode
 
   useEffect(() => {
     const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
-    const isDomain = OPENAGENTS_HOSTNAMES.includes(hostname);
+    // Behind a door (lib/door.ts) this host is our app wherever it is served.
+    const isDomain = OPENAGENTS_HOSTNAMES.includes(hostname) || DOOR_LOGIN;
     setIsOpenAgentsDomain(isDomain);
 
     if (!isDomain) {
       setLoading(false);
       return;
+    }
+
+    // Behind a door the door is the login. Ask it on every load rather than
+    // restoring a stored session: since the last visit somebody else may have
+    // signed in at the door on this browser.
+    if (DOOR_LOGIN) {
+      let cancelled = false;
+      workspaceApi.setBearerRefresher(async () => {
+        const fresh = await fetchDoorSession().catch(() => null);
+        if (fresh) setIdToken(fresh.token);
+        return fresh?.token ?? null;
+      });
+      fetchDoorSession()
+        .catch(() => null)
+        .then((session) => {
+          if (cancelled) return;
+          if (session) {
+            setUser({ email: session.email, displayName: session.displayName || session.email, photoURL: null });
+            setIdToken(session.token);
+          } else {
+            clearWorkspaceSession();
+            setUser(null);
+            setIdToken(null);
+          }
+          setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+        workspaceApi.setBearerRefresher(null);
+      };
     }
 
     // A workspace-issued session (the Google-free path, see lib/workspace-session)
@@ -162,6 +194,7 @@ export function OpenAgentsAuthProvider({ children }: { children: React.ReactNode
   }), []);
 
   const signIn = useCallback(async () => {
+    if (DOOR_LOGIN) { goToDoorLogin(); return; }
     const host = desktopHost();
     if (host) { host.signIn(); return; }
     const { signInWithGoogle, getIdToken, getFreshIdToken, getResolvedEmail } = await import('./firebase');
@@ -193,6 +226,8 @@ export function OpenAgentsAuthProvider({ children }: { children: React.ReactNode
     clearWorkspaceSession();
     setUser(null);
     setIdToken(null);
+    // The door's own sign-out ends the session (goToCentralLogout).
+    if (DOOR_LOGIN) return;
     const host = desktopHost();
     if (host) { host.signOut(); return; }
     const { signOutUser } = await import('./firebase');

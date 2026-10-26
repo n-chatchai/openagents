@@ -1,4 +1,5 @@
 import { desktopHost } from './desktop-host';
+import { DOOR_LOGIN, goToDoorLogin, goToDoorLogout } from './door';
 
 // Central auth redirects for the workspace app.
 //
@@ -30,6 +31,8 @@ export function goToCentralLogin(fallbackSignIn?: () => void, options?: { forceC
   if (typeof window === 'undefined') return;
   const host = desktopHost();
   if (host) { host.signIn(); return; }
+  // Behind a door there is no central site: the door is the login (lib/door.ts).
+  if (DOOR_LOGIN) { goToDoorLogin(); return; }
   if (isLocalhost() && !options?.forceCentral) {
     fallbackSignIn?.();
     return;
@@ -48,6 +51,7 @@ export async function goToCentralLogout(signOut: () => Promise<void>): Promise<v
   } catch {
     /* already signed out */
   }
+  if (DOOR_LOGIN) { goToDoorLogout(); return; }
   if (typeof window === 'undefined' || isLocalhost() || desktopHost()) return;
   window.location.href = `${CENTRAL}/logout`;
 }
@@ -56,6 +60,7 @@ export async function goToCentralLogout(signOut: () => Promise<void>): Promise<v
 export function redirectToLogin(): void {
   if (typeof window === 'undefined') return;
   if (desktopHost()) { desktopHost()?.signIn(); return; }
+  if (DOOR_LOGIN) { goToDoorLogin(); return; }
   if (isLocalhost() || window.location.hostname === 'workspace-preview.openagents.org') {
     const returnTo = window.location.pathname + window.location.search + window.location.hash;
     window.location.replace(`/login?returnTo=${encodeURIComponent(returnTo)}`);

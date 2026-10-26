@@ -52,6 +52,11 @@ class Config:
     # bearer alongside Firebase / Apple ID tokens, so a signed-in browser never
     # has to talk to Google. Unset = the endpoint is disabled (503).
     WORKSPACE_SESSION_SECRET: str = os.environ.get("WORKSPACE_SESSION_SECRET", "")
+    # The header an authenticating proxy in front of this backend puts the
+    # signed-in person's email in (oauth2-proxy: X-Forwarded-Email). Set only
+    # when the backend is reachable through that proxy alone — see
+    # app/routers/door_auth.py. Unset = POST /v1/auth/door-session is a 404.
+    DOOR_EMAIL_HEADER: str = os.environ.get("DOOR_EMAIL_HEADER", "")
     WORKSPACE_SESSION_TTL_DAYS: int = int(os.environ.get("WORKSPACE_SESSION_TTL_DAYS", "30"))
     # A session can be renewed (POST /v1/auth/session/renew) for this long after
     # the sign-in that started it; past that the user signs in again. Bounds how

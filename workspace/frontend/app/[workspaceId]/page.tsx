@@ -9,6 +9,7 @@ import { LayoutProvider } from '@/components/layout/layout-context';
 import { Wrapper } from '@/components/layout/wrapper';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { goToCentralLogin, redirectToLogin } from '@/lib/auth-redirects';
+import { DOOR_LOGIN } from '@/lib/door';
 import { LogIn } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { CampaignMilestoneToasts } from '@/components/campaign/campaign-feedback';
@@ -199,9 +200,10 @@ function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
   // ?token= link is persisted as a member so it shows on their Membership Home.
   useEffect(() => {
     if (token && idToken) {
-      import('@/lib/account-api').then(({ joinWorkspaceSelf }) =>
-        joinWorkspaceSelf(workspaceId, idToken, token),
-      );
+      import('@/lib/account-api').then(async ({ claimUnownedWorkspace, joinWorkspaceSelf }) => {
+        if (DOOR_LOGIN) await claimUnownedWorkspace(workspaceId, idToken, token);
+        await joinWorkspaceSelf(workspaceId, idToken, token);
+      });
     }
   }, [workspaceId, token, idToken]);
 
