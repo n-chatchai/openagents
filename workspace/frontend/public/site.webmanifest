@@ -1,5 +1,5 @@
 {
-  "name": "OpenAgents Workspace",
+  "name": "Erawan Workspace",
   "short_name": "Workspace",
   "icons": [
     {
@@ -13,7 +13,7 @@
       "type": "image/png"
     }
   ],
-  "theme_color": "#ffffff",
-  "background_color": "#ffffff",
+  "theme_color": "#F5F2ED",
+  "background_color": "#F5F2ED",
   "display": "standalone"
 }

@@ -26,6 +26,7 @@ import { canAdminister } from '@/components/settings/admin-context';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { goToCentralLogin, goToCentralLogout } from '@/lib/auth-redirects';
+import { DOOR_LOGIN } from '@/lib/door';
 import { useT } from '@/lib/i18n';
 import { currentRouteSearch } from '@/lib/route-search';
 import { LanguageMenuSub } from './language-menu';
@@ -236,6 +237,17 @@ export function UserMenu({ side, align = 'end' }: UserMenuProps = {}) {
                 </DropdownMenuItem>
               )}
             </>
+          )}
+          {/* Behind a door this is a rebranded deployment: say what it is built on. */}
+          {DOOR_LOGIN && (
+            <a
+              href="https://github.com/openagents-org/openagents"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block px-2 pt-2 pb-1 text-[11px] leading-snug text-muted-foreground hover:text-foreground"
+            >
+              {t('userMenu.builtOn')}
+            </a>
           )}
         </DropdownMenuContent>
       </DropdownMenu>

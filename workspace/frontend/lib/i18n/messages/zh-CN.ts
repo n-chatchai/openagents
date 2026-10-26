@@ -63,7 +63,7 @@ export const messages: Messages = {
   'resourceLinks.copyFailed': '无法复制链接，请重试。',
 
   metadata: {
-    title: 'OpenAgents 工作区',
+    title: 'Erawan Workspace',
     description: '实时与你的 AI 智能体协作',
   },
 
@@ -968,6 +968,7 @@ export const messages: Messages = {
     personalSettings: '个人设置',
     signIn: '登录',
     signOut: '退出登录',
+    builtOn: '基于开源项目 OpenAgents（Apache-2.0）构建',
     signOutTitle: '确认退出登录?',
     signOutDescriptionWithEmail: '将在本设备上退出 {email}。工作区及其会话不受影响。',
     signOutDescription: '将在本设备上退出登录。',
@@ -1317,7 +1318,7 @@ export const messages: Messages = {
     invitedAs: '你被邀请以 {role} 角色加入。',
     boundTo: '此邀请发给 {email}',
     signInToAccept: '登录以接受邀请',
-    signInHint: '登录 OpenAgents 即可加入此工作区。',
+    signInHint: '登录即可加入此工作区。',
     join: '加入 {workspace}',
     signedInAs: '当前登录：{email}。',
     switchAccount: '使用其他账号',
@@ -1510,7 +1511,7 @@ export const messages: Messages = {
 
     heading: '你的工作区',
     subtitle: '回到已有的工作区继续，或者开始新的工作。',
-    networkError: '暂时无法连接 OpenAgents 服务器。请检查网络（VPN / 代理 / 防火墙）后点击“重试”。',
+    networkError: '暂时无法连接工作区服务器。请检查网络（VPN / 代理 / 防火墙）后点击“重试”。',
     nameTitle: '为工作区命名',
     namePlaceholder: '例如：市场团队、Acme 公司…',
     createWorkspace: '创建工作区',
@@ -1521,11 +1522,11 @@ export const messages: Messages = {
     createOpen: '打开工作区',
     noActivity: '暂无动态',
     startHere: '✨ 从这里开始',
-    backToHome: '返回 OpenAgents 首页',
+    backToHome: '返回工作区首页',
   },
 
   auth: {
-    signInTitle: '登录 OpenAgents',
+    signInTitle: '登录 Erawan Workspace',
     signInBody: '登录后即可查看你的工作区。',
     signingIn: '正在登录…',
     signInFailed: '登录失败',
@@ -1545,11 +1546,11 @@ export const messages: Messages = {
   maintenance: {
     upcomingTitle: '计划升级：',
     upcoming:
-      'OpenAgents Workspace 将于太平洋时间 10 月 14 日 12:00–13:00 从 v1.0 升级到 v1.1。期间服务将暂停约一小时，服务恢复后你的智能体会自动重新连接。',
+      'Erawan Workspace 将于太平洋时间 10 月 14 日 12:00–13:00 从 v1.0 升级到 v1.1。期间服务将暂停约一小时，服务恢复后你的智能体会自动重新连接。',
     upcomingWithLocal:
-      'OpenAgents Workspace 将于 {local}（太平洋时间 10 月 14 日 12:00–13:00）从 v1.0 升级到 v1.1。期间服务将暂停约一小时，服务恢复后你的智能体会自动重新连接。',
+      'Erawan Workspace 将于 {local}（太平洋时间 10 月 14 日 12:00–13:00）从 v1.0 升级到 v1.1。期间服务将暂停约一小时，服务恢复后你的智能体会自动重新连接。',
     activeTitle: '正在升级：',
-    active: 'OpenAgents Workspace 正在升级到 v1.1，服务暂时不可用，预计 {end} 前恢复。服务恢复后你的智能体会自动重新连接。',
+    active: 'Erawan Workspace 正在升级到 v1.1，服务暂时不可用，预计 {end} 前恢复。服务恢复后你的智能体会自动重新连接。',
     dismiss: '关闭',
   },
 
@@ -1558,18 +1559,18 @@ export const messages: Messages = {
     notFoundError: '该分享的对话不存在或已被移除。',
     notFoundLabel: '未找到分享内容',
     loadFailed: '加载分享的对话失败。',
-    goToOpenAgents: '前往 OpenAgents',
+    goToOpenAgents: '前往 Erawan Workspace',
     messageCount: { one: '{count} 条消息', other: '{count} 条消息' },
     sharedOn: ' · 分享于 {date}',
-    footerNote: '这是 OpenAgents 上一段对话的快照。',
-    tryOpenAgents: '试用 OpenAgents',
+    footerNote: '这是 Erawan Workspace 上一段对话的快照。',
+    tryOpenAgents: '试用 Erawan Workspace',
   },
 
   workspaceGate: {
     workspace: '工作区',
     guest: '访客',
     signInTitle: '登录后访问该工作区',
-    signInBody: '使用 OpenAgents 账号登录以访问你拥有的工作区,或在网址中附加令牌。',
+    signInBody: '登录以访问你所在的工作区,或在网址中附加令牌。',
     signInWithGoogle: '使用 Google 账号登录',
     googleAuthFailed: '无法发起 Google 登录,请重试',
     logIn: '登录',
@@ -2318,7 +2319,7 @@ export const messages: Messages = {
     body: '发现了 Bug 或有新想法？直接告诉我们团队。',
     kindFeature: '功能建议',
     kindBug: '问题反馈',
-    placeholderFeature: '你希望 OpenAgents 增加或改进什么？',
+    placeholderFeature: '你希望 Erawan Workspace 增加或改进什么？',
     placeholderBug: '出了什么问题？你期望的结果是什么？',
     contextNote: '页面和工作区信息会自动附上。',
     submit: '发送',

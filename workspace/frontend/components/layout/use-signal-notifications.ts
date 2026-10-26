@@ -87,7 +87,7 @@ export function useSignalNotifications() {
     for (const signal of toAlert) {
       const channel = signal.channelName;
       try {
-        const n = new Notification(signal.title || 'OpenAgents', {
+        const n = new Notification(signal.title || 'Erawan Workspace', {
           body: signal.message || '',
           // One live notification per conversation: a repeat replaces it.
           tag: channel || signal.id,

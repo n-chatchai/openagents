@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
+import { Inter, Noto_Sans_Thai } from 'next/font/google';
 import Script from 'next/script';
 import { ThemeProvider } from 'next-themes';
 import { Toaster } from '@/components/ui/sonner';
@@ -10,7 +10,10 @@ import { MaintenanceBanner } from '@/components/maintenance/maintenance-banner';
 import { getServerTranslations, resolveLocale } from '@/lib/i18n/server';
 import '@/styles/globals.css';
 
-const inter = Inter({ subsets: ['latin'] });
+// Latin first, Thai second, as Erawan's console sets them: each glyph comes
+// from the first family that has it (styles/globals.css, --font-sans).
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
+const notoThai = Noto_Sans_Thai({ subsets: ['thai'], variable: '--font-noto-thai' });
 
 // Analytics identifiers are injected via Vercel env vars (Project → Settings →
 // Environment Variables) rather than hardcoded. NEXT_PUBLIC_* values are inlined
@@ -96,7 +99,7 @@ export default async function RootLayout({
           that buries real warnings. Scoped to this element — children still
           report normally. */}
       <body
-        className={`${inter.className} bg-zinc-100 dark:bg-zinc-900`}
+        className={`${inter.variable} ${notoThai.variable} font-sans bg-sidebar`}
         suppressHydrationWarning
       >
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>

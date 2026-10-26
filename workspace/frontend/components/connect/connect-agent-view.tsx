@@ -22,6 +22,7 @@ import { capture } from '@/lib/analytics';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
+import { DOOR_LOGIN } from '@/lib/door';
 import { getAccountProfile, updateAccountProfile, sendSetupEmail } from '@/lib/account-api';
 import { CAMPAIGN_PROMO_AGENT_TYPES, CampaignConnectHint, CampaignPromoAccess } from '@/components/campaign/campaign-feedback';
 import { Input } from '@/components/ui/input';
@@ -119,7 +120,10 @@ export function ConnectAgentView({
   const isDesktop = desktopHost() !== null;
 
   const [selectedTab, setSelectedTab] = useState<'local' | 'cloud' | 'node'>(initialTab);
-  const activeTab = isDesktop || selectedTab === 'local' ? 'node' : selectedTab;
+  // Behind a door (lib/door.ts) agents join as cloud agents — Chang Bot,
+  // Hermes — not from a paired device: the device path installs
+  // OpenAgents' own desktop app, which this deployment does not offer.
+  const activeTab = DOOR_LOGIN ? 'cloud' : isDesktop || selectedTab === 'local' ? 'node' : selectedTab;
 
   // Onboarding checkpoint: the user reached the agent-setup surface. One event
   // per tab so the funnel can split node vs cloud vs local paths.
@@ -399,7 +403,7 @@ export function ConnectAgentView({
       </DetailHeader>
 
       {/* The desktop app focuses on agents running on connected devices. */}
-      {!isDesktop && <div className="px-6 pt-4 pb-2 shrink-0">
+      {!isDesktop && !DOOR_LOGIN && <div className="px-6 pt-4 pb-2 shrink-0">
         <div className="flex gap-1.5 p-1.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/60 max-w-2xl mx-auto w-full">
           {([
             { id: 'node', icon: Server, label: t('connect.tabNode') },
@@ -486,7 +490,9 @@ export function ConnectAgentView({
             saving={saving}
             onAdd={handleAddCloudAgent}
             onRemove={handleRemoveCloudAgent}
-            showBuiltinCard={!yumiPresent}
+            // Yumi runs on OpenAgents' own model gateway, which a deployment
+            // behind a door does not use (YUMI_ENABLED=false there).
+            showBuiltinCard={!yumiPresent && !DOOR_LOGIN}
             onAddBuiltin={handleAddBuiltinYumi}
           />
         )}
@@ -1958,12 +1964,14 @@ function CloudAgentsTab({
     if (first) setCfgName(first.id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64));
   }, [isTokenPay, tokenPay.models, setCfgModel, setCfgName]);
 
+  // Somebody's own agents first: in a team's workspace that is what most
+  // people come here to add.
   const providerGroups = [
+    { label: t('connect.groupYourAgents'), names: ['changbot', 'hermes'] },
     { label: t('connect.groupChat'), names: ['openai', 'anthropic', 'google', 'xai', 'deepseek', 'mistral', 'sensenova'] },
     { label: t('connect.groupSearch'), names: ['perplexity', 'manus'] },
     { label: t('connect.groupFast'), names: ['groq', 'together', 'fireworks', 'openrouter', 'tokenpay', 'sambanova', 'cerebras'] },
     { label: t('connect.groupMedia'), names: ['stability', 'replicate', 'fal', 'elevenlabs'] },
-    { label: t('connect.groupYourAgents'), names: ['changbot', 'hermes'] },
     { label: t('connect.groupCustom'), names: ['custom'] },
   ];
 
@@ -2334,6 +2342,9 @@ export function FirstRunOnboarding({ onDismiss }: { onDismiss?: () => void } = {
 
   // Escape hatches reuse the full connect view on the right tab.
   if (alt && !isDesktop) return <ConnectAgentView initialTab={alt} />;
+  // Behind a door there is no intro film and no device to pair: the first
+  // run is adding an agent.
+  if (DOOR_LOGIN && !isDesktop) return <ConnectAgentView initialTab="cloud" />;
 
   // Value first: three pillar slides (hub → collaboration → humans+agents)
   // play full screen before any ask (download, pairing). Each slide animates

@@ -182,6 +182,10 @@ def add_cloud_agent(
     # ignored, so the built-in can't be pointed at a different model. This is
     # the re-add path after a user removed the built-in agent.
     is_builtin = body.provider == YUMI_PROVIDER
+    if is_builtin and not config.YUMI_ENABLED:
+        # Yumi answers through OpenAgents' model gateway; a deployment that
+        # turned it off would get an agent that never replies.
+        return json_response(ResponseCode.BAD_REQUEST, "The built-in assistant is turned off on this server")
     if is_builtin:
         effective_model = config.YUMI_MODEL
         category = YUMI_CATEGORY

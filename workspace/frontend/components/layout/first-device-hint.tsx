@@ -3,6 +3,7 @@
 import { ArrowDown } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { DOOR_LOGIN } from '@/lib/door';
 import type { SetupStep } from '@/hooks/use-first-device-guide';
 
 /** Green emphasis shared by the connect button while a setup step is pending. */
@@ -11,6 +12,8 @@ export const SETUP_STEP_BUTTON = 'ring-1 ring-emerald-500/40 bg-emerald-500/15 t
 /** An in-flow pointer keeps the connection button and footer controls usable. */
 export function FirstDeviceHint({ step, compact = false }: { step: Exclude<SetupStep, null>; compact?: boolean }) {
   const t = useT();
+  // Behind a door agents need no device (lib/door.ts): the first step is an agent.
+  if (DOOR_LOGIN) step = 'agent';
   const title = step === 'device' ? t('nav.firstDeviceTitle') : t('nav.firstAgentTitle');
   const hint = step === 'device' ? t('nav.firstDeviceHint') : t('nav.firstAgentHint');
   return (

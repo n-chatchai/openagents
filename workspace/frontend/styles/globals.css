@@ -8,44 +8,42 @@
 
 /** Colors - https://tailwindcss.com/docs/colors **/
 :root {
-  --background: var(--color-white);
-  --foreground: var(--color-zinc-950);
-  --card: var(--color-white);
-  --card-foreground: var(--color-zinc-950);
-  --popover: var(--color-white);
-  --popover-foreground: var(--color-zinc-950);
-  /* app-shell-4 runs a neutral brand: black in light, near-white in dark */
-  --primary: var(--color-zinc-950);
-  --primary-foreground: var(--color-zinc-50);
-  --secondary: var(--color-zinc-100);
-  --secondary-foreground: var(--color-zinc-900);
-  --muted: var(--color-zinc-100);
-  --muted-foreground: var(--color-zinc-500);
-  --accent: var(--color-zinc-100);
-  --accent-foreground: var(--color-zinc-900);
-  --destructive: var(--color-red-600);
+  /* Erawan's palette: the same tokens as the Erawan console (erawan console/src/index.css), mother-of-pearl in lacquer; the dim shell carries primary in light mode */
+  --background: oklch(0.988 0.003 172);
+  --foreground: oklch(0.209 0.006 179);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.209 0.006 179);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.209 0.006 179);
+  --primary: oklch(0.465 0.039 179.3);
+  --primary-foreground: oklch(0.985 0.005 170);
+  --secondary: oklch(0.958 0.006 175);
+  --secondary-foreground: oklch(0.26 0.012 178.5);
+  --muted: oklch(0.962 0.005 175);
+  --muted-foreground: oklch(0.508 0.018 176);
+  --accent: oklch(0.952 0.008 176);
+  --accent-foreground: oklch(0.26 0.012 178.5);
+  --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: var(--color-white);
-  --chart-1: var(--color-blue-500);
-  --chart-2: var(--color-green-500);
-  --chart-3: var(--color-yellow-500);
-  --chart-4: var(--color-red-500);
-  --chart-5: var(--color-purple-500);
-  --border: oklch(
-    94% 0.004 286.32
-  ); /* between --color-zinc-100 and --color-zinc-200 */
-  --input: var(--color-zinc-200);
-  --ring: var(--color-zinc-400);
+  --chart-1: oklch(0.560 0.060 178.6);
+  --chart-2: oklch(0.580 0.080 240.7);
+  --chart-3: oklch(0.600 0.055 333.7);
+  --chart-4: oklch(0.465 0.039 179.3);
+  --chart-5: oklch(0.720 0.040 171);
+  --border: oklch(0.906 0.008 176); /* between --color-zinc-100 and --color-zinc-200 */
+  --input: oklch(0.906 0.008 176);
+  --ring: oklch(0.600 0.048 178);
   --radius: 0.5rem;
 
   /** Sidebar (app-shell) — translucent rail over the page background **/
-  --sidebar: color-mix(in oklab, var(--color-zinc-100) 60%, transparent);
+  --sidebar: oklch(0.972 0.005 175);
   --sidebar-foreground: var(--foreground);
-  --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: color-mix(in oklab, var(--primary) 5%, transparent);
-  --sidebar-accent-foreground: var(--primary);
+  --sidebar-primary: oklch(0.465 0.039 179.3);
+  --sidebar-primary-foreground: oklch(0.985 0.005 170);
+  --sidebar-accent: oklch(0.938 0.010 176);
+  --sidebar-accent-foreground: oklch(0.26 0.012 178.5);
   --sidebar-border: transparent;
-  --sidebar-ring: var(--ring);
+  --sidebar-ring: oklch(0.600 0.048 178);
 
   /** File type accents — a folder of uploads is a wall of near-identical
       names, so the glyph colour carries the type and the eye can sort the
@@ -67,40 +65,41 @@
 }
 
 .dark {
-  --background: var(--color-zinc-950);
-  --foreground: var(--color-zinc-50);
-  --card: var(--color-zinc-950);
-  --card-foreground: var(--color-zinc-50);
-  --popover: var(--color-zinc-950);
-  --popover-foreground: var(--color-zinc-50);
-  --primary: var(--color-zinc-50);
-  --primary-foreground: var(--color-zinc-900);
-  --secondary: var(--color-zinc-800);
-  --secondary-foreground: var(--color-zinc-50);
-  --muted: var(--color-zinc-900);
-  --muted-foreground: var(--color-zinc-500);
-  --accent: var(--color-zinc-900);
-  --accent-foreground: var(--color-zinc-50);
-  --destructive: var(--color-red-600);
+  /* Erawan's palette: the same tokens as the Erawan console (erawan console/src/index.css), mother-of-pearl in lacquer; the bright nacre carries primary in dark mode */
+  --background: oklch(0.166 0.004 164.5);
+  --foreground: oklch(0.952 0.008 168.7);
+  --card: oklch(0.209 0.006 179);
+  --card-foreground: oklch(0.952 0.008 168.7);
+  --popover: oklch(0.209 0.006 179);
+  --popover-foreground: oklch(0.952 0.008 168.7);
+  --primary: oklch(0.787 0.061 178.6);
+  --primary-foreground: oklch(0.166 0.004 164.5);
+  --secondary: oklch(0.260 0.012 178.5);
+  --secondary-foreground: oklch(0.952 0.008 168.7);
+  --muted: oklch(0.248 0.010 178);
+  --muted-foreground: oklch(0.691 0.021 176.1);
+  --accent: oklch(0.272 0.012 178);
+  --accent-foreground: oklch(0.952 0.008 168.7);
+  --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: var(--color-white);
-  --chart-1: var(--color-blue-500);
-  --chart-2: var(--color-green-500);
-  --chart-3: var(--color-yellow-500);
-  --chart-4: var(--color-red-500);
-  --chart-5: var(--color-purple-500);
-  --border: var(--color-zinc-800);
-  --input: var(--color-zinc-800);
-  --ring: var(--color-zinc-600);
+  --chart-1: oklch(0.787 0.061 178.6);
+  --chart-2: oklch(0.716 0.064 240.7);
+  --chart-3: oklch(0.720 0.043 333.7);
+  --chart-4: oklch(0.560 0.050 179);
+  --chart-5: oklch(0.913 0.025 170.9);
+  --border: oklch(0.290 0.012 178.5);
+  --input: oklch(0.330 0.014 178);
+  --ring: oklch(0.560 0.045 178);
 
   /** Sidebar (app-shell) **/
-  --sidebar: color-mix(in oklab, var(--color-zinc-900) 60%, transparent);
+  --sidebar: oklch(0.190 0.005 172);
   --sidebar-foreground: var(--foreground);
-  --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: color-mix(in oklab, var(--primary) 12%, transparent);
-  --sidebar-accent-foreground: var(--color-zinc-50);
+  --sidebar-primary: oklch(0.787 0.061 178.6);
+  --sidebar-primary-foreground: oklch(0.166 0.004 164.5);
+  --sidebar-accent: oklch(0.272 0.012 178);
+  --sidebar-accent-foreground: oklch(0.952 0.008 168.7);
   --sidebar-border: transparent;
-  --sidebar-ring: var(--ring);
+  --sidebar-ring: oklch(0.560 0.045 178);
 
   /** File type accents — same hues, lifted so they hold up on zinc-950. **/
   --file-pdf: hsl(350 80% 68%);
@@ -120,6 +119,7 @@
 
 /** Theme Setup **/
 @theme inline {
+  --font-sans: var(--font-inter), var(--font-noto-thai), ui-sans-serif, system-ui, sans-serif;
   /** Base Colors **/
   --color-background: var(--background);
   --color-foreground: var(--foreground);

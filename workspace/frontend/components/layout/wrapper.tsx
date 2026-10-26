@@ -48,12 +48,12 @@ function WorkspaceLoadingScreen() {
       <div className="flex flex-col items-center gap-5">
         <img
           src="/logo-icon.png"
-          alt="OpenAgents"
+          alt="Erawan"
           className="size-16 animate-[pulse_2s_ease-in-out_infinite] dark:hidden"
         />
         <img
           src="/logo-white.png"
-          alt="OpenAgents"
+          alt="Erawan"
           className="size-16 animate-[pulse_2s_ease-in-out_infinite] hidden dark:block"
         />
         <div className="text-center">

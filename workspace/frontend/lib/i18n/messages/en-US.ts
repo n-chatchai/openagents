@@ -69,7 +69,7 @@ export const messages = {
   'resourceLinks.copyFailed': 'Couldn’t copy the link. Please try again.',
 
   metadata: {
-    title: 'OpenAgents Workspace',
+    title: 'Erawan Workspace',
     description: 'Interact with your AI agents in real time',
   },
 
@@ -982,6 +982,7 @@ export const messages = {
     personalSettings: 'Personal settings',
     signIn: 'Sign in',
     signOut: 'Sign out',
+    builtOn: 'Built on OpenAgents · open source (Apache-2.0)',
     signOutTitle: 'Sign out?',
     signOutDescriptionWithEmail:
       "You'll be signed out of {email} on this device. The workspace and its threads stay as they are.",
@@ -1342,7 +1343,7 @@ export const messages = {
     invitedAs: "You've been invited to join as a {role}.",
     boundTo: 'This invitation is for {email}',
     signInToAccept: 'Sign in to accept',
-    signInHint: 'Sign in to OpenAgents to join this workspace.',
+    signInHint: 'Sign in to join this workspace.',
     join: 'Join {workspace}',
     signedInAs: 'Signed in as {email}.',
     switchAccount: 'Use a different account',
@@ -1543,7 +1544,7 @@ export const messages = {
     heading: 'Your workspaces',
     subtitle: 'Jump back into a workspace, or start something new.',
     networkError:
-      "Can't reach the OpenAgents server right now. Check your network (VPN / proxy / firewall) and press Retry.",
+      "Can't reach the workspace server right now. Check your network (VPN / proxy / firewall) and press Retry.",
     nameTitle: 'Name your workspace',
     namePlaceholder: 'e.g. Marketing team, Acme Corp…',
     createWorkspace: 'Create workspace',
@@ -1554,12 +1555,12 @@ export const messages = {
     createOpen: 'Open workspace',
     noActivity: 'No activity yet',
     startHere: '✨ Start here',
-    backToHome: 'Back to OpenAgents home',
+    backToHome: 'Back to the workspace home',
   },
 
   /** Sign-in gate on the home page, the login callback and the desktop sign-in landing. */
   auth: {
-    signInTitle: 'Sign in to OpenAgents',
+    signInTitle: 'Sign in to Erawan Workspace',
     signInBody: 'Sign in to see your workspaces.',
     signingIn: 'Signing you in…',
     signInFailed: 'Sign-in failed',
@@ -1579,12 +1580,12 @@ export const messages = {
   maintenance: {
     upcomingTitle: 'Scheduled upgrade:',
     upcoming:
-      'OpenAgents Workspace will be upgraded from v1.0 to v1.1 on Oct 14, 12:00–1:00 PM PT. The service will be paused for about an hour; your agents will reconnect automatically once it is back.',
+      'Erawan Workspace will be upgraded from v1.0 to v1.1 on Oct 14, 12:00–1:00 PM PT. The service will be paused for about an hour; your agents will reconnect automatically once it is back.',
     upcomingWithLocal:
-      'OpenAgents Workspace will be upgraded from v1.0 to v1.1 on Oct 14, 12:00–1:00 PM PT ({local} your time). The service will be paused for about an hour; your agents will reconnect automatically once it is back.',
+      'Erawan Workspace will be upgraded from v1.0 to v1.1 on Oct 14, 12:00–1:00 PM PT ({local} your time). The service will be paused for about an hour; your agents will reconnect automatically once it is back.',
     activeTitle: 'Upgrade in progress:',
     active:
-      'OpenAgents Workspace is being upgraded to v1.1 and is temporarily unavailable until about {end}. Your agents will reconnect automatically once the service is back.',
+      'Erawan Workspace is being upgraded to v1.1 and is temporarily unavailable until about {end}. Your agents will reconnect automatically once the service is back.',
     dismiss: 'Dismiss',
   },
 
@@ -1593,11 +1594,11 @@ export const messages = {
     notFoundError: 'This shared conversation could not be found or has been removed.',
     notFoundLabel: 'Share not found',
     loadFailed: 'Failed to load shared conversation.',
-    goToOpenAgents: 'Go to OpenAgents',
+    goToOpenAgents: 'Go to Erawan Workspace',
     messageCount: { one: '{count} message', other: '{count} messages' },
     sharedOn: ' · Shared {date}',
-    footerNote: 'This is a snapshot of a conversation on OpenAgents.',
-    tryOpenAgents: 'Try OpenAgents',
+    footerNote: 'This is a snapshot of a conversation on Erawan Workspace.',
+    tryOpenAgents: 'Try Erawan Workspace',
   },
 
   workspaceGate: {
@@ -1605,7 +1606,7 @@ export const messages = {
     guest: 'Guest',
     signInTitle: 'Sign in to access this workspace',
     signInBody:
-      'Log in with your OpenAgents account to access workspaces you own, or add a token to the URL.',
+      'Sign in to reach the workspaces you belong to, or add a token to the URL.',
     signInWithGoogle: 'Sign in with Google',
     googleAuthFailed: 'Could not start Google sign-in — please try again',
     logIn: 'Log in',
@@ -2367,7 +2368,7 @@ export const messages = {
     body: 'Found a bug or have an idea? It goes straight to the team.',
     kindFeature: 'Request a feature',
     kindBug: 'Report an issue',
-    placeholderFeature: 'What would make OpenAgents better for you?',
+    placeholderFeature: 'What would make Erawan Workspace better for you?',
     placeholderBug: 'What went wrong? What did you expect to happen?',
     contextNote: 'Your page and workspace are attached automatically.',
     submit: 'Send',
