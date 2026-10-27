@@ -16,6 +16,7 @@ import { desktopHost } from '@/lib/desktop-host';
 import { AgentSharingButton } from '@/components/sharing/agent-sharing-button';
 import { AgentSetup, CatalogStateNotice, type AgentDraft, type CatalogState } from '@/components/agents/agent-setup';
 import { DesktopComputerStep } from './desktop-computer-step';
+import { GrokBotSetup, pendingGrokSetup } from './grokbot-setup';
 import { withAgentDisplayNames } from '@/lib/node-agent-labels';
 import { useLocalNodeId } from './use-local-node-id';
 import { capture } from '@/lib/analytics';
@@ -148,7 +149,8 @@ export function ConnectAgentView({
 
   // Cloud agents
   const [cloudAgents, setCloudAgents] = useState<CloudAgentConfig[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  // A Grok Bot setup under way picks up where it was (grokbot-setup.tsx).
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(() => (pendingGrokSetup() ? 'grokbot' : null));
 
   // Cloud config form
   const [cfgModel, setCfgModel] = useState('');
@@ -489,6 +491,14 @@ export function ConnectAgentView({
             setShowAdvanced={setShowAdvanced}
             saving={saving}
             onAdd={handleAddCloudAgent}
+            onGrokAdded={() => {
+              capture('cloud_agent_created', { provider: 'grokbot', model: 'grokbot' });
+              // Its first agent ends a workspace's first run, and this view
+              // with it; the Connect view carries the remaining steps.
+              openView('connect');
+              refreshWorkspace();
+              loadCloudAgents();
+            }}
             onRemove={handleRemoveCloudAgent}
             // Yumi runs on OpenAgents' own model gateway, which a deployment
             // behind a door does not use (YUMI_ENABLED=false there).
@@ -1971,6 +1981,7 @@ function CloudAgentsTab({
   setShowAdvanced,
   saving,
   onAdd,
+  onGrokAdded,
   onRemove,
   showBuiltinCard,
   onAddBuiltin,
@@ -1996,6 +2007,7 @@ function CloudAgentsTab({
   setShowAdvanced: (v: boolean) => void;
   saving: boolean;
   onAdd: () => void;
+  onGrokAdded: () => void;
   onRemove: (name: string) => void;
   showBuiltinCard: boolean;
   onAddBuiltin: () => void;
@@ -2005,6 +2017,8 @@ function CloudAgentsTab({
   const isHermes = selectedProvider === 'hermes';
   // Somebody's own Chang Bot: a connection token from the Chang Bot app, nothing else.
   const isChangbot = selectedProvider === 'changbot';
+  // Somebody's own Grok Bot: a plugin and a webhook routine, set up in steps.
+  const isGrokbot = selectedProvider === 'grokbot';
   const tokenPay = useTokenPayModels(isTokenPay, cfgKey);
 
   useEffect(() => {
@@ -2017,7 +2031,7 @@ function CloudAgentsTab({
   // Somebody's own agents first: in a team's workspace that is what most
   // people come here to add.
   const providerGroups = [
-    { label: t('connect.groupYourAgents'), names: ['changbot', 'hermes'] },
+    { label: t('connect.groupYourAgents'), names: ['changbot', 'grokbot', 'hermes'] },
     { label: t('connect.groupChat'), names: ['openai', 'anthropic', 'google', 'xai', 'deepseek', 'mistral', 'sensenova'] },
     { label: t('connect.groupSearch'), names: ['perplexity', 'manus'] },
     { label: t('connect.groupFast'), names: ['groq', 'together', 'fireworks', 'openrouter', 'tokenpay', 'sambanova', 'cerebras'] },
@@ -2047,12 +2061,15 @@ function CloudAgentsTab({
               <div>
                 <h3 className="text-sm font-semibold">{selectedProviderInfo.label}</h3>
                 <p className="text-xs text-muted-foreground">
-                  {isChangbot ? t('connect.changbotSubtitle') : isHermes ? t('connect.hermesSubtitle') : isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
+                  {isGrokbot ? t('connect.grokSubtitle') : isChangbot ? t('connect.changbotSubtitle') : isHermes ? t('connect.hermesSubtitle') : isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
                 </p>
               </div>
             </div>
           </div>
 
+          {isGrokbot ? (
+            <GrokBotSetup onAdded={onGrokAdded} onDone={() => onSelectProvider(null)} />
+          ) : (
           <div className="p-4 space-y-3">
             {isTokenPay && (
               <div className="space-y-1.5">
@@ -2231,6 +2248,7 @@ function CloudAgentsTab({
               {t('connect.cloudAgentAddButton')}
             </Button>
           </div>
+          )}
         </div>
       </div>
     );

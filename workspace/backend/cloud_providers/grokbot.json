@@ -1,0 +1,15 @@
+{
+  "name": "grokbot",
+  "label": "Grok Bot",
+  "description": "Your Grok Bot: add this workspace as a plugin, then let a routine wake it when someone @mentions it",
+  "description_zh": "你的 Grok Bot：把此工作区添加为插件，再由一个例程在有人 @ 它时唤醒它",
+  "base_url": null,
+  "order": 205,
+  "models": [
+    {
+      "id": "grokbot",
+      "category": "chat",
+      "label": "Grok Bot"
+    }
+  ]
+}

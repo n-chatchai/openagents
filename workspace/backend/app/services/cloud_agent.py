@@ -197,10 +197,13 @@ async def _invoke_single(
     from app.services.yumi import YUMI_PROVIDER
     from app.services.hermes_agent import HERMES_PROVIDER, invoke_hermes_agent
     from app.services.changbot_agent import CHANGBOT_PROVIDER, invoke_changbot_agent
+    from app.services.grokbot_agent import GROKBOT_PROVIDER, invoke_grokbot_agent
     if cloud_config.provider == HERMES_PROVIDER:
         await invoke_hermes_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == CHANGBOT_PROVIDER:
         await invoke_changbot_agent(db, workspace_id, event_data, cloud_config, depth)
+    elif cloud_config.provider == GROKBOT_PROVIDER:
+        await invoke_grokbot_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == YUMI_PROVIDER or cloud_config.category == "assistant":
         await _invoke_assistant_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.category == "image":

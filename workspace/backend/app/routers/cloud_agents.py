@@ -28,6 +28,7 @@ from app.config import config
 from app.services.cloud_providers import providers_catalog, validate_provider_model
 from app.services.hermes_agent import HERMES_PROVIDER, probe as hermes_probe
 from app.services.changbot_agent import CHANGBOT_PROVIDER, probe as changbot_probe
+from app.services.grokbot_agent import GROKBOT_PROVIDER
 from app.services.yumi import (
     YUMI_CATEGORY,
     YUMI_KEY_PLACEHOLDER,
@@ -220,6 +221,15 @@ def add_cloud_agent(
         if problem:
             return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Chang Bot: {problem}")
         member_description = "Chang Bot (Erawan)"
+    # Somebody's own Grok Bot (app/services/grokbot_agent.py): it joins first,
+    # with nothing to probe; its plugin key and routine webhook come in the
+    # setup steps after (routers/grokbot.py).
+    if body.provider == GROKBOT_PROVIDER:
+        if not config.WORKSPACE_SESSION_SECRET:
+            return json_response(ResponseCode.BAD_REQUEST, "Grok Bot needs WORKSPACE_SESSION_SECRET on this server")
+        effective_key = ""
+        body.base_url = None
+        member_description = "Grok Bot (bring your own)"
 
     # Namespace lock BEFORE the membership read: a concurrent create/rename
     # could otherwise invalidate what we read before we write.
@@ -279,6 +289,10 @@ def add_cloud_agent(
             cfg.system_prompt = None if is_builtin else body.system_prompt
             cfg.max_tokens = None if is_builtin else body.max_tokens
             cfg.status = "active"
+            if body.provider == GROKBOT_PROVIDER:
+                # A new generation: the removed agent's connection key stays dead.
+                from datetime import datetime, timezone
+                cfg.created_at = datetime.now(timezone.utc)
         db.commit()
         logger.info(
             "cloud_agents: reactivated %s (%s/%s) in workspace %s",

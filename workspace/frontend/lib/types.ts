@@ -806,6 +806,22 @@ export interface CloudAgentModel {
   supportedProtocols?: string[];
 }
 
+/** Somebody's own Grok Bot: what its owner pastes into Grok Bot (backend routers/grokbot.py). */
+export interface GrokBotSetup {
+  agentName: string;
+  pluginName: string;
+  mcpUrl: string;
+  headerName: string;
+  connectionKey: string;
+  routineName: string;
+  routinePrompt: string;
+  webhookSet: boolean;
+  lastContactAt: string | null;
+  /** Set when the call just woke the routine with a test. */
+  testSentAt?: string;
+  testProblem?: string | null;
+}
+
 export interface CloudAgentConfig {
   agentName: string;
   provider: string;

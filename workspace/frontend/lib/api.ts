@@ -10,6 +10,7 @@ import type {
   BrowserTab,
   BrowserTabLimits,
   CloudAgentConfig,
+  GrokBotSetup,
   CloudAgentProvider,
   DMConversation,
   EventPollResponse,
@@ -1503,6 +1504,27 @@ class WorkspaceApi {
         system_prompt: params.systemPrompt || null,
         max_tokens: params.maxTokens || null,
       }),
+    });
+  }
+
+  async getGrokBotSetup(agentName: string): Promise<GrokBotSetup> {
+    return this.request<GrokBotSetup>(
+      `/v1/grokbot/${encodeURIComponent(agentName)}?network=${this.workspaceId}`
+    );
+  }
+
+  /** Save the routine's webhook, then wake it with a test. */
+  async saveGrokBotRoutine(agentName: string, webhookUrl: string, webhookKey: string): Promise<GrokBotSetup> {
+    return this.request<GrokBotSetup>(`/v1/grokbot/${encodeURIComponent(agentName)}/routine`, {
+      method: 'PUT',
+      body: JSON.stringify({ network: this.workspaceId, webhook_url: webhookUrl, webhook_key: webhookKey }),
+    });
+  }
+
+  async testGrokBot(agentName: string): Promise<GrokBotSetup> {
+    return this.request<GrokBotSetup>(`/v1/grokbot/${encodeURIComponent(agentName)}/test`, {
+      method: 'POST',
+      body: JSON.stringify({ network: this.workspaceId }),
     });
   }
 
