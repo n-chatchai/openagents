@@ -61,18 +61,17 @@ async def grok_mcp(request: Request, db: Session = Depends(get_db)):
     if not _origin_ok(request):
         return JSONResponse({"error": "origin not allowed"}, status_code=403)
     key = request.headers.get(grok.KEY_HEADER) or request.headers.get("authorization")
-    cfg = grok.resolve_key(db, key)
-    if cfg is None:
+    link = grok.resolve_key(db, key)
+    if link is None:
         return JSONResponse({"error": "unknown or revoked workspace key"}, status_code=401)
     try:
         body = json.loads(await request.body())
     except (ValueError, UnicodeDecodeError):
         return JSONResponse(grok._rpc_error(None, -32700, "Parse error"), status_code=400)
-    grok.touch_contact(db, cfg)
     if isinstance(body, list):
-        replies = [r for r in [await grok.handle_mcp_message(db, cfg, m) for m in body] if r is not None]
+        replies = [r for r in [await grok.handle_mcp_message(db, link, m) for m in body] if r is not None]
         return JSONResponse(replies) if replies else Response(status_code=202)
-    reply = await grok.handle_mcp_message(db, cfg, body)
+    reply = await grok.handle_mcp_message(db, link, body)
     if reply is None:
         return Response(status_code=202)
     return JSONResponse(reply)
@@ -87,6 +86,15 @@ async def grok_mcp_stream():
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
+
+def _member(db: Session, workspace, agent_name: str):
+    return db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == str(workspace.id),
+            WorkspaceMember.agent_name == agent_name,
+        )
+    ).scalar_one_or_none()
+
 
 def _owned_grokbot(db: Session, network: str, agent_name: str,
                    token: Optional[str], authorization: Optional[str]):
@@ -103,12 +111,7 @@ def _owned_grokbot(db: Session, network: str, agent_name: str,
             CloudAgentConfig.provider == grok.GROKBOT_PROVIDER,
         )
     ).scalar_one_or_none()
-    member = db.execute(
-        select(WorkspaceMember).where(
-            WorkspaceMember.workspace_id == str(workspace.id),
-            WorkspaceMember.agent_name == agent_name,
-        )
-    ).scalar_one_or_none()
+    member = _member(db, workspace, agent_name)
     if cfg is None or member is None or member.status == "removed":
         return json_response(ResponseCode.NOT_FOUND, f"No Grok Bot named '{agent_name}' here")
     # The connection key acts as the agent in every thread: a signed-in
@@ -125,14 +128,22 @@ def _owned_grokbot(db: Session, network: str, agent_name: str,
     return workspace, cfg, member
 
 
-def _setup(workspace, cfg, member) -> dict:
+def _setup(db: Session, workspace, cfg, member) -> dict:
+    link = grok.Link(str(workspace.id), grok._owner(member.owner_email))
+    # One plugin serves all of a person's Bots: once another of theirs has
+    # answered through it, the plugin is in their Grok account already.
+    others = [
+        other.agent_name for other in grok.agents_of(db, link)
+        if other.id != cfg.id and _member(db, workspace, other.agent_name).last_heartbeat
+    ]
     return {
         "agentName": cfg.agent_name,
         "pluginName": grok.PLUGIN_NAME,
         "mcpUrl": f"{config.PUBLIC_API_BASE.rstrip('/')}{grok.MCP_PATH}",
         "headerName": grok.KEY_HEADER,
-        "connectionKey": grok.connection_key(cfg),
-        "routineName": f"{grok.PLUGIN_NAME} — {workspace.name}",
+        "connectionKey": grok.connection_key(link.workspace_id, link.owner),
+        "pluginUsedBy": others[0] if others else None,
+        "routineName": grok.routine_name(workspace.name or "workspace", cfg.agent_name),
         "routinePrompt": grok.routine_prompt(workspace.name or "workspace", cfg.agent_name),
         "webhookSet": bool((cfg.base_url or "").strip() and (cfg.api_key or "").strip()),
         "lastContactAt": member.last_heartbeat.isoformat() if member.last_heartbeat else None,
@@ -150,7 +161,7 @@ def grokbot_setup(
     found = _owned_grokbot(db, network, agent_name, x_workspace_token, authorization)
     if not isinstance(found, tuple):
         return found
-    return success_response(_setup(*found))
+    return success_response(_setup(db, *found))
 
 
 class RoutineRequest(BaseModel):
@@ -172,7 +183,7 @@ def _test(db: Session, workspace, cfg, member):
         problem = str(exc)
     logger.info("grokbot: verify wake for %s in %s: %s", cfg.agent_name, workspace.id, problem or "sent")
     return success_response({
-        **_setup(workspace, cfg, member),
+        **_setup(db, workspace, cfg, member),
         "testSentAt": sent_at.isoformat(),
         "testProblem": problem,
     })

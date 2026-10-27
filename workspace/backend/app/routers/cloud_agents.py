@@ -289,10 +289,6 @@ def add_cloud_agent(
             cfg.system_prompt = None if is_builtin else body.system_prompt
             cfg.max_tokens = None if is_builtin else body.max_tokens
             cfg.status = "active"
-            if body.provider == GROKBOT_PROVIDER:
-                # A new generation: the removed agent's connection key stays dead.
-                from datetime import datetime, timezone
-                cfg.created_at = datetime.now(timezone.utc)
         db.commit()
         logger.info(
             "cloud_agents: reactivated %s (%s/%s) in workspace %s",

@@ -96,25 +96,64 @@ def test_mcp_lists_its_tools_for_the_right_key_only(client, workspace):
     assert forged.status_code == 403
 
 
-def test_every_call_is_the_agents_last_contact(client, workspace, db):
+def test_a_key_does_nothing_once_its_owner_has_no_grok_bot_here(client, workspace):
     _add_grok(client, workspace)
     key = _setup(client, workspace)["connectionKey"]
-    assert _setup(client, workspace)["lastContactAt"] is None
-    _mcp(client, key, "ping")
-    assert _setup(client, workspace)["lastContactAt"] is not None
-
-
-def test_a_removed_and_readded_grok_gets_a_new_key(client, workspace):
-    _add_grok(client, workspace)
-    old = _setup(client, workspace)["connectionKey"]
-    r = client.delete(f"/v1/cloud-agents/grok", params={"network": workspace["id"]}, headers=_headers(workspace))
+    r = client.delete("/v1/cloud-agents/grok", params={"network": workspace["id"]}, headers=_headers(workspace))
     assert r.status_code == 200, r.text
-    assert _mcp(client, old, "ping").status_code == 401
+    assert _mcp(client, key, "ping").status_code == 401
+
+
+def _route(db, name, url=WEBHOOK, key="crsr_abc"):
+    cfg = db.execute(select(CloudAgentConfig).where(CloudAgentConfig.agent_name == name)).scalar_one()
+    cfg.base_url, cfg.api_key = url, key
+    db.commit()
+    return cfg
+
+
+def _wake_for(db, ws, cfg, monkeypatch):
+    sent = []
+
+    async def fake_wake(url, key, body):
+        sent.append(body)
+
+    async def answered(*_a):
+        return True
+
+    monkeypatch.setattr(grok, "_wake", fake_wake)
+    monkeypatch.setattr(grok, "_answered", answered)
+    asyncio.run(grok.invoke_grokbot_agent(db, ws["id"], _trigger(db, ws), cfg, 0))
+    return sent[0]
+
+
+def test_one_plugin_serves_all_of_a_persons_grok_bots(client, workspace, db, monkeypatch):
+    _add_grok(client, workspace, "grok-research")
+    _add_grok(client, workspace, "grok-writer")
+    first = _setup(client, workspace, "grok-research")
+    second = _setup(client, workspace, "grok-writer")
+    assert first["connectionKey"] == second["connectionKey"]
+    assert first["routineName"] != second["routineName"]
+    # Until the plugin has carried a call, the second Bot's setup still shows it.
+    assert second["pluginUsedBy"] is None
+
+    wake = _wake_for(db, workspace, _route(db, "grok-writer"), monkeypatch)
+    posted = _call(client, first["connectionKey"], "workspace_post_reply",
+                   {"reference": wake["reference"], "text": "From the writer."})
+    assert posted["isError"] is False
+    db.expire_all()
+    reply = db.execute(select(EventRecord).where(EventRecord.source == "openagents:grok-writer")).scalar_one()
+    assert reply.payload["content"] == "From the writer."
+    # The call used the writer's reference: its contact, not the researcher's.
+    assert _setup(client, workspace, "grok-writer")["lastContactAt"] is not None
+    assert _setup(client, workspace, "grok-research")["lastContactAt"] is None
+    assert _setup(client, workspace, "grok-research")["pluginUsedBy"] == "grok-writer"
+
+
+def test_a_plugin_call_without_a_reference_is_nobodys_contact(client, workspace):
     _add_grok(client, workspace)
-    new = _setup(client, workspace)["connectionKey"]
-    assert new != old
-    assert _mcp(client, old, "ping").status_code == 401
-    assert _mcp(client, new, "ping").status_code == 200
+    key = _setup(client, workspace)["connectionKey"]
+    assert _mcp(client, key, "ping").status_code == 200
+    assert _setup(client, workspace)["lastContactAt"] is None
 
 
 @pytest.mark.parametrize("url", [
@@ -218,27 +257,20 @@ def test_a_mention_wakes_grok_which_reads_the_thread_and_answers_in_it(client, w
     assert (reply.metadata_ or {}).get("in_reply_to") == event["id"]
 
 
-def test_another_agents_key_cannot_use_groks_reference(client, workspace, db, monkeypatch):
+def test_somebody_elses_key_cannot_use_a_reference(client, workspace, db, monkeypatch):
     _add_grok(client, workspace, "grok")
-    _add_grok(client, workspace, "grok-two")
-    cfg = db.execute(select(CloudAgentConfig).where(CloudAgentConfig.agent_name == "grok")).scalar_one()
-    cfg.base_url, cfg.api_key = WEBHOOK, "crsr_abc"
+    _add_grok(client, workspace, "their-grok")
+    member = db.execute(select(WorkspaceMember).where(WorkspaceMember.agent_name == "their-grok")).scalar_one()
+    member.owner_email = "someone-else@pace6.tech"
     db.commit()
-    sent = []
+    wake = _wake_for(db, workspace, _route(db, "grok"), monkeypatch)
 
-    async def fake_wake(url, key, body):
-        sent.append(body)
-
-    async def answered(*_a):
-        return True
-
-    monkeypatch.setattr(grok, "_wake", fake_wake)
-    monkeypatch.setattr(grok, "_answered", answered)
-    asyncio.run(grok.invoke_grokbot_agent(db, workspace["id"], _trigger(db, workspace), cfg, 0))
-
-    other = _setup(client, workspace, "grok-two")["connectionKey"]
-    stolen = _call(client, other, "workspace_post_reply", {"reference": sent[0]["reference"], "text": "hi"})
+    theirs = _setup(client, workspace, "their-grok")["connectionKey"]
+    assert theirs != _setup(client, workspace, "grok")["connectionKey"]
+    stolen = _call(client, theirs, "workspace_post_reply", {"reference": wake["reference"], "text": "hi"})
     assert stolen["isError"] is True
+    read = _call(client, theirs, "workspace_read_thread", {"reference": wake["reference"]})
+    assert read["isError"] is True
 
 
 def test_no_answer_in_time_is_said_in_the_thread(workspace, db, monkeypatch):

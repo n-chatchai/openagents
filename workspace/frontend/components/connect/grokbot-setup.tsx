@@ -100,6 +100,7 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookKey, setWebhookKey] = useState('');
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
+  const [showPlugin, setShowPlugin] = useState(false);
 
   const start = async (agentName = name.trim()) => {
     if (!agentName) return;
@@ -224,14 +225,29 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
 
       {setup && (
         <ol className="space-y-5">
-          <Step n={1} title={t('connect.grokStepPlugin')} hint={t('connect.grokStepPluginHint')}>
-            <CopyValue label={t('connect.grokPluginName')} value={setup.pluginName} />
-            <CopyValue label={t('connect.grokPluginUrl')} value={setup.mcpUrl} />
-            <CopyValue label={t('connect.grokHeaderName')} value={setup.headerName} />
-            <CopyValue label={t('connect.grokHeaderValue')} value={key} shown={maskedKey} />
+          <Step
+            n={1}
+            title={t('connect.grokStepPlugin')}
+            hint={setup.pluginUsedBy
+              ? t('connect.grokPluginAdded', { name: setup.pluginUsedBy })
+              : t('connect.grokStepPluginHint')}
+          >
+            {/* One plugin serves all of a person's Grok Bots. */}
+            {setup.pluginUsedBy && !showPlugin ? (
+              <Button size="sm" variant="outline" onClick={() => setShowPlugin(true)}>
+                {t('connect.grokShowPlugin')}
+              </Button>
+            ) : (
+              <>
+                <CopyValue label={t('connect.grokPluginName')} value={setup.pluginName} />
+                <CopyValue label={t('connect.grokPluginUrl')} value={setup.mcpUrl} />
+                <CopyValue label={t('connect.grokHeaderName')} value={setup.headerName} />
+                <CopyValue label={t('connect.grokHeaderValue')} value={key} shown={maskedKey} />
+              </>
+            )}
           </Step>
 
-          <Step n={2} title={t('connect.grokStepRoutine')} hint={t('connect.grokStepRoutineHint')}>
+          <Step n={2} title={t('connect.grokStepRoutine')} hint={t('connect.grokStepRoutineHint', { name: setup.agentName })}>
             <Textarea readOnly value={setup.routinePrompt} className="text-xs font-mono min-h-[120px]" />
             <CopyRoutine prompt={setup.routinePrompt} />
           </Step>

@@ -813,6 +813,8 @@ export interface GrokBotSetup {
   mcpUrl: string;
   headerName: string;
   connectionKey: string;
+  /** Another of this person's Grok Bots that has already answered through the plugin. */
+  pluginUsedBy: string | null;
   routineName: string;
   routinePrompt: string;
   webhookSet: boolean;

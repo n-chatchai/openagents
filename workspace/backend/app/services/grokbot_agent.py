@@ -16,11 +16,18 @@ A wake carries references only. What was said, and the answer, go over MCP,
 and Grok's routine is told to treat the payload as a reference, never as
 instructions.
 
+One plugin serves all of a person's Grok Bots. A plugin is account-wide in
+Grok Bot, so the connection key belongs to a person in a workspace, not to
+an agent; each of their Bots joins as its own agent (@grok-research,
+@grok-writer) with a routine of its own, and every reference a wake carries
+names the agent it is for, which the key's owner must own.
+
 The routine's webhook URL and key sit in the agent's base_url and api_key.
 Nothing else is stored: the connection key and every reference in a wake are
-signed with the workspace session secret, so removing the agent revokes its
-key, and the last authenticated MCP call is the member's last_heartbeat (its
-"last contact" in setup). A reply from Grok never wakes Grok again.
+signed with the workspace session secret, so a key does nothing once its
+owner has no Grok Bot left here, and the last call that used a reference or
+a challenge is that agent's last_heartbeat (its "last contact" in setup). A
+reply from Grok never wakes Grok again.
 """
 
 import asyncio
@@ -32,12 +39,13 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 
 from app.config import config
 from app.services.hermes_agent import AgentRunError
@@ -113,40 +121,60 @@ def _unsign(purpose: str, token: str, max_age: Optional[float] = None) -> Option
     return fields
 
 
-def _generation(cfg) -> int:
-    # Re-adding a removed Grok Bot stamps a new created_at (routers/cloud_agents.py),
-    # so a key from before the removal stays dead.
-    created = cfg.created_at
-    return int(created.timestamp()) if created else 0
+@dataclass(frozen=True)
+class Link:
+    """Who a connection key speaks for: one person in one workspace."""
+    workspace_id: str
+    owner: str
 
 
-def connection_key(cfg) -> str:
-    """The key Grok Bot's plugin sends as x-workspace-key."""
-    return _KEY_PREFIX + _sign("grokbot-key", {"a": cfg.id, "g": _generation(cfg)})
+def _owner(email: Optional[str]) -> str:
+    return (email or "").strip().lower()
 
 
-def resolve_key(db, key: Optional[str]):
-    """The Grok Bot agent a connection key belongs to, or None."""
-    from app.models import CloudAgentConfig
+def connection_key(workspace_id: str, owner_email: Optional[str]) -> str:
+    """The key Grok Bot's plugin sends as x-workspace-key, for all of one person's Bots."""
+    return _KEY_PREFIX + _sign("grokbot-key", {"w": str(workspace_id), "o": _owner(owner_email)})
 
+
+def agents_of(db, link: Link) -> list:
+    """The Grok Bot agents this person has in this workspace."""
+    from app.models import CloudAgentConfig, WorkspaceMember
+
+    return list(db.execute(
+        select(CloudAgentConfig)
+        .join(WorkspaceMember, and_(
+            WorkspaceMember.workspace_id == CloudAgentConfig.workspace_id,
+            WorkspaceMember.agent_name == CloudAgentConfig.agent_name,
+        ))
+        .where(
+            CloudAgentConfig.workspace_id == link.workspace_id,
+            CloudAgentConfig.provider == GROKBOT_PROVIDER,
+            CloudAgentConfig.status == "active",
+            WorkspaceMember.status != "removed",
+            func.lower(func.coalesce(WorkspaceMember.owner_email, "")) == link.owner,
+        )
+        .order_by(CloudAgentConfig.created_at)
+    ).scalars().all())
+
+
+def resolve_key(db, key: Optional[str]) -> Optional[Link]:
+    """Whose connection key this is, or None — also once they have no Grok Bot here."""
     key = (key or "").strip()
     if key.lower().startswith("bearer "):
         key = key[7:].strip()
     if not key.startswith(_KEY_PREFIX):
         return None
     fields = _unsign("grokbot-key", key[len(_KEY_PREFIX):])
-    if not fields or not isinstance(fields.get("a"), str):
+    if not fields or not isinstance(fields.get("w"), str) or not isinstance(fields.get("o"), str):
         return None
-    cfg = db.execute(
-        select(CloudAgentConfig).where(
-            CloudAgentConfig.id == fields["a"],
-            CloudAgentConfig.provider == GROKBOT_PROVIDER,
-            CloudAgentConfig.status == "active",
-        )
-    ).scalar_one_or_none()
-    if cfg is None or fields.get("g") != _generation(cfg):
-        return None
-    return cfg
+    link = Link(fields["w"], fields["o"])
+    return link if agents_of(db, link) else None
+
+
+def _agent(db, link: Link, agent_id) -> Optional[object]:
+    """The agent a reference names, if it is one of the key owner's."""
+    return next((cfg for cfg in agents_of(db, link) if cfg.id == agent_id), None)
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +384,7 @@ def _tool_text(text: str, error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": error}
 
 
-async def handle_mcp_message(db, cfg, message) -> Optional[dict]:
+async def handle_mcp_message(db, link: Link, message) -> Optional[dict]:
     """One JSON-RPC message from Grok Bot's plugin; None for a notification."""
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
         return _rpc_error(message.get("id") if isinstance(message, dict) else None, -32600, "Invalid request")
@@ -383,32 +411,38 @@ async def handle_mcp_message(db, cfg, message) -> Optional[dict]:
         args = params.get("arguments") if isinstance(params, dict) else None
         args = args if isinstance(args, dict) else {}
         if name == "workspace_read_thread":
-            return _rpc_result(msg_id, _read_thread(db, cfg, args.get("reference")))
+            return _rpc_result(msg_id, _read_thread(db, link, args.get("reference")))
         if name == "workspace_post_reply":
-            return _rpc_result(msg_id, await _post_reply(db, cfg, args.get("reference"), args.get("text")))
+            return _rpc_result(msg_id, await _post_reply(db, link, args.get("reference"), args.get("text")))
         if name == "workspace_ack":
-            return _rpc_result(msg_id, _ack(cfg, args.get("challenge")))
+            return _rpc_result(msg_id, _ack(db, link, args.get("challenge")))
         return _rpc_error(msg_id, -32602, f"Unknown tool: {name}")
     return _rpc_error(msg_id, -32601, f"Method not found: {method}")
 
 
-def _reference(cfg, reference) -> Optional[dict]:
+def _reference(db, link: Link, reference):
+    """(agent, fields) for a wake's reference the key's owner may use, else None."""
     fields = _unsign("grokbot-wake", reference if isinstance(reference, str) else "", _REFERENCE_AGE)
-    if not fields or fields.get("a") != cfg.id or not isinstance(fields.get("c"), str):
+    if not fields or not isinstance(fields.get("c"), str):
         return None
-    return fields
+    cfg = _agent(db, link, fields.get("a"))
+    if cfg is None:
+        return None
+    touch_contact(db, cfg)
+    return cfg, fields
 
 
 _STALE = "This reference is not yours or has expired. Wait for the next wake."
 
 
-def _read_thread(db, cfg, reference) -> dict:
+def _read_thread(db, link: Link, reference) -> dict:
     from app.models import EventRecord
     from app.services.cloud_agent import _build_conversation_context, speaker_label
 
-    fields = _reference(cfg, reference)
-    if not fields:
+    found = _reference(db, link, reference)
+    if not found:
         return _tool_text(_STALE, error=True)
+    cfg, fields = found
     history = _build_conversation_context(
         db, cfg.workspace_id, fields["c"], cfg.agent_name,
         conversation_source=fields.get("s") or None,
@@ -436,12 +470,13 @@ def _read_thread(db, cfg, reference) -> dict:
     return _tool_text(text)
 
 
-async def _post_reply(db, cfg, reference, text) -> dict:
+async def _post_reply(db, link: Link, reference, text) -> dict:
     from app.services.cloud_agent import _post_response
 
-    fields = _reference(cfg, reference)
-    if not fields:
+    found = _reference(db, link, reference)
+    if not found:
         return _tool_text(_STALE, error=True)
+    cfg, fields = found
     text = (text or "").strip() if isinstance(text, str) else ""
     if not text:
         return _tool_text("Nothing to post: text is empty.", error=True)
@@ -454,15 +489,17 @@ async def _post_reply(db, cfg, reference, text) -> dict:
     return _tool_text("Posted in the thread.")
 
 
-def _ack(cfg, challenge) -> dict:
+def _ack(db, link: Link, challenge) -> dict:
     fields = _unsign("grokbot-verify", challenge if isinstance(challenge, str) else "", _CHALLENGE_AGE)
-    if not fields or fields.get("a") != cfg.id:
+    cfg = _agent(db, link, fields.get("a")) if fields else None
+    if cfg is None:
         return _tool_text("That challenge is not yours or has expired.", error=True)
+    touch_contact(db, cfg)
     return _tool_text("Verified: the workspace can wake you and you can answer it. Nothing else to do for this run.")
 
 
 def touch_contact(db, cfg) -> None:
-    """Record an authenticated call from the agent as its last contact."""
+    """Record a call that used the agent's reference or challenge as its last contact."""
     from app.models import WorkspaceMember
 
     member = db.execute(
@@ -476,10 +513,15 @@ def touch_contact(db, cfg) -> None:
         db.commit()
 
 
+def routine_name(workspace_name: str, agent_name: str) -> str:
+    return f"{PLUGIN_NAME} — {workspace_name} (@{agent_name})"
+
+
 def routine_prompt(workspace_name: str, agent_name: str) -> str:
-    """What the owner pastes into Grok Bot's chat to make the routine."""
+    """What the owner pastes into the chat of the Bot that is to answer as @agent_name."""
     return (
-        f"Create one routine named \"{PLUGIN_NAME} — {workspace_name}\". Reuse it if it already exists. "
+        f"Create one routine of yours named \"{routine_name(workspace_name, agent_name)}\". Reuse it if it "
+        "already exists. "
         "Trigger: Webhook only, no schedule. Do not show its webhook URL or key in chat; tell me when it "
         "is ready and I will copy them from the routine's Webhook panel.\n\n"
         "Instructions for every run of the routine:\n"
