@@ -815,6 +815,8 @@ export interface GrokBotSetup {
   connectionKey: string;
   /** Another of this person's Grok Bots that has already answered through the plugin. */
   pluginUsedBy: string | null;
+  /** All of this person's Grok Bots in the workspace. */
+  bots: { agentName: string; webhookSet: boolean; lastContactAt: string | null }[];
   routineName: string;
   routinePrompt: string;
   webhookSet: boolean;

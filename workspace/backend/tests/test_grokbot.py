@@ -147,6 +147,10 @@ def test_one_plugin_serves_all_of_a_persons_grok_bots(client, workspace, db, mon
     assert _setup(client, workspace, "grok-writer")["lastContactAt"] is not None
     assert _setup(client, workspace, "grok-research")["lastContactAt"] is None
     assert _setup(client, workspace, "grok-research")["pluginUsedBy"] == "grok-writer"
+    bots = {b["agentName"]: b for b in _setup(client, workspace, "grok-research")["bots"]}
+    assert set(bots) == {"grok-research", "grok-writer"}
+    assert bots["grok-writer"]["webhookSet"] is True and bots["grok-writer"]["lastContactAt"]
+    assert bots["grok-research"]["webhookSet"] is False
 
 
 def test_a_plugin_call_without_a_reference_is_nobodys_contact(client, workspace):

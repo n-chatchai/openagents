@@ -132,10 +132,15 @@ def _setup(db: Session, workspace, cfg, member) -> dict:
     link = grok.Link(str(workspace.id), grok._owner(member.owner_email))
     # One plugin serves all of a person's Bots: once another of theirs has
     # answered through it, the plugin is in their Grok account already.
-    others = [
-        other.agent_name for other in grok.agents_of(db, link)
-        if other.id != cfg.id and _member(db, workspace, other.agent_name).last_heartbeat
-    ]
+    bots = []
+    for bot in grok.agents_of(db, link):
+        seen = _member(db, workspace, bot.agent_name).last_heartbeat
+        bots.append({
+            "agentName": bot.agent_name,
+            "webhookSet": bool((bot.base_url or "").strip() and (bot.api_key or "").strip()),
+            "lastContactAt": seen.isoformat() if seen else None,
+        })
+    others = [b["agentName"] for b in bots if b["agentName"] != cfg.agent_name and b["lastContactAt"]]
     return {
         "agentName": cfg.agent_name,
         "pluginName": grok.PLUGIN_NAME,
@@ -143,6 +148,8 @@ def _setup(db: Session, workspace, cfg, member) -> dict:
         "headerName": grok.KEY_HEADER,
         "connectionKey": grok.connection_key(link.workspace_id, link.owner),
         "pluginUsedBy": others[0] if others else None,
+        # All of this person's Grok Bots here, so the setup can list them.
+        "bots": bots,
         "routineName": grok.routine_name(workspace.name or "workspace", cfg.agent_name),
         "routinePrompt": grok.routine_prompt(workspace.name or "workspace", cfg.agent_name),
         "webhookSet": bool((cfg.base_url or "").strip() and (cfg.api_key or "").strip()),

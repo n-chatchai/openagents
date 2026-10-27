@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { AlertTriangle, Check, CheckCircle2, Copy, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { workspaceApi } from '@/lib/api';
-import { useT } from '@/lib/i18n';
+import { useFormatters, useT } from '@/lib/i18n';
 import type { GrokBotSetup as Setup } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -94,6 +94,7 @@ function Step({ n, title, hint, children }: { n: number; title: string; hint?: s
  */
 export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone: () => void }) {
   const t = useT();
+  const { timeAgo } = useFormatters();
   const [name, setName] = useState(() => pendingGrokSetup() || 'grok');
   const [setup, setSetup] = useState<Setup | null>(null);
   const [busy, setBusy] = useState(false);
@@ -166,6 +167,17 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
     onDone();
   };
 
+  // The next of this person's Bots: same plugin, its own name and routine.
+  const addAnother = () => {
+    setPending(null);
+    setSetup(null);
+    setName('');
+    setWebhookUrl('');
+    setWebhookKey('');
+    setTest({ kind: 'idle' });
+    setShowPlugin(false);
+  };
+
   // The routine run calls back over MCP; its call is the agent's last contact.
   useEffect(() => {
     if (test.kind !== 'waiting' || !setup) return;
@@ -178,6 +190,7 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
         const now = await workspaceApi.getGrokBotSetup(setup.agentName);
         if (stopped) return;
         if (now.lastContactAt && Date.parse(now.lastContactAt) >= sentAt) {
+          setSetup(now);
           setTest({ kind: 'connected' });
           return;
         }
@@ -312,10 +325,35 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
         </ol>
       )}
 
+      {setup && setup.bots.length > 0 && (
+        <div className="space-y-2 border-t pt-4">
+          <div className="text-xs font-medium text-muted-foreground">{t('connect.grokYourBots')}</div>
+          <ul className="space-y-1.5">
+            {setup.bots.map((bot) => (
+              <li key={bot.agentName} className="flex items-center justify-between gap-3 text-sm">
+                <span className="min-w-0 truncate font-medium">@{bot.agentName}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {bot.lastContactAt
+                    ? t('connect.grokBotSeen', { when: timeAgo(bot.lastContactAt) })
+                    : bot.webhookSet ? t('connect.grokBotSilent') : t('connect.grokBotNoWebhook')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {setup && (
-        <Button onClick={done} size="sm" variant="outline" className="w-full">
-          {t('connect.grokDone')}
-        </Button>
+        <div className="flex gap-2">
+          {(test.kind === 'connected' || setup.lastContactAt) && (
+            <Button onClick={addAnother} size="sm" variant="outline" className="flex-1">
+              {t('connect.grokAddAnother')}
+            </Button>
+          )}
+          <Button onClick={done} size="sm" variant="outline" className="flex-1">
+            {t('connect.grokDone')}
+          </Button>
+        </div>
       )}
     </div>
   );
