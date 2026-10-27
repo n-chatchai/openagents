@@ -965,6 +965,10 @@ class WorkspaceApi {
   getFileUrl(fileId: string): string {
     const params = new URLSearchParams();
     if (this.token) params.set('token', this.token);
+    // An <img> or <a> sends no headers: carry the signed-in person as the
+    // event stream does (getSSEUrl), so the file is filtered for them and a
+    // server that will not take the workspace token alone still serves it.
+    if (this.bearerToken) params.set('access_token', this.bearerToken);
     const qs = params.toString();
     return `${API_URL}/v1/files/${fileId}${qs ? `?${qs}` : ''}`;
   }

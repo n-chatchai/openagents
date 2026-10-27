@@ -6,7 +6,7 @@ import { clearWorkspaceSession, saveWorkspaceSession, type WorkspaceSession } fr
 //
 // The door already knows who the person is and passes their email to the
 // backend, which mints an ordinary workspace session for it
-// (POST /v1/auth/door-session, backend app/routers/door_auth.py). The rest of
+// (POST /door/session, backend app/routers/door_auth.py). The rest of
 // the app treats that session exactly like a Firebase login.
 //
 // NEXT_PUBLIC_DOOR_LOGIN=1 (build-time) makes this host first-party and swaps
@@ -18,7 +18,7 @@ const REDIRECT_KEY = 'oa_door_redirect_at';
 
 /** Ask the door who this is. Null when the door vouches for nobody. */
 export async function fetchDoorSession(): Promise<WorkspaceSession | null> {
-  const res = await fetch(`${getApiBaseUrl()}/v1/auth/door-session`, { method: 'POST' });
+  const res = await fetch(`${getApiBaseUrl()}/door/session`, { method: 'POST' });
   const json = await res.json().catch(() => null);
   if (!res.ok || !json?.data?.session_token) return null;
   const session: WorkspaceSession = {

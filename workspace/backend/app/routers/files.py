@@ -1832,6 +1832,7 @@ def file_info(
 def download_file(
     file_id: str,
     token: Optional[str] = Query(None),
+    access_token: Optional[str] = Query(None, description="Bearer token for <img>/<a> (no headers there); identifies the signed-in person"),
     x_workspace_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
@@ -1857,6 +1858,10 @@ def download_file(
         return json_response(ResponseCode.NOT_FOUND, "Network not found")
 
     effective_token = x_workspace_token or token
+    # Same as the event stream: a browser element cannot send headers, so the
+    # signed-in person rides in the query.
+    if not authorization and access_token:
+        authorization = f"Bearer {access_token}"
     if not _verify_workspace_access(workspace, effective_token, authorization):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid workspace credentials")
 

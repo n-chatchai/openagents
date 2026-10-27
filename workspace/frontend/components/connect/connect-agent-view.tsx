@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useOpenAgentsAuth } from '@/lib/openagents-auth-context';
 import { DOOR_LOGIN } from '@/lib/door';
+import { getApiBaseUrl } from '@/lib/api-base';
 import { getAccountProfile, updateAccountProfile, sendSetupEmail } from '@/lib/account-api';
 import { CAMPAIGN_PROMO_AGENT_TYPES, CampaignConnectHint, CampaignPromoAccess } from '@/components/campaign/campaign-feedback';
 import { Input } from '@/components/ui/input';
@@ -120,11 +121,13 @@ export function ConnectAgentView({
   const { idToken: oaIdToken } = useOpenAgentsAuth();
   const isDesktop = desktopHost() !== null;
 
-  const [selectedTab, setSelectedTab] = useState<'local' | 'cloud' | 'node'>(initialTab);
-  // Behind a door (lib/door.ts) agents join as cloud agents — Chang Bot,
-  // Hermes — not from a paired device: the device path installs
-  // OpenAgents' own desktop app, which this deployment does not offer.
-  const activeTab = DOOR_LOGIN ? 'cloud' : isDesktop || selectedTab === 'local' ? 'node' : selectedTab;
+  // Behind a door (lib/door.ts) most people add their own agents — Chang Bot,
+  // Grok Bot, Hermes — so that tab comes first; a device pairs from the
+  // other tab with the launcher CLI only (see PairingPanel).
+  const [selectedTab, setSelectedTab] = useState<'local' | 'cloud' | 'node'>(
+    DOOR_LOGIN && !autoPair && !autoAddAgent && !preferredNodeId ? 'cloud' : initialTab,
+  );
+  const activeTab = isDesktop || selectedTab === 'local' ? 'node' : selectedTab;
 
   // Onboarding checkpoint: the user reached the agent-setup surface. One event
   // per tab so the funnel can split node vs cloud vs local paths.
@@ -405,7 +408,7 @@ export function ConnectAgentView({
       </DetailHeader>
 
       {/* The desktop app focuses on agents running on connected devices. */}
-      {!isDesktop && !DOOR_LOGIN && <div className="px-6 pt-4 pb-2 shrink-0">
+      {!isDesktop && <div className="px-6 pt-4 pb-2 shrink-0">
         <div className="flex gap-1.5 p-1.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/60 max-w-2xl mx-auto w-full">
           {([
             { id: 'node', icon: Server, label: t('connect.tabNode') },
@@ -435,7 +438,7 @@ export function ConnectAgentView({
       {/* Credits-campaign incentive — Local Agents tab only: the milestone is
           about launcher/CLI agents, so it would only confuse on the Cloud
           Agents and Manual Connection tabs. */}
-      {activeTab === 'node' && (
+      {activeTab === 'node' && !DOOR_LOGIN && (
         <div className={cn('px-6 shrink-0', isDesktop && 'pt-4')}>
           <div className="mx-auto w-full max-w-2xl">
             <CampaignConnectHint idToken={oaIdToken} />
@@ -517,6 +520,14 @@ export function ConnectAgentView({
 
 const INSTALL_COMMAND = 'curl -fsSL https://openagents.org/install.sh | bash';
 const INSTALL_COMMAND_WIN = 'irm https://openagents.org/install.ps1 | iex';
+// Behind a door: the launcher pinned from npm, no remote script, no install
+// hooks. openagents.org's install.sh follows their develop branch and pairs
+// with their server unless told otherwise.
+const DOOR_INSTALL_COMMAND = 'npm install -g --ignore-scripts @openagents-org/agent-launcher@0.2.206';
+// --endpoint keeps the pairing on this server; --no-update-check goes last
+// (the CLI's parser takes the next word as its value otherwise).
+const doorPairCommand = (code: string) =>
+  `agn device connect ${code} --endpoint ${getApiBaseUrl()} --no-update-check`;
 
 function deviceIcon(deviceType: string, className?: string) {
   switch (deviceType) {
@@ -648,7 +659,13 @@ function PairingPanel({
         {/* Step 1 — get the launcher (desktop app or CLI). On a phone the
             download links are dead ends (the launcher runs on a computer),
             so point at the laptop instead and keep the CLI path for servers. */}
-        <PairingStep n={1} title={isMobile ? t('connect.nodeMobileStep1Title') : t('connect.nodeStep1Title')}>
+        <PairingStep n={1} title={DOOR_LOGIN ? t('connect.doorStep1Title') : isMobile ? t('connect.nodeMobileStep1Title') : t('connect.nodeStep1Title')}>
+          {DOOR_LOGIN ? (
+            <>
+              <p className="text-xs text-muted-foreground">{t('connect.doorInstallHint')}</p>
+              <CommandRow command={DOOR_INSTALL_COMMAND} />
+            </>
+          ) : (<>
           {isMobile && (
             <div className="rounded-xl border border-primary/20 bg-primary/[0.04] px-4 py-3.5 space-y-1.5">
               <div className="flex items-center gap-2 text-sm font-semibold">
@@ -710,6 +727,7 @@ function PairingPanel({
             </div>
           </div>
           <CommandRow command={os === 'windows' ? INSTALL_COMMAND_WIN : INSTALL_COMMAND} />
+          </>)}
         </PairingStep>
 
         {/* Step 2 — enter the pairing code */}
@@ -730,9 +748,22 @@ function PairingPanel({
               ? <Check className="size-6 text-green-500" />
               : <Copy className="size-6 text-muted-foreground group-hover:text-foreground transition-colors" />}
           </button>
-          <p className="text-xs text-muted-foreground">{t('connect.nodeStep2Hint')}</p>
-          <p className="text-xs text-muted-foreground">{t('connect.nodeCliPairingHint')}</p>
-          <CommandRow command={`agn device connect ${pairing.code}`} />
+          {DOOR_LOGIN ? (
+            <>
+              <p className="text-xs text-muted-foreground">{t('connect.doorPairHint')}</p>
+              <CommandRow command={doorPairCommand(pairing.code)} />
+              <ul className="list-disc pl-4 space-y-1 text-xs text-muted-foreground">
+                <li>{t('connect.doorNoteMenu')}</li>
+                <li>{t('connect.doorNoteFolder')}</li>
+              </ul>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">{t('connect.nodeStep2Hint')}</p>
+              <p className="text-xs text-muted-foreground">{t('connect.nodeCliPairingHint')}</p>
+              <CommandRow command={`agn device connect ${pairing.code}`} />
+            </>
+          )}
           {isMobile && (
             <p className="text-xs text-muted-foreground">{t('connect.nodeMobileCodeHint')}</p>
           )}

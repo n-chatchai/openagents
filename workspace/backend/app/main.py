@@ -466,7 +466,13 @@ async def database_unavailable(request: Request, exc: Exception):
     )
 
 
-# CORS — added FIRST so it's innermost in the stack. That way CORS
+# The shared workspace token opens nothing without a signed-in person
+# (app/shared_token_guard.py; off unless SHARED_TOKEN_NEEDS_PERSON=1). Added
+# before CORS so it sits inside it and a refusal still carries CORS headers.
+from app.shared_token_guard import SharedTokenGuard  # noqa: E402
+app.add_middleware(SharedTokenGuard)
+
+# CORS — added early so it's near the inside of the stack. That way CORS
 # headers (and OPTIONS preflight handling) are applied BEFORE gzip, so
 # CORS-aware responses still work when compressed.
 origins = [o.strip() for o in config.CORS_ORIGINS.split(",") if o.strip()]

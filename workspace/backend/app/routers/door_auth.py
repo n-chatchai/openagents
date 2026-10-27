@@ -2,8 +2,11 @@
 """
 Sign-in through a door: a self-hosted workspace behind an authenticating proxy.
 
-POST /v1/auth/door-session   Mint a workspace session for the person the door
-                             signed in.
+POST /door/session   Mint a workspace session for the person the door signed in.
+
+Outside /v1/ on purpose: a door that lets machines reach /v1/ unsigned-in (the
+launcher on a laptop, Grok Bot's plugin) still holds this path behind its
+sign-in, so the header below only ever arrives from the door itself.
 
 Background: a self-hosted deployment has no openagents.org login (no Firebase
 handoff), so people enter by ?token= link and the workspace never learns who
@@ -35,10 +38,10 @@ from app.response import ResponseCode, json_response, success_response
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/auth", tags=["Auth"])
+router = APIRouter(prefix="/door", tags=["Auth"])
 
 
-@router.post("/door-session")
+@router.post("/session")
 def create_door_session(request: Request):
     """Mint a workspace session for the email the door vouches for.
 
