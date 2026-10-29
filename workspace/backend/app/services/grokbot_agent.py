@@ -513,6 +513,23 @@ def touch_contact(db, cfg) -> None:
         db.commit()
 
 
+def plugin_prompt(mcp_url: str, key: str) -> str:
+    """What the owner pastes into a Grok Bot chat to add the plugin.
+
+    Grok Bot has no settings form for a custom MCP server; it is added by
+    asking a Bot in chat (forum.cursor.com/t/grokbot-custom-connectors,
+    2026-08-30). The key may go into that chat: on its own it opens nothing
+    here, since reading or answering a thread takes a reference that only a
+    wake carries.
+    """
+    return (
+        f"Add a custom MCP server named \"{PLUGIN_NAME}\" at {mcp_url} (streamable HTTP). "
+        f"It needs the request header {KEY_HEADER} with the value {key} . "
+        "After adding it, list its tools: there should be workspace_read_thread, "
+        "workspace_post_reply and workspace_ack."
+    )
+
+
 def routine_name(workspace_name: str, agent_name: str) -> str:
     return f"{PLUGIN_NAME} — {workspace_name} (@{agent_name})"
 

@@ -141,12 +141,15 @@ def _setup(db: Session, workspace, cfg, member) -> dict:
             "lastContactAt": seen.isoformat() if seen else None,
         })
     others = [b["agentName"] for b in bots if b["agentName"] != cfg.agent_name and b["lastContactAt"]]
+    mcp_url = f"{config.PUBLIC_API_BASE.rstrip('/')}{grok.MCP_PATH}"
+    key = grok.connection_key(link.workspace_id, link.owner)
     return {
         "agentName": cfg.agent_name,
         "pluginName": grok.PLUGIN_NAME,
-        "mcpUrl": f"{config.PUBLIC_API_BASE.rstrip('/')}{grok.MCP_PATH}",
+        "mcpUrl": mcp_url,
         "headerName": grok.KEY_HEADER,
-        "connectionKey": grok.connection_key(link.workspace_id, link.owner),
+        "connectionKey": key,
+        "pluginPrompt": grok.plugin_prompt(mcp_url, key),
         "pluginUsedBy": others[0] if others else None,
         # All of this person's Grok Bots here, so the setup can list them.
         "bots": bots,

@@ -73,6 +73,8 @@ def test_joins_without_a_key_and_hands_out_its_plugin_setup(client, workspace):
     assert setup["headerName"] == "x-workspace-key"
     assert setup["connectionKey"].startswith("gbk_")
     assert "@grok" in setup["routinePrompt"]
+    # Added by asking a Bot in chat: the message carries the URL and the key.
+    assert setup["mcpUrl"] in setup["pluginPrompt"] and setup["connectionKey"] in setup["pluginPrompt"]
     assert setup["webhookSet"] is False
 
 

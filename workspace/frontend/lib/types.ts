@@ -813,6 +813,8 @@ export interface GrokBotSetup {
   mcpUrl: string;
   headerName: string;
   connectionKey: string;
+  /** The chat message that adds the plugin (Grok Bot has no form for it). */
+  pluginPrompt: string;
   /** Another of this person's Grok Bots that has already answered through the plugin. */
   pluginUsedBy: string | null;
   /** All of this person's Grok Bots in the workspace. */

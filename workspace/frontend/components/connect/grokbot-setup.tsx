@@ -102,6 +102,7 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
   const [webhookKey, setWebhookKey] = useState('');
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
   const [showPlugin, setShowPlugin] = useState(false);
+  const [showValues, setShowValues] = useState(false);
 
   const start = async (agentName = name.trim()) => {
     if (!agentName) return;
@@ -245,24 +246,40 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
               ? t('connect.grokPluginAdded', { name: setup.pluginUsedBy })
               : t('connect.grokStepPluginHint')}
           >
-            {/* One plugin serves all of a person's Grok Bots. */}
+            {/* One plugin serves all of a person's Grok Bots. Grok Bot has no
+                form for a custom server: a Bot adds it when asked in chat. */}
             {setup.pluginUsedBy && !showPlugin ? (
               <Button size="sm" variant="outline" onClick={() => setShowPlugin(true)}>
                 {t('connect.grokShowPlugin')}
               </Button>
             ) : (
               <>
-                <CopyValue label={t('connect.grokPluginName')} value={setup.pluginName} />
-                <CopyValue label={t('connect.grokPluginUrl')} value={setup.mcpUrl} />
-                <CopyValue label={t('connect.grokHeaderName')} value={setup.headerName} />
-                <CopyValue label={t('connect.grokHeaderValue')} value={key} shown={maskedKey} />
+                <Textarea
+                  readOnly
+                  value={setup.pluginPrompt.replace(key, maskedKey)}
+                  className="text-xs font-mono min-h-[88px]"
+                />
+                <div className="flex flex-wrap gap-2">
+                  <CopyPrompt prompt={setup.pluginPrompt} />
+                  <Button size="sm" variant="ghost" onClick={() => setShowValues((v) => !v)}>
+                    {t('connect.grokShowValues')}
+                  </Button>
+                </div>
+                {showValues && (
+                  <>
+                    <CopyValue label={t('connect.grokPluginName')} value={setup.pluginName} />
+                    <CopyValue label={t('connect.grokPluginUrl')} value={setup.mcpUrl} />
+                    <CopyValue label={t('connect.grokHeaderName')} value={setup.headerName} />
+                    <CopyValue label={t('connect.grokHeaderValue')} value={key} shown={maskedKey} />
+                  </>
+                )}
               </>
             )}
           </Step>
 
           <Step n={2} title={t('connect.grokStepRoutine')} hint={t('connect.grokStepRoutineHint', { name: setup.agentName })}>
             <Textarea readOnly value={setup.routinePrompt} className="text-xs font-mono min-h-[120px]" />
-            <CopyRoutine prompt={setup.routinePrompt} />
+            <CopyPrompt prompt={setup.routinePrompt} />
           </Step>
 
           <Step n={3} title={t('connect.grokStepWebhook')} hint={t('connect.grokStepWebhookHint')}>
@@ -359,7 +376,7 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
   );
 }
 
-function CopyRoutine({ prompt }: { prompt: string }) {
+function CopyPrompt({ prompt }: { prompt: string }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   return (
