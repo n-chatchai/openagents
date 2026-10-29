@@ -195,9 +195,13 @@ async def _invoke_single(
 ) -> None:
     """Invoke a single cloud agent and post the response."""
     from app.services.yumi import YUMI_PROVIDER
+    from app.services.personal_assistant import may_invoke
     from app.services.hermes_agent import HERMES_PROVIDER, invoke_hermes_agent
     from app.services.changbot_agent import CHANGBOT_PROVIDER, invoke_changbot_agent
     from app.services.grokbot_agent import GROKBOT_PROVIDER, invoke_grokbot_agent
+    if cloud_config.provider == YUMI_PROVIDER and not may_invoke(db, workspace_id, event_data):
+        logger.info("Yumi: ignoring invocation outside a personal conversation")
+        return
     if cloud_config.provider == HERMES_PROVIDER:
         await invoke_hermes_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == CHANGBOT_PROVIDER:
@@ -327,6 +331,9 @@ async def _invoke_assistant_agent(
     final answer, which is posted as a normal chat message.
     """
     from app.services import yumi
+    from app.services.personal_assistant import may_invoke
+    if cloud_config.provider == yumi.YUMI_PROVIDER and not may_invoke(db, workspace_id, event_data):
+        return
 
     channel_target = event_data.get("target", "")
     agent_name = cloud_config.agent_name

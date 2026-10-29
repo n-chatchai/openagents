@@ -91,24 +91,15 @@ export function RoutineList() {
               {visibleRoutines.length}
             </Badge>
           )}
+          {/* Primary action sits beside the title, where the eye lands —
+              not in the right corner, where it went unnoticed. */}
+          <Button size="sm" className="ml-1 shrink-0 gap-1.5 font-semibold" onClick={openCreateDialog}>
+            <Plus className="size-4" />
+            {t('routines.createShort')}
+          </Button>
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                mode="icon"
-                size="sm"
-                aria-label={t('routines.createShort')}
-                onClick={openCreateDialog}
-                className="text-muted-foreground"
-              >
-                <Plus className="size-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t('routines.createShort')}</TooltipContent>
-          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -137,6 +128,10 @@ export function RoutineList() {
             <CalendarClock className="size-8 opacity-30" />
             <p className="text-sm">{t('routines.emptyTitle')}</p>
             <p className="text-xs opacity-60">{t('routines.emptyHint')}</p>
+            <Button className="mt-4" variant="outline" size="sm" onClick={openCreateDialog}>
+              <Plus className="size-4" />
+              {t('routines.createShort')}
+            </Button>
           </div>
         ) : (
           <div className="py-1">
@@ -169,7 +164,9 @@ export function RoutineList() {
                         : t('routines.nextRun', { time: timeUntil(routine.nextFiresAt) })}
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    {/* Edit stays visible: hidden behind hover, users never
+                        found it and deleted + recreated routines instead. */}
                     <button
                       onClick={(e) => { e.stopPropagation(); openEditDialog(routine); }}
                       className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
@@ -179,14 +176,14 @@ export function RoutineList() {
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); handleTogglePause(routine); }}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                      className="md:hidden md:group-hover:inline-flex md:group-focus-within:inline-flex p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                       title={t(isPaused ? 'routines.resume' : 'routines.pause')}
                     >
                       {isPaused ? <Play className="size-3" /> : <Pause className="size-3" />}
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); handleCancel(routine.id); }}
-                      className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-muted-foreground hover:text-red-500 transition-colors"
+                      className="md:hidden md:group-hover:inline-flex md:group-focus-within:inline-flex p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-muted-foreground hover:text-red-500 transition-colors"
                       title={t('routines.cancel')}
                     >
                       <Trash2 className="size-3" />

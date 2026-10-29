@@ -769,11 +769,15 @@ class Daemon {
       ? ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'LLM_API_KEY']
       : ['LLM_API_KEY', ...rules.filter((r) => r && r.from === 'LLM_API_KEY').map((r) => r.to), 'OPENAI_API_KEY'];
     const keyVar = keyVars.find((k) => k && String(env[k] || '').trim());
-    return {
-      baseUrl: this._configuredBaseUrl(a, typeEnv),
-      apiKey: keyVar ? String(env[keyVar]).trim() : '',
-      protocol,
-    };
+    const apiKey = keyVar ? String(env[keyVar]).trim() : '';
+    const baseUrl = this._configuredBaseUrl(a, typeEnv);
+    if (a.type === 'deepseek') {
+      // dsh's URL names its Messages API, or is blank for DeepSeek's own; the
+      // model list lives elsewhere, so list where that endpoint keeps it.
+      const { dshModelsEndpoint } = require('./adapters/deepseek-runtime');
+      return { ...dshModelsEndpoint(baseUrl), apiKey };
+    }
+    return { baseUrl, apiKey, protocol };
   }
 
   /**
@@ -2180,6 +2184,11 @@ async _runNodeCommand(n, cmd) {
         } else if (cmd === 'reload') {
           this._log('Command: reload');
           this._reload();
+        } else if (cmd === 'detect') {
+          // The launcher just saw a sign-in finish (or a key saved): re-detect
+          // and report, so the workspace doesn't keep "Needs login" until the
+          // next 2-minute refresh. A run already in flight is joined.
+          this._refreshRuntimes().then(() => this._nodeHeartbeat()).catch(() => {});
         } else if (cmd === 'heartbeat') {
           // A workspace page in the launcher just queued a command for this
           // device: heartbeat now so it is picked up, instead of on the next
@@ -2257,9 +2266,17 @@ async _runNodeCommand(n, cmd) {
       }
     }
 
+    // A type's reported readiness is judged with its agents' env too (agn
+    // runtimes), so adding an agent or saving a key on one changes what the
+    // workspace should show. Report it now rather than on the 2-minute tick.
+    const agentsChanged = newNames.size !== oldNames.size
+      || [...newNames].some((n) => (oldConfigs[n] || '') !== newConfigs[n]);
     this._cachedAgentNames = newNames;
     this._cachedAgentConfigs = newConfigs;
     this._writeStatus();
+    if (agentsChanged && this._runtimesInterval) {
+      this._refreshRuntimes().then(() => this._nodeHeartbeat()).catch(() => {});
+    }
   }
 
   /**

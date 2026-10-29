@@ -23,11 +23,11 @@ const { defaultAgentWorkdir } = require('../paths');
 const { configuredModel } = require('../agent-model');
 const { buildThreadHistory } = require('./thread-history');
 const { publishResponseArtifacts } = require('./response-artifacts');
+const { ResponseOutbox } = require('./response-outbox');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-  decisionLogTitle,
   glossaryTitle,
   WORKSPACE_GLOSSARY_TITLE,
   pickEntryByTitle,
@@ -245,12 +245,11 @@ class BaseAdapter {
     // workspace flag must reconnect/restart to pick up the change (matches
     // the Python adapter behavior in workspace_prompt.py).
     this._browserEnabledCache = null;
-    // ── Knowledge pinning (decision log + glossary) ──
+    // ── Knowledge pinning (glossary) ──
     // Entry-id caches make the steady state a single GET per pinned entry;
     // reads happen on EVERY message, so they get a hard short deadline
     // instead of the client's default 15s — a workspace hiccup must cost the
     // turn a couple of seconds, not half a minute.
-    this._decisionEntryIds = {}; // channel → knowledge entry id of its decision log
     this._glossaryEntryIds = {}; // channel → knowledge entry id of its glossary
     this._DECISION_FETCH_TIMEOUT_MS = 2000;
     this._warnedKnowledgeDisabled = false;
@@ -260,7 +259,7 @@ class BaseAdapter {
     // every _handleMessage call. Adapters with their own pinning flow
     // (Claude) fetch directly instead and leave it false.
     this._usesPinnedContext = false;
-    this._pinnedContext = {}; // channel → { decisions, glossary }
+    this._pinnedContext = {}; // channel → { glossary }
     // ── v1.1 M3/M4 ──
     // Debounce handle for the busy↔idle presence heartbeat.
     this._presenceHeartbeatTimer = null;
@@ -447,6 +446,8 @@ class BaseAdapter {
     // /status responsive immediately after join.
     await this._skipExistingControlEvents();
     const heartbeatInterval = setInterval(() => this._heartbeat(), 30000);
+    const responseInterval = setInterval(() => this._flushResponses(), 10000);
+    void this._flushResponses();
     const controlPoller = this._controlPollerLoop();
 
     try {
@@ -462,6 +463,7 @@ class BaseAdapter {
       this._running = false;
       this._wakeControlPoller();
       clearInterval(heartbeatInterval);
+      clearInterval(responseInterval);
       if (this._presenceHeartbeatTimer) { clearTimeout(this._presenceHeartbeatTimer); this._presenceHeartbeatTimer = null; }
       try { await controlPoller; } catch {}
       try {
@@ -1566,7 +1568,7 @@ class BaseAdapter {
   }
 
   // ------------------------------------------------------------------
-  // Knowledge pinning (decision log + glossary)
+  // Knowledge pinning (glossary)
   // ------------------------------------------------------------------
 
   /**
@@ -1593,8 +1595,7 @@ class BaseAdapter {
       if (!this._warnedKnowledgeDisabled) {
         this._warnedKnowledgeDisabled = true;
         this._log(
-          'Knowledge module is disabled — decision-log pinning is INACTIVE. ' +
-          'Confirmed decisions will not survive context compaction or session resets.'
+          'Knowledge module is disabled — glossary pinning is INACTIVE.'
         );
       }
       if (!this._pinnedStatusWarned.has(channel)) {
@@ -1602,9 +1603,9 @@ class BaseAdapter {
         try {
           await this.sendStatus(
             channel,
-            'Decision pinning inactive: the knowledge module is disabled for ' +
-            'this agent, so confirmed decisions and the shared glossary ' +
-            'cannot be pinned across session resets.'
+            'Glossary pinning inactive: the knowledge module is disabled for ' +
+            'this agent, so the shared glossary cannot be pinned across ' +
+            'session resets.'
           );
         } catch {}
       }
@@ -1678,11 +1679,6 @@ class BaseAdapter {
     }
   }
 
-  /** Read the channel's decision log. See _fetchPinnedEntry for the contract. */
-  async _fetchDecisionLog(channel) {
-    return this._fetchPinnedEntry(channel, [decisionLogTitle(channel)], this._decisionEntryIds, 'Decision log');
-  }
-
   /**
    * Read the channel's glossary — the channel-specific entry when it exists,
    * else the workspace-wide fallback. See _fetchPinnedEntry for the contract.
@@ -1701,11 +1697,10 @@ class BaseAdapter {
     return res;
   }
 
-  /** Fetch everything pinnable for a channel: { decisions, glossary }. */
+  /** Fetch everything pinnable for a channel: { glossary }. */
   async _fetchPinnedContext(channel) {
-    const decisions = await this._fetchDecisionLog(channel);
     const glossary = await this._fetchGlossary(channel);
-    return { decisions, glossary };
+    return { glossary };
   }
 
   /**
@@ -1721,9 +1716,6 @@ class BaseAdapter {
       const fresh = await this._fetchPinnedContext(channel);
       const prev = this._pinnedContext[channel];
       if (prev) {
-        if (fresh.decisions && fresh.decisions.error && prev.decisions && !prev.decisions.error) {
-          fresh.decisions = prev.decisions;
-        }
         if (fresh.glossary && fresh.glossary.error && prev.glossary && !prev.glossary.error) {
           fresh.glossary = prev.glossary;
         }
@@ -1735,7 +1727,7 @@ class BaseAdapter {
   }
 
   /**
-   * Prompt-builder options ({ decisionLog, glossary }) derived from the last
+   * Prompt-builder options ({ glossary }) derived from the last
    * prefetch for the channel. Sync, so prompt builders can call it inline;
    * returns {} when nothing was prefetched or nothing is usable.
    */
@@ -1743,15 +1735,6 @@ class BaseAdapter {
     const ctx = this._pinnedContext[channel];
     if (!ctx) return {};
     const opts = {};
-    const d = ctx.decisions;
-    if (d && d.available) {
-      opts.decisionLog = {
-        enabled: true,
-        state: d.state,
-        entryId: d.entryId,
-        content: d.error ? '' : (d.content || ''),
-      };
-    }
     const g = ctx.glossary;
     if (g && g.available && g.state === 'found' && g.content) {
       opts.glossary = { enabled: true, entryId: g.entryId, content: g.content, scope: g.scope || 'channel' };
@@ -1832,33 +1815,54 @@ class BaseAdapter {
   async sendResponse(channel, content, { statusKind = 'completed' } = {}) {
     if (this._isMuted(channel)) return;
     try {
-      let attachments = [];
-      if (!(this.disabledModules || new Set()).has('files') && channel && !channel.startsWith('dm:') && this.client.uploadFile) {
-        const published = await publishResponseArtifacts({
-          content,
-          workingDir: this.workingDir,
-          upload: (filename, bytes, contentType) => this.client.uploadFile(this.workspaceId, this.token, filename, bytes, {
-            contentType, source: `openagents:${this.agentName}`, channelName: channel, visibility: 'inherit',
-          }),
-          onError: () => this._log('Could not attach a linked document; leaving its original link in the reply.'),
-        });
-        content = published.content;
-        attachments = published.attachments;
-      }
-      await this.client.sendMessage(this.workspaceId, channel, this.token, content, {
-        attachments,
-        senderType: 'agent',
-        senderName: this.agentName,
+      await this._replyOutbox().enqueue({
+        channel, content,
         metadata: { status_kind: statusKind, ...(this._channelTriggerId?.[channel] ? { in_reply_to: this._channelTriggerId[channel] } : {}) },
-        sessionId: this._sessionId,
       });
     } catch (e) {
-      if (e instanceof SessionRevokedError) {
-        this._onSessionRevoked();
-        return;
-      }
+      this._log('Could not save or deliver the final reply; check the local response outbox and disk permissions.', 'error');
       throw e;
     }
+  }
+
+  _replyOutbox() {
+    if (!this._responseOutbox) this._responseOutbox = new ResponseOutbox({
+      endpoint: this.endpoint, workspaceId: this.workspaceId, agentName: this.agentName,
+      directory: this._responseOutboxDirectory,
+      log: (message, level) => this._log(message, level),
+      onRevoked: () => this._onSessionRevoked(),
+      prepare: async (entry) => {
+        // Old/custom servers may not support idempotency. Never blindly retry
+        // an ambiguous send against one of those servers.
+        const safeRetry = this.client.supportsMessageDelivery
+          ? await this.client.supportsMessageDelivery() : false;
+        let published = { content: entry.content, attachments: [] };
+        if (!(this.disabledModules || new Set()).has('files') && entry.channel && !entry.channel.startsWith('dm:') && this.client.uploadFile) {
+          published = await publishResponseArtifacts({
+            content: entry.content, workingDir: this.workingDir,
+            upload: (filename, bytes, contentType) => this.client.uploadFile(this.workspaceId, this.token, filename, bytes, {
+              contentType, source: `openagents:${this.agentName}`, channelName: entry.channel, visibility: 'inherit',
+            }),
+            onError: () => this._log('Could not attach a linked document; leaving its original link in the reply.'),
+          });
+        }
+        return { ...published, safeRetry };
+      },
+      send: async (entry) => {
+        if (this._isMuted(entry.channel)) throw new Error('Channel is muted');
+        return this.client.sendMessage(this.workspaceId, entry.channel, this.token, entry.content, {
+          attachments: entry.attachments, senderType: 'agent', senderName: this.agentName,
+          metadata: entry.metadata, sessionId: this._sessionId,
+          idempotencyKey: entry.safeRetry ? entry.id : undefined,
+        });
+      },
+    });
+    return this._responseOutbox;
+  }
+
+  async _flushResponses() {
+    try { await this._replyOutbox().flush(); }
+    catch { this._log('Could not drain the response outbox; saved replies retained.', 'error'); }
   }
 
   async cleanupTodos(channel) {

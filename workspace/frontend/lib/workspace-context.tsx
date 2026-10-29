@@ -778,13 +778,13 @@ export function WorkspaceProvider({
   useEffect(() => {
     workspaceApi.configure(workspaceId, token, bearerToken || undefined);
     setApiReady(true);
-    // Tie all subsequent events to this workspace so they line up with the
-    // website + launcher funnel stages for the same workspace ID.
-    if (workspaceId) {
-      group('workspace', workspaceId);
-      capture('workspace_opened', { workspace_id: workspaceId });
-    }
   }, [workspaceId, token, bearerToken]);
+
+  // Group changes follow workspace changes, not credential refreshes. The
+  // successful workspace load below emits the single workspace_opened event.
+  useEffect(() => {
+    if (workspaceId) group('workspace', workspaceId);
+  }, [workspaceId]);
 
   // In the desktop app this page is one tab among several; give the tab the
   // workspace's real name and both of the names it can be routed by.
@@ -1871,12 +1871,9 @@ export function WorkspaceProvider({
     // leader, so threads created from the picker start with none — a leader can
     // be assigned later from the thread's agent menu.
     const masterAgent = opts?.master;
-    // The default roster excludes the built-in assistant: Yumi joins a thread
-    // only when the user picks it explicitly. (If Yumi is the only agent, a
-    // direct chat with it is the only thread possible, so keep it then.)
-    const nonBuiltin = agents.filter((a) => !a.builtin);
+    // Personal assistants stay in DMs, never in a thread's default roster.
     const participants = opts?.participants
-      || (nonBuiltin.length > 0 ? nonBuiltin : agents).map((a) => a.agentName);
+      || agents.filter((a) => !a.builtin).map((a) => a.agentName);
 
     const session = await workspaceApi.createChannel({
       title: opts?.title,
