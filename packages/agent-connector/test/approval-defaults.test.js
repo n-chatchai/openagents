@@ -179,7 +179,7 @@ describe('Claude Code — with the local opt-in, and plan mode', () => {
     assert.equal(valueAfter(bob, '--permission-mode'), 'dontAsk');
   });
 
-  it('plan mode is unchanged and never bypasses, opted in or not', () => {
+  it('plan mode never bypasses and keeps its shell in the sandbox, opted in or not', () => {
     for (const optedIn of [false, true]) {
       if (optedIn) allow('alice');
       const a = claude('alice', { toolMode: 'skills' });
@@ -187,14 +187,31 @@ describe('Claude Code — with the local opt-in, and plan mode', () => {
       const cmd = claudeCmd(a);
       noBypass(cmd);
       assert.equal(valueAfter(cmd, '--permission-mode'), 'plan');
-      assert.deepEqual(listAfter(cmd, '--allowedTools'), ['Read', 'Glob', 'Grep', 'Bash']);
+      // A workspace can switch any agent to plan: plan must not hand out a
+      // bare Bash, nor edits.
+      const allowed = listAfter(cmd, '--allowedTools');
+      assert.ok(!allowed.includes('Bash'), allowed.join(','));
+      assert.ok(!allowed.some((t) => t.startsWith('Edit') || t === 'Write'), allowed.join(','));
+      // Reads are not pre-approved anywhere: the working directory needs no
+      // rule, everything else is denied, credential folders explicitly.
+      assert.ok(!allowed.some((t) => ['Read', 'Glob', 'Grep'].includes(t)), allowed.join(','));
+      const deny = JSON.parse(valueAfter(cmd, '--settings')).permissions.deny;
+      assert.ok(deny.some((r) => r.startsWith('Read(') && r.includes('.ssh')), deny.join(','));
+      if (process.platform !== 'win32') {
+        const settings = JSON.parse(valueAfter(cmd, '--settings'));
+        assert.equal(settings.sandbox.enabled, true);
+        assert.equal(settings.sandbox.allowUnsandboxedCommands, false);
+      }
 
       const m = claude('alice', { toolMode: 'mcp' });
       m._mode = 'plan';
       const mcmd = claudeCmd(m);
       noBypass(mcmd);
       assert.equal(valueAfter(mcmd, '--permission-mode'), 'plan');
-      assert.deepEqual(listAfter(mcmd, '--allowedTools').slice(-3), ['Read', 'Glob', 'Grep']);
+      const mAllowed = listAfter(mcmd, '--allowedTools');
+      assert.ok(!mAllowed.some((t) => ['Read', 'Glob', 'Grep', 'Bash'].includes(t) || t.startsWith('Edit')), mAllowed.join(','));
+      assert.ok(mAllowed.some((t) => t.includes('workspace_')), 'read-only workspace tools stay');
+      assert.ok(JSON.parse(valueAfter(mcmd, '--settings')).permissions.deny.length > 0);
     }
   });
 

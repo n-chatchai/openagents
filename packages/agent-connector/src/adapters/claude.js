@@ -166,6 +166,20 @@ function claudeSafeExecuteArgs({
   ];
 }
 
+/**
+ * Plan mode: reads and plans, under the same rules as execute mode minus
+ * edits. A workspace can switch any agent to plan, so plan must not be a way
+ * around them: file reads stay in the working directory and off the
+ * credential folders (no bare Read/Glob/Grep allow), and skills mode's Bash —
+ * the workspace curl calls — runs only inside the OS sandbox.
+ */
+function claudeSafePlanArgs(opts) {
+  const args = claudeSafeExecuteArgs(opts);
+  const i = args.indexOf('--permission-mode');
+  args[i + 1] = 'plan';
+  return args.filter((a) => a !== 'Edit(/**)');
+}
+
 class ClaudeAdapter extends BaseAdapter {
   /**
    * The env the spawned `claude` CLI runs with. Pure — takes the agent's env
@@ -667,6 +681,17 @@ class ClaudeAdapter extends BaseAdapter {
     return posture.mode === 'execute' && !posture.unrestricted;
   }
 
+  _safePlanArgs(tools, skillName) {
+    return claudeSafePlanArgs({
+      tools,
+      skillName,
+      endpoint: this.endpoint,
+      configDir: this.configDir,
+      workingDir: this.workingDir || defaultAgentWorkdir(this.agentName),
+      platform: this._platform(),
+    });
+  }
+
   _safeExecuteArgs(tools, skillName) {
     return claudeSafeExecuteArgs({
       tools,
@@ -685,8 +710,7 @@ class ClaudeAdapter extends BaseAdapter {
   _buildSkillsCmd(cmd, channelName) {
     const posture = this._posture || this._approvalGate();
     if (posture.mode === 'plan') {
-      cmd.push('--permission-mode', 'plan');
-      cmd.push('--allowedTools', 'Read', 'Glob', 'Grep', 'Bash');
+      cmd.push(...this._safePlanArgs([], workspaceSkillName(this.agentName)));
     } else if (posture.unrestricted) {
       // Allowed on this computer for this agent only (policy.json).
       cmd.push('--dangerously-skip-permissions');
@@ -780,8 +804,9 @@ class ClaudeAdapter extends BaseAdapter {
 
     const posture = this._posture || this._approvalGate();
     if (posture.mode === 'plan') {
-      cmd.push('--permission-mode', 'plan');
-      cmd.push('--allowedTools', ...mcpTools, 'Read', 'Glob', 'Grep');
+      // Read-only workspace tools; file reads stay in the working directory
+      // and off the credential folders, as in execute mode.
+      cmd.push(...this._safePlanArgs(mcpTools));
     } else if (posture.unrestricted) {
       // Allowed on this computer for this agent only (policy.json).
       cmd.push('--dangerously-skip-permissions');
@@ -1714,3 +1739,4 @@ class ClaudeAdapter extends BaseAdapter {
 
 module.exports = ClaudeAdapter;
 module.exports.claudeSafeExecuteArgs = claudeSafeExecuteArgs;
+module.exports.claudeSafePlanArgs = claudeSafePlanArgs;
