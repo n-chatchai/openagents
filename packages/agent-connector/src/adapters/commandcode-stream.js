@@ -139,6 +139,9 @@ function redactArgs(args) {
  * @param {string} [o.effort]           `--effort` low | medium | high
  * @param {string} [o.resumeSessionId]  `--resume <id>` to continue a channel
  * @param {boolean} [o.planMode]        read-only exploration instead of `--yolo`
+ * @param {boolean} [o.unrestricted]    this computer allowed the agent to run
+ *                                      with approvals off (policy.json); only
+ *                                      then does an act turn get `--yolo`
  * @param {number} [o.maxTurns]         `--max-turns` (CLI default is 100)
  * @returns {string[]}
  */
@@ -165,9 +168,11 @@ function buildCommandCodeArgs(o = {}) {
   if (o.planMode) {
     // Read-only exploration. Deliberately NOT combined with --yolo.
     args.push('--plan');
-  } else {
+  } else if (o.unrestricted === true) {
     // Headless blocks writes and shell by default, which would leave the agent
-    // able to talk but not to act.
+    // able to talk but not to act. `--yolo` lifts that with no sandbox, so it
+    // is only for an agent this computer allowed to run unrestricted; the
+    // adapter refuses the act turn otherwise.
     args.push('--yolo');
   }
 

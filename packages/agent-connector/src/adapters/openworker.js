@@ -409,7 +409,12 @@ class OpenWorkerAdapter extends BaseAdapter {
       port,
       cwd: workingDir,
       model: this._model(),
-      mode: resolveServerMode('execute', this.agentEnv.OPENWORKER_MODE),
+      // The server is shared by every channel and each turn sets its own mode
+      // (see _runTurn). Until this computer allows the agent to run
+      // unrestricted, it starts read-only.
+      mode: this._isUnrestricted()
+        ? resolveServerMode('execute', this.agentEnv.OPENWORKER_MODE)
+        : 'plan',
     });
 
     this._log(`Starting ${SERVER_BIN} on 127.0.0.1:${port} (cwd=${workingDir}, state=${stateDir})`);
@@ -633,7 +638,7 @@ class OpenWorkerAdapter extends BaseAdapter {
    *
    * @returns {Promise<object>} { texts, error, interrupted, userStopped, sent }
    */
-  _runTurn(channel, server, sessionId, workingDir, text, { planMode, model }) {
+  _runTurn(channel, server, sessionId, workingDir, text, { planMode, model, unrestricted = false }) {
     // Stopped while this turn was being prepared: start nothing (no tokens).
     if (this._stoppedBeforeStart(channel)) {
       return Promise.resolve({ texts: [], error: null, interrupted: false, userStopped: true, sent: false });
@@ -726,7 +731,11 @@ class OpenWorkerAdapter extends BaseAdapter {
               return; // the resulting turn_done sends ours
             }
             if (model && ev.model !== model) send({ type: 'set_model', model });
-            const wantMode = resolveServerMode(planMode ? 'plan' : 'execute', this.agentEnv.OPENWORKER_MODE);
+            // Execute turns only reach here for an agent allowed unrestricted
+            // (see _approvalRefusal); anything else runs read-only.
+            const wantMode = planMode || !unrestricted
+              ? 'plan'
+              : resolveServerMode('execute', this.agentEnv.OPENWORKER_MODE);
             if (ev.mode !== wantMode) send({ type: 'set_mode', mode: wantMode });
             sendTurn();
             return;
@@ -744,10 +753,12 @@ class OpenWorkerAdapter extends BaseAdapter {
             return;
           }
           case 'prompt': {
+            // OPENWORKER_ALLOW_TOOL_INSTALL is a setting a workspace can write;
+            // it counts only for an agent allowed unrestricted here.
             const reply = promptReply(ev, {
-              planMode,
+              planMode: planMode || !unrestricted,
               workingDir,
-              allowToolInstall: String(this.agentEnv.OPENWORKER_ALLOW_TOOL_INSTALL || '') === '1',
+              allowToolInstall: unrestricted && String(this.agentEnv.OPENWORKER_ALLOW_TOOL_INSTALL || '') === '1',
             });
             const summary = promptSummary(ev);
             // Say what was decided on the user's behalf. A question in particular
@@ -830,6 +841,20 @@ class OpenWorkerAdapter extends BaseAdapter {
   // Message handling
   // ------------------------------------------------------------------
 
+  /**
+   * OpenWorker suspends a turn on every approval and, unattended, this adapter
+   * has to answer them itself — in every execute mode (bypass-approvals,
+   * auto-approve, even interactive) that means approving, with no sandbox. So
+   * execute turns need this computer's opt-in. Plan turns run OpenWorker's
+   * read-only `plan` mode, approvals declined.
+   */
+  _approvalRefusal(mode) {
+    if (mode === 'plan') return null;
+    return this._needsUnrestricted(
+      'OpenWorker can only run unattended if its approvals are answered yes on its behalf, and it has no sandbox.',
+    );
+  }
+
   async _handleMessage(msg) {
     let content = (msg.content || '').trim();
     const attachments = msg.attachments || [];
@@ -856,6 +881,13 @@ class OpenWorkerAdapter extends BaseAdapter {
       return;
     }
 
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(channel, gate.message);
+      return;
+    }
+
     // Auto-title + resume-from on first encounter (parity with other adapters).
     if (!this._titledSessions.has(channel)) {
       this._titledSessions.add(channel);
@@ -879,7 +911,7 @@ class OpenWorkerAdapter extends BaseAdapter {
     }
 
     const { sessionId, seeded } = this._sessionFor(channel, workingDir);
-    const planMode = this._mode === 'plan';
+    const planMode = gate.mode === 'plan';
 
     let text = content;
     if (!seeded) {
@@ -893,6 +925,7 @@ class OpenWorkerAdapter extends BaseAdapter {
     const run = await this._runTurn(channel, server, sessionId, workingDir, text, {
       planMode,
       model: this._model(),
+      unrestricted: gate.unrestricted,
     });
 
     if (run.userStopped) return;

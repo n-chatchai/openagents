@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 
 const CopilotAdapter = require('../src/adapters/copilot');
+const { unrestrictedConfigDir, defaultConfigDir } = require('./approval-helpers');
 
 const MOCK = path.join(__dirname, 'fixtures', 'mock-copilot.js');
 try { fs.chmodSync(MOCK, 0o755); } catch {}
@@ -19,12 +20,14 @@ afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 /**
  * Build a CopilotAdapter wired to the mock CLI with all network sends captured.
  */
-function makeAdapter({ scenario = 'success', mode = 'execute', workingDir, model, argsFile, env = {} } = {}) {
+function makeAdapter({ scenario = 'success', mode = 'execute', workingDir, model, argsFile, env = {}, configDir } = {}) {
   const a = new CopilotAdapter({
     workspaceId: 'ws1',
     channelName: 'general',
     token: 'tok',
     agentName: 'cop',
+    // Nobody unrestricted unless a test says so.
+    configDir: configDir || defaultConfigDir(),
     agentType: 'copilot',
     workingDir: workingDir === undefined ? tmp : workingDir,
     agentEnv: {
@@ -142,12 +145,23 @@ describe('CopilotAdapter — prompt & permission safety', () => {
     assert.ok(args.includes('--no-remote'), 'remote control disabled for privacy');
     assert.ok(args.includes('--output-format') && args[args.indexOf('--output-format') + 1] === 'json');
     assert.ok(args.includes('--add-dir') && args[args.indexOf('--add-dir') + 1] === tmp);
-    // Verified tool IDs, =form (real CLI optional-value flag).
-    assert.ok(args.includes('--allow-tool=shell'), 'grants shell');
+    // Verified tool IDs, =form (real CLI optional-value flag). Shell has no
+    // sandbox in Copilot, so it is not granted without this computer's opt-in.
+    assert.ok(!args.includes('--allow-tool=shell'), 'no shell without the local opt-in');
     assert.ok(args.includes('--allow-tool=write'), 'grants write');
     for (const banned of ['--allow-all', '--yolo', '--allow-all-paths', '--allow-all-urls', '--allow-url', '--share', '--share-gist', '--remote']) {
       assert.ok(!args.includes(banned), `must not use ${banned} by default`);
     }
+  });
+
+  it('act mode grants shell only to an agent allowed unrestricted on this computer', async () => {
+    const argsFile = path.join(tmp, 'args.json');
+    const a = makeAdapter({ scenario: 'success', mode: 'execute', argsFile, configDir: unrestrictedConfigDir('cop') });
+    await a._handleMessage(msg('do it'));
+    const args = JSON.parse(fs.readFileSync(argsFile, 'utf-8'));
+    assert.ok(args.includes('--allow-tool=shell'), 'grants shell when opted in');
+    assert.ok(args.includes('--allow-tool=write'), 'grants write');
+    assert.ok(!args.includes('--allow-all') && !args.includes('--yolo'));
   });
 
   it('plan mode uses --plan and grants no write tools', async () => {

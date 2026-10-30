@@ -212,7 +212,28 @@ class GeminiAdapter extends BaseAdapter {
     }
   }
 
-  _buildGeminiCmd(prompt, channelName, { skipResume = false } = {}) {
+  /**
+   * Approval flags for one headless run (Gemini CLI `--approval-mode`
+   * default|auto_edit|yolo; `-y` is yolo). In non-interactive runs Gemini CLI
+   * leaves out every tool that would need a confirmation: shell, edit and
+   * write in `default`, shell alone in `auto_edit` — so neither ever waits on
+   * a prompt. Not verified against an installed gemini here (none on this
+   * machine); this is the legacy adapter, superseded by antigravity.
+   *
+   *  - plan: default — read-only tools only.
+   *  - execute: auto_edit — edits inside Gemini's workspace directories, no
+   *    shell.
+   *  - execute, allowed unrestricted on this computer: `-y`.
+   */
+  static approvalArgs(posture) {
+    if (!posture || posture.mode === 'plan') return [];
+    if (posture.unrestricted === true) return ['-y'];
+    return ['--approval-mode', 'auto_edit'];
+  }
+
+  _buildGeminiCmd(prompt, channelName, { skipResume = false, posture = null } = {}) {
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = posture || this._approvalGate();
     this._ensureGeminiAuth();
     const geminiBin = this._findGeminiBinary();
     if (!geminiBin) {
@@ -232,7 +253,7 @@ class GeminiAdapter extends BaseAdapter {
     // For gemini, we combine system prompt with the user message since it doesn't have an append-system-prompt flag
     const fullPrompt = `${systemPrompt}\n\n---\n\nUser message:\n${prompt}`;
 
-    const cmd = [geminiBin, '-p', fullPrompt, '-y', '-o', 'stream-json'];
+    const cmd = [geminiBin, '-p', fullPrompt, ...GeminiAdapter.approvalArgs(gate), '-o', 'stream-json'];
 
     // Honor a user-configured model (e.g. when pointing at a relay/proxy whose
     // channels don't match the CLI default). Set via GEMINI_MODEL in env_config.

@@ -683,6 +683,18 @@ class CommandCodeAdapter extends BaseAdapter {
     try { return fs.statSync(p).isDirectory(); } catch { return false; }
   }
 
+  /**
+   * Headless Command Code blocks writes and shell unless `--yolo`, which lifts
+   * them with no sandbox — so an act turn needs this computer's opt-in. Plan
+   * turns run its read-only `--plan`.
+   */
+  _approvalRefusal(mode) {
+    if (mode === 'plan') return null;
+    return this._needsUnrestricted(
+      'Command Code can only act unattended with its approvals turned off (--yolo), and it has no sandbox.',
+    );
+  }
+
   // ------------------------------------------------------------------
   // Message handling
   // ------------------------------------------------------------------
@@ -725,6 +737,13 @@ class CommandCodeAdapter extends BaseAdapter {
     }
     if (ver.supported === null) {
       this._log('Could not determine the Command Code version — proceeding leniently');
+    }
+
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(channel, gate.message);
+      return;
     }
 
     // Auto-title + resume-from on first encounter (parity with other adapters).
@@ -772,7 +791,8 @@ class CommandCodeAdapter extends BaseAdapter {
         effort,
         maxTurns: Number.isFinite(maxTurns) ? maxTurns : undefined,
         resumeSessionId: resumeId || undefined,
-        planMode: this._mode === 'plan',
+        planMode: gate.mode === 'plan',
+        unrestricted: gate.unrestricted,
       });
       if (skillDir) args.push('--skill', skillDir);
 

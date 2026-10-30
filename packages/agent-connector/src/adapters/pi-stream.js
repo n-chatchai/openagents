@@ -828,6 +828,7 @@ function isValidSessionId(id) {
  * @param {string} [o.sessionName]
  * @param {string[]} [o.extensions]     explicit OpenAgents-managed extensions
  * @param {boolean} [o.trustProject=false]  true → --approve, false → --no-approve
+ * @param {string[]} [o.tools]        `--tools` allowlist (null = Pi's default set)
  * @returns {string[]}
  */
 /**
@@ -896,6 +897,7 @@ function buildPiArgs({
   sessionName,
   extensions = [],
   trustProject = false,
+  tools = null,
 } = {}) {
   const args = ['--mode', 'rpc'];
   if (sessionDir) args.push('--session-dir', sessionDir);
@@ -905,6 +907,7 @@ function buildPiArgs({
   // trusted project may load .pi/settings.json and project-local extensions —
   // executable surface we must not opt into implicitly. See docs/agents/pi.md.
   args.push(trustProject ? '--approve' : '--no-approve');
+  if (Array.isArray(tools) && tools.length) args.push('--tools', tools.join(','));
   if (provider) args.push('--provider', provider);
   if (model) args.push('--model', model);
   if (thinking) args.push('--thinking', thinking);
@@ -914,6 +917,13 @@ function buildPiArgs({
   if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
   return args;
 }
+
+/**
+ * Pi's read-only built-in tools — `pi --help` (0.84.1): "Read-only mode (no
+ * file modifications possible): --tools read,grep,find,ls". What a plan turn
+ * gets: no bash, no edit, no write.
+ */
+const PI_READ_ONLY_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls']);
 
 /** Valid `--thinking` levels (Pi v0.83.0). Anything else is dropped. */
 const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
@@ -971,6 +981,7 @@ module.exports = {
   parseWindowsCmdShim,
   isValidSessionId,
   buildPiArgs,
+  PI_READ_ONLY_TOOLS,
   inferLauncherProvider,
   piApiFormat,
   normalizeThinking,

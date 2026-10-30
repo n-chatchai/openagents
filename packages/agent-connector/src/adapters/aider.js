@@ -9,6 +9,10 @@
  *         --chat-history-file <per-channel> --input-history-file <per-channel> \
  *         [--restore-chat-history] [--model <model>]
  *
+ * `--yes-always` edits whatever the model names, with no sandbox, so execute
+ * turns run only for an agent allowed unrestricted on this computer
+ * (`agn policy unrestricted add <name>`); plan turns add `--chat-mode ask`.
+ *
  * Differs from the Amp adapter in every Aider-specific dimension:
  *  - Prompt is written to a private per-task message file (--message-file), so
  *    a long prompt never hits ARG_MAX / shell quoting; never string-concatenated.
@@ -372,7 +376,25 @@ class AiderAdapter extends BaseAdapter {
     );
   }
 
-  _buildAiderCmd(channel, msgFile, restore) {
+  /**
+   * Aider runs headless only with `--yes-always`, which answers yes to every
+   * confirmation — creating and editing whatever file the model names, inside
+   * the repo or not — and it has no sandbox. So an execute turn needs this
+   * computer's opt-in. A plan turn runs Aider's ask mode (`--chat-mode ask`,
+   * an alias of `--edit-format`): it answers and edits nothing, and shell
+   * commands, which Aider runs only on an explicit yes, stay declined.
+   */
+  _approvalRefusal(mode) {
+    if (mode === 'plan') return null;
+    return this._needsUnrestricted(
+      'Aider can only run unattended with its confirmations turned off (--yes-always), and it has no sandbox.',
+    );
+  }
+
+  _buildAiderCmd(channel, msgFile, restore, posture = null) {
+    const gate = posture || this._approvalGate();
+    // Edits only for an execute turn this computer allowed (policy.json).
+    const edits = gate.mode === 'execute' && gate.unrestricted === true;
     const autoCommit = isTruthy(this.agentEnv.AIDER_AUTO_COMMITS);
     const cmd = [
       this._aiderBin,
@@ -387,6 +409,7 @@ class AiderAdapter extends BaseAdapter {
       '--input-history-file', this._inputHistoryFile(channel),
     ];
     cmd.push(autoCommit ? '--auto-commits' : '--no-auto-commits');
+    if (!edits) cmd.push('--chat-mode', 'ask');
     if (restore) cmd.push('--restore-chat-history');
     // Use the resolved (possibly openai/-normalized) model, not the raw value.
     const model = this._resolveConfig().model;
@@ -460,6 +483,13 @@ class AiderAdapter extends BaseAdapter {
       return;
     }
 
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(msgChannel, gate.message);
+      return;
+    }
+
     await this._autoTitleChannel(msgChannel, content);
     this._stoppingChannels.delete(msgChannel);
     this._ensureLocalGitExclude(this.workingDir);
@@ -467,7 +497,7 @@ class AiderAdapter extends BaseAdapter {
 
     let result;
     try {
-      result = await this._runAider(content, msgChannel);
+      result = await this._runAider(content, msgChannel, gate);
     } catch (e) {
       this._log(`Error handling message: ${e.message}`);
       await this.sendError(msgChannel, `Error processing message: ${this._redact(e.message)}`);
@@ -495,7 +525,7 @@ class AiderAdapter extends BaseAdapter {
   // Subprocess execution
   // ------------------------------------------------------------------
 
-  async _runAider(content, msgChannel) {
+  async _runAider(content, msgChannel, posture = null) {
     // Defensive re-check (the primary gate is in _handleMessage): never spawn
     // Aider — nor create a temp file — on an invalid configuration.
     const resolution = this._resolveConfig();
@@ -514,7 +544,7 @@ class AiderAdapter extends BaseAdapter {
     );
     try {
       fs.writeFileSync(msgFile, content, 'utf-8');
-      const cmd = this._buildAiderCmd(msgChannel, msgFile, restore);
+      const cmd = this._buildAiderCmd(msgChannel, msgFile, restore, posture);
       return await this._spawnAider(cmd, msgChannel);
     } finally {
       try { fs.rmSync(msgFile, { force: true }); } catch {}

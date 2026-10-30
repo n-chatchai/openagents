@@ -19,6 +19,7 @@ const { spawn } = require('node:child_process');
 const { GooseStreamParser, classifyGooseError, redactSecrets } = require('../src/adapters/goose-stream');
 const GooseAdapter = require('../src/adapters/goose');
 const { ADAPTER_MAP } = require('../src/adapters/index');
+const { unrestrictedConfigDir } = require('./approval-helpers');
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function isPidAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
@@ -213,6 +214,8 @@ function makeAdapter(opts = {}) {
   const base = {
     workspaceId: 'ws1', channelName: 'general', token: 'tok',
     agentName: 'agentA', endpoint: 'http://x', agentEnv: { PATH: process.env.PATH },
+    // Opted in on this computer: these suites drive GOOSE_MODE=auto turns.
+    configDir: unrestrictedConfigDir('agentA'),
   };
   const a = new GooseAdapter({ ...base, ...opts });
   a._gooseBinary = '/fake/goose'; // pretend goose exists
@@ -307,7 +310,7 @@ describe('Goose command building', () => {
 });
 
 describe('Goose env / provider', () => {
-  it('defaults GOOSE_MODE to auto and coerces blocking modes', () => {
+  it('an agent allowed unrestricted defaults GOOSE_MODE to auto and coerces blocking modes', () => {
     assert.equal(makeAdapter({ agentEnv: { PATH: '' } })._buildEnv().GOOSE_MODE, 'auto');
     assert.equal(makeAdapter({ agentEnv: { PATH: '', GOOSE_MODE: 'smart_approve' } })._buildEnv().GOOSE_MODE, 'auto');
     assert.equal(makeAdapter({ agentEnv: { PATH: '', GOOSE_MODE: 'approve' } })._buildEnv().GOOSE_MODE, 'auto');

@@ -32,6 +32,7 @@ let lastSpawn = null;
 cp.spawn = (...args) => spawnImpl(...args);
 
 const OpenCodeAdapter = require('../src/adapters/opencode');
+const { unrestrictedConfigDir, defaultConfigDir } = require('./approval-helpers');
 
 after(() => { cp.spawn = realSpawn; });
 
@@ -41,6 +42,8 @@ function makeAdapter(overrides = {}) {
     channelName: 'thread',
     token: 'token',
     agentName: 'opencode-wd-test',
+    // Nobody unrestricted unless a test says so.
+    configDir: defaultConfigDir(),
     ...overrides,
   });
   adapter._log = () => {};
@@ -95,7 +98,10 @@ describe('OpenCode — working directory (#435)', () => {
     const a = makeAdapter({ workingDir: '/tmp/proj-435' });
     const spawn = await captureRun(a);
     assert.ok(spawn, 'opencode was spawned');
-    assert.ok(spawn.args.includes('--dangerously-skip-permissions'), 'unattended runs must not auto-reject native prompts');
+    // Unattended runs stay inside OpenCode's permission rules: a rule that
+    // would ask is rejected, bash is one of them, and so is leaving --dir.
+    assert.ok(!spawn.args.includes('--dangerously-skip-permissions'), 'no auto-approval without the local opt-in');
+    assert.deepEqual(JSON.parse(spawn.opts.env.OPENCODE_PERMISSION), { bash: 'ask', external_directory: 'ask' });
     assert.equal(spawn.opts.env.OPENAGENTS_OPENCODE_BRIDGE, undefined);
     const dirIdx = spawn.args.indexOf('--dir');
     assert.ok(dirIdx >= 0, '--dir is on the command line');
@@ -111,10 +117,14 @@ describe('OpenCode — working directory (#435)', () => {
     assert.equal(spawn.opts.cwd, a.agentHome);
   });
 
-  it('keeps unattended permissions when resuming an existing session', () => {
+  it('keeps the same permissions when resuming an existing session', () => {
     const args = makeAdapter()._buildRunArgs({ runCwd: '/tmp/project', model: 'provider/model', sessionId: 'ses_existing' });
-    assert.ok(args.includes('--dangerously-skip-permissions'));
+    assert.ok(!args.includes('--dangerously-skip-permissions'));
     assert.equal(args[args.indexOf('--session') + 1], 'ses_existing');
+    const allowed = makeAdapter({ configDir: unrestrictedConfigDir('opencode-wd-test') })
+      ._buildRunArgs({ runCwd: '/tmp/project', model: 'provider/model', sessionId: 'ses_existing' });
+    assert.ok(allowed.includes('--dangerously-skip-permissions'), 'an agent allowed unrestricted keeps auto-approval on resume');
+    assert.equal(allowed[allowed.indexOf('--session') + 1], 'ses_existing');
   });
 
   it('scopes the persisted session store per working dir', () => {

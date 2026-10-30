@@ -30,6 +30,7 @@ let lastSpawn = null;
 cp.spawn = (...args) => (spawnImpl ? spawnImpl(...args) : realSpawn(...args));
 
 const { createAdapter, ADAPTER_MAP, MiniSweAgentAdapter } = require('../src/adapters');
+const { unrestrictedConfigDir } = require('./approval-helpers');
 
 after(() => { cp.spawn = realSpawn; });
 
@@ -60,6 +61,8 @@ function makeAdapter(extra = {}) {
     agentName: 'mini-bot',
     endpoint: 'https://example.invalid',
     agentType: 'mini-swe-agent',
+    // Opted in on this computer: these suites drive mini runs.
+    configDir: extra.configDir || unrestrictedConfigDir('mini-bot'),
     agentEnv: extra.agentEnv || {},
     workingDir: extra.workingDir || '/tmp/proj',
   });
@@ -173,10 +176,15 @@ describe('mini-SWE-agent adapter — preflight / binary resolution', () => {
 });
 
 describe('mini-SWE-agent adapter — command construction', () => {
+  it('never adds --yolo unless the agent is allowed unrestricted', () => {
+    const a = makeAdapter();
+    assert.deepEqual(a._buildMiniArgs({ task: 'do it' }), ['--exit-immediately', '--task', 'do it']);
+  });
+
   it('builds the bare headless command with no model/config', () => {
     const a = makeAdapter();
     assert.deepEqual(
-      a._buildMiniArgs({ task: 'do it' }),
+      a._buildMiniArgs({ unrestricted: true, task: 'do it' }),
       ['--yolo', '--exit-immediately', '--task', 'do it'],
     );
   });
@@ -184,21 +192,21 @@ describe('mini-SWE-agent adapter — command construction', () => {
   it('adds --model before --yolo when a model is set', () => {
     const a = makeAdapter();
     assert.deepEqual(
-      a._buildMiniArgs({ model: 'anthropic/claude', task: 'do it' }),
+      a._buildMiniArgs({ unrestricted: true, model: 'anthropic/claude', task: 'do it' }),
       ['--model', 'anthropic/claude', '--yolo', '--exit-immediately', '--task', 'do it'],
     );
   });
 
   it('never passes --config (config flows via the MSWEA_MINI_CONFIG_PATH env var)', () => {
     const a = makeAdapter();
-    assert.ok(!a._buildMiniArgs({ task: 'do it' }).includes('--config'));
-    assert.ok(!a._buildMiniArgs({ model: 'm', task: 'do it' }).includes('--config'));
+    assert.ok(!a._buildMiniArgs({ unrestricted: true, task: 'do it' }).includes('--config'));
+    assert.ok(!a._buildMiniArgs({ unrestricted: true, model: 'm', task: 'do it' }).includes('--config'));
   });
 
   it('keeps a stable order: model, --yolo, --exit-immediately, --task', () => {
     const a = makeAdapter();
     assert.deepEqual(
-      a._buildMiniArgs({ model: 'm', task: 't' }),
+      a._buildMiniArgs({ unrestricted: true, model: 'm', task: 't' }),
       ['--model', 'm', '--yolo', '--exit-immediately', '--task', 't'],
     );
   });
@@ -213,14 +221,14 @@ describe('mini-SWE-agent adapter — command construction', () => {
   it('adds --cost-limit only when a valid numeric limit is set', () => {
     const a = makeAdapter();
     assert.deepEqual(
-      a._buildMiniArgs({ costLimit: '3.5', task: 't' }),
+      a._buildMiniArgs({ unrestricted: true, costLimit: '3.5', task: 't' }),
       ['--yolo', '--exit-immediately', '--cost-limit', '3.5', '--task', 't'],
     );
   });
 
   it('adds --output before --task when a trajectory path is set', () => {
     const a = makeAdapter();
-    const args = a._buildMiniArgs({ trajectoryPath: '/tmp/traj.json', task: 't' });
+    const args = a._buildMiniArgs({ unrestricted: true, trajectoryPath: '/tmp/traj.json', task: 't' });
     assert.deepEqual(
       args,
       ['--yolo', '--exit-immediately', '--output', '/tmp/traj.json', '--task', 't'],
@@ -230,7 +238,7 @@ describe('mini-SWE-agent adapter — command construction', () => {
   it('passes the task verbatim as the last argv element (quotes/newlines/shell metachars)', () => {
     const a = makeAdapter();
     const nasty = 'fix "the bug"; rm -rf / && echo `whoami`\n$(curl evil) — line2';
-    const args = a._buildMiniArgs({ model: 'm', task: nasty });
+    const args = a._buildMiniArgs({ unrestricted: true, model: 'm', task: nasty });
     assert.equal(args[args.length - 2], '--task');
     assert.equal(args[args.length - 1], nasty, 'task must be a single, unmodified argv element');
   });

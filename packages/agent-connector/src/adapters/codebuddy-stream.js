@@ -228,6 +228,9 @@ const DISALLOWED_TOOLS = [
  * @param {string} [o.resumeSessionId]    continue this channel's CLI session
  * @param {string} [o.mcpConfigPath]      path to the workspace MCP server config
  * @param {boolean} [o.planMode]          read-only investigation instead of full access
+ * @param {boolean} [o.unrestricted]      this computer allowed the agent to run with
+ *                                        its permission checks off (policy.json);
+ *                                        only then does an act turn get `-y`
  * @returns {string[]}
  */
 function buildCodeBuddyArgs(o = {}) {
@@ -245,9 +248,11 @@ function buildCodeBuddyArgs(o = {}) {
   if (o.planMode) {
     // Investigate and propose; no writes, no shell.
     args.push('--permission-mode', 'plan');
-  } else {
+  } else if (o.unrestricted === true) {
     // Headless has no one to answer a permission prompt. `-y` resolves to
-    // permissionMode=bypassPermissions (confirmed in the init frame).
+    // permissionMode=bypassPermissions (confirmed in the init frame) — granted
+    // only to an agent this computer allowed to run unrestricted. Without it
+    // the adapter refuses the turn; nothing here falls back to -y.
     args.push('-y');
   }
 

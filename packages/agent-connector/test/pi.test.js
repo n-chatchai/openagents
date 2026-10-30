@@ -21,6 +21,7 @@ const { ADAPTER_MAP, createAdapter } = require('../src/adapters');
 const { Installer } = require('../src/installer');
 const { MIN_NODE_VERSION } = require('../src/adapters/pi-stream');
 const { REASON } = require('../src/adapters/health-status');
+const { unrestrictedConfigDir } = require('./approval-helpers');
 
 const IS_WINDOWS = process.platform === 'win32';
 const MOCK_PI_SRC = path.join(__dirname, 'fixtures', 'mock-pi.js');
@@ -62,11 +63,14 @@ after(() => {
  */
 function makeAdapter(extra = {}) {
   const id = ++adapterSeq;
+  const agentName = extra.agentName || `pi-bot-${id}`;
   const a = new PiAdapter({
     workspaceId: extra.workspaceId || `ws-${id}`,
     channelName: 'general',
     token: 'workspace-token-value',
-    agentName: extra.agentName || `pi-bot-${id}`,
+    agentName,
+    // Opted in on this computer: these suites drive execute turns.
+    configDir: extra.configDir || unrestrictedConfigDir(agentName),
     agentEnv: extra.agentEnv || {},
     workingDir: 'workingDir' in extra ? extra.workingDir : workDir,
   });

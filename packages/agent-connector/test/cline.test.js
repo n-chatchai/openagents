@@ -10,6 +10,7 @@ const { execFileSync } = require('node:child_process');
 const ClineAdapter = require('../src/adapters/cline');
 const { ADAPTER_MAP, createAdapter } = require('../src/adapters');
 const { buildClineArgs } = require('../src/adapters/cline-stream');
+const { unrestrictedConfigDir } = require('./approval-helpers');
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -100,6 +101,8 @@ function makeAdapter(extra = {}) {
     channelName: 'thread',
     token: 'token',
     agentName: 'cline-bot',
+    // Opted in on this computer: these suites drive execute turns.
+    configDir: extra.configDir || unrestrictedConfigDir('cline-bot'),
     agentEnv: extra.agentEnv || {},
     workingDir: extra.workingDir || tmpRoot,
   });

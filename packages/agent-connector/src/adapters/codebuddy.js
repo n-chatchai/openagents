@@ -733,6 +733,18 @@ class CodeBuddyAdapter extends BaseAdapter {
   // Message handling
   // ------------------------------------------------------------------
 
+  /**
+   * An act turn runs headless only with -y (bypassPermissions); no CodeBuddy
+   * mode that denies instead of asking has been verified, so act turns need
+   * this computer's opt-in. Plan turns run `--permission-mode plan`.
+   */
+  _approvalRefusal(mode) {
+    if (mode === 'plan') return null;
+    return this._needsUnrestricted(
+      'CodeBuddy can only run unattended with its permission checks turned off (-y).',
+    );
+  }
+
   async _handleMessage(msg) {
     let content = (msg.content || '').trim();
     const attachments = msg.attachments || [];
@@ -771,6 +783,13 @@ class CodeBuddyAdapter extends BaseAdapter {
     }
     if (ver.supported === null) {
       this._log('Could not determine the CodeBuddy version — proceeding leniently');
+    }
+
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(channel, gate.message);
+      return;
     }
 
     // Auto-title + resume-from on first encounter (parity with other adapters).
@@ -832,7 +851,8 @@ class CodeBuddyAdapter extends BaseAdapter {
         maxTurns: Number.isFinite(maxTurns) ? maxTurns : undefined,
         resumeSessionId: resumeId || undefined,
         mcpConfigPath: mcpConfigPath || undefined,
-        planMode: this._mode === 'plan',
+        planMode: gate.mode === 'plan',
+        unrestricted: gate.unrestricted,
       });
 
       let run;

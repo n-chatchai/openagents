@@ -16,7 +16,10 @@
  * - Provider/model/key/host come from native Goose env vars (this.agentEnv);
  *   the key is never placed on the command line or in logs.
  * - GOOSE_MODE=auto runs tools without interactive approval (required for
- *   headless); only the built-in `developer` extension is enabled by default.
+ *   headless tools) and without a sandbox, so it is set only for an agent this
+ *   computer allowed to run unrestricted (`agn policy unrestricted add`);
+ *   otherwise turns run GOOSE_MODE=chat (no tools) or are refused. Only the
+ *   built-in `developer` extension is enabled.
  *
  * Port of sdk/src/openagents/adapters/goose.py. Verified against block/goose
  * v1.38.0. Goose is currently Beta — real end-to-end runs are pending.
@@ -217,11 +220,32 @@ class GooseAdapter extends BaseAdapter {
     return secrets;
   }
 
-  _buildEnv() {
+  /** GOOSE_MODE as configured (agent env), lower-cased. */
+  _configuredGooseMode() {
+    return String((this.agentEnv || process.env).GOOSE_MODE || '').trim().toLowerCase();
+  }
+
+  /**
+   * Goose runs headless only in `auto` (tools with no approval and no
+   * sandbox) or `chat` (no tools at all). GOOSE_MODE is a setting a workspace
+   * can write (configure_agent), so it never decides on its own: `auto` needs
+   * this computer's opt-in; plan turns, and execute turns configured `chat`,
+   * run in `chat`.
+   */
+  _approvalRefusal(mode) {
+    if (mode === 'plan' || this._configuredGooseMode() === 'chat') return null;
+    return this._needsUnrestricted(
+      'Goose can only run tools unattended with its approvals turned off (GOOSE_MODE=auto), and it has no sandbox.',
+    );
+  }
+
+  _buildEnv(posture = null) {
+    const gate = posture || this._approvalGate();
     const env = { ...(this.agentEnv || process.env) };
-    const mode = String(env.GOOSE_MODE || '').trim().toLowerCase();
-    if (mode === 'auto' || mode === 'chat') {
-      env.GOOSE_MODE = mode;
+    const mode = this._configuredGooseMode();
+    if (gate.mode === 'plan' || !gate.unrestricted || mode === 'chat') {
+      // No tools: plan turns, and any agent not allowed to run unrestricted.
+      env.GOOSE_MODE = 'chat';
     } else {
       if (mode === 'approve' || mode === 'smart_approve') {
         this._log(`GOOSE_MODE=${mode} waits for interactive approval and cannot run `
@@ -360,12 +384,19 @@ class GooseAdapter extends BaseAdapter {
     const sender = msg.senderName || msg.senderType || 'user';
     this._log(`Processing message from ${sender} in ${msgChannel}: ${content.slice(0, 80)}...`);
 
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(msgChannel, gate.message);
+      return;
+    }
+
     await this._autoTitleChannel(msgChannel, content);
     await this.sendStatus(msgChannel, 'thinking...');
 
     try {
       // null → stopped or a failure already reported; '' → empty success; str → answer.
-      const result = await this._runGoose(content, msgChannel);
+      const result = await this._runGoose(content, msgChannel, false, gate);
       if (result === null) return;
       if (result) {
         await this.sendResponse(msgChannel, result);
@@ -442,7 +473,7 @@ class GooseAdapter extends BaseAdapter {
     return this._versionTooOld;
   }
 
-  _runGoose(content, channel, retry = false) {
+  _runGoose(content, channel, retry = false, posture = null) {
     let cwd;
     try {
       cwd = this._resolveCwd();
@@ -466,7 +497,7 @@ class GooseAdapter extends BaseAdapter {
       return this.sendError(channel, e.message).then(() => null, () => null);
     }
 
-    const env = this._buildEnv();
+    const env = this._buildEnv(posture);
     const parser = new GooseStreamParser();
     const captured = { finalText: null };
     let stderr = '';
@@ -586,7 +617,7 @@ class GooseAdapter extends BaseAdapter {
             channel,
             'Previous Goose session was unavailable — starting a new one (earlier context is reset).',
           );
-          resolve(await this._runGoose(content, channel, true));
+          resolve(await this._runGoose(content, channel, true, posture));
           return;
         }
 
