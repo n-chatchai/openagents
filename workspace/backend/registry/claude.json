@@ -21,6 +21,9 @@
   },
   "install": {
     "binary": "claude",
+    "npm_package": "@anthropic-ai/claude-code",
+    "npm_version": "2.1.312",
+    "npm_integrity": "sha512-/gx8byG8VOm4YoNuT5tal/Ov5Z5oydJzZkmHCJcBFLbNGGpyYDbKA/CNdB+iIKwcLQC8pVwBoj6Dt7H3L2J5bw==",
     "requires": [
       "nodejs",
       "git"

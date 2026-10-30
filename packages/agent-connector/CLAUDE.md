@@ -12,6 +12,8 @@ src/
   config.js          YAML config manager for ~/.openagents/daemon.yaml (agents, networks)
   registry.js        Agent catalog: fetches from remote API or bundled registry.json, 24h cache
   installer.js       Agent runtime installer: npm/curl/binary, tracks in installed_agents.json
+  install-verify.js  Which install routes can be verified (pinned npm tarball + sha512 from the shipped registry.json) and the check itself; OPENAGENTS_UNATTENDED
+  policy.js          What a paired workspace may do on this computer (~/.openagents/policy.json, written only by `agn policy`), checked per remote command
   postinstall-stub.js Recognizes the placeholder an npm package leaves as its CLI when its postinstall was skipped (ignore-scripts) — the installer repairs it, the opencode adapter reports it
   env.js             Environment manager: ~/.openagents/env/<type>.env, resolve_env rules for generic→provider mapping
   workspace-client.js HTTP client for workspace REST API: register, join, poll messages, send events, files, browser, todos, timers
@@ -88,6 +90,35 @@ agn start/stop <name>       # Control individual agents
 agn logs                    # View daemon logs
 agn connect <agent> <token> # Connect agent to workspace
 ```
+
+## Remote commands and the local policy
+
+A paired workspace sends commands over the node heartbeat (`Daemon._runNodeCommand`).
+Pairing is a credential, not authority: every command is checked, when it runs,
+against `~/.openagents/policy.json` (`src/policy.js`), and nothing a command
+carries can change it. Defaults: start/stop/probe/list models of the
+workspace's own agents, create one in its managed folder
+(`~/.openagents/agents/<name>`) without installing, configure and remove its
+agents, browse the managed folder (its agents only). Off until a person on the
+computer runs `agn policy …`: folders of the workspace's choice
+(`agn policy dirs add <folder>` + `agn policy allow create-in-dir`), runtime
+installs (`agn policy allow install-runtime`, verified routes only), running an
+agent without its runtime's approvals (`agn policy unrestricted add <agent>`).
+Workspace settings land on the one agent (`config.updateAgentEnv`), never in
+`<type>.env` and never in a child's argv. Every `agn` child the daemon runs
+carries `OPENAGENTS_UNATTENDED=1`: no policy grant, no unverified install.
+
+## Verified installs
+
+npm runtimes are pinned in `registry/<name>.json` (`install.npm_package`,
+`npm_version`, `npm_integrity`). The installer downloads that exact tarball
+(`npm pack`), compares its sha512 with the pin and installs that file; a
+mismatch installs nothing. To move a pin: `npm view <pkg>@<version> version
+dist.integrity --json`, update the three fields, `npm run sync:registry`.
+Vendor scripts (curl | sh, irm | iex, pip, uv) and the Node.js bootstrap cannot
+be verified: `agn install <type> --allow-unverified` on the computer, never
+remotely. `agn update` installs an exact version whose tarball matches the
+registry's sha512 (`--version`, `--integrity` to pin it yourself).
 
 ## Adding an agent
 

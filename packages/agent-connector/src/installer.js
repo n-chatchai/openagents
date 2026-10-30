@@ -27,6 +27,16 @@ const { detectShadowedNodeShims, shadowedNodeWarning } = require('./node-shims')
 const { fixSpawnHelpers } = require('./node-pty-perms');
 const { isPostinstallStub } = require('./postinstall-stub');
 const { classifyClineAuth } = require('./adapters/cline-stream');
+const {
+  installRoute,
+  shippedEntry,
+  isUnattended,
+  verifyFileIntegrity,
+  unverifiedMessage,
+  UnverifiedInstallError,
+  IntegrityError,
+} = require('./install-verify');
+const { isSafeTypeName } = require('./policy');
 
 /**
  * OPENAGENTS_NO_SCRIPT_REPAIR=1: never run an install script npm skipped
@@ -1425,9 +1435,21 @@ class Installer {
 
   /**
    * Install an agent runtime.
+   *
+   * A route with a pinned version and checksum (see install-verify.js) is
+   * always verified first: the tarball is downloaded, hashed here and that
+   * exact file installed, and a mismatch installs nothing. A route that cannot
+   * be verified runs only for a person on this computer: `opts.allowUnverified`
+   * false refuses it (the CLI passes its --allow-unverified flag here), and so
+   * does any call under the daemon (OPENAGENTS_UNATTENDED), whatever it asks.
+   * An in-process caller that passes nothing is a local frontend whose own
+   * Install button is the person's go-ahead (the launcher, the TUI).
+   *
+   * @param {string} agentType
+   * @param {{ allowUnverified?: boolean }} [opts]
    * @returns {Promise<{success: boolean, output: string}>}
    */
-  async install(agentType) {
+  async install(agentType, opts = {}) {
     const entry = this.registry.getEntry(agentType);
     if (!entry || !entry.install) {
       throw new Error(`No install definition for agent type: ${agentType}`);
@@ -1444,6 +1466,7 @@ class Installer {
     if (!cmd) {
       throw new Error(`No install command for ${agentType} on ${Installer.platform()}`);
     }
+    const route = this._installRouteFor(agentType, entry, opts);
 
     let bootstrapEnv = this._buildShellEnv();
     let installEnv;
@@ -1460,15 +1483,23 @@ class Installer {
 
     // Use bundled node/npm if system npm not available
     const npmPrefix = cmd.startsWith('npm install') ? getRuntimePrefix(agentType) : null;
+    let verifiedTarball = null;
     if (npmPrefix) {
       const prefixDir = npmPrefix;
       fs.mkdirSync(prefixDir, { recursive: true });
-      const args = cmd.replace('npm install', 'install --save').replace(' -g ', ` --prefix "${prefixDir}" `);
+      let args;
+      if (route.kind === 'npm' && route.verified) {
+        verifiedTarball = await this._fetchVerifiedTarball(agentType, route, null);
+        args = `install --save --prefix "${prefixDir}" "${verifiedTarball}"`;
+      } else {
+        args = cmd.replace('npm install', 'install --save').replace(' -g ', ` --prefix "${prefixDir}" `);
+      }
       cmd = this._resolveNpmCommand(args);
     }
 
     const output = await this._execShell(cmd, 300000, installEnv);
     if (npmPrefix) fixSpawnHelpers(npmPrefix);
+    if (verifiedTarball) this._pruneVerifiedStash(agentType, verifiedTarball);
 
     // Aider-only: the curl/uv/pipx installer can exit 0 without landing a
     // runnable (or genuine) binary, so verify the real CLI exists BEFORE
@@ -1512,12 +1543,14 @@ class Installer {
   }
 
   /**
-   * Install with streaming output via callback.
+   * Install with streaming output via callback. Verification and the
+   * unverified-route rule are install()'s.
    * @param {string} agentType
    * @param {function(string)} onData - called with each chunk of output
+   * @param {{ allowUnverified?: boolean }} [opts]
    * @returns {Promise<{success: boolean, command: string}>}
    */
-  async installStreaming(agentType, onData) {
+  async installStreaming(agentType, onData, opts = {}) {
     const { spawn } = require('child_process');
     const entry = this.registry.getEntry(agentType);
     if (!entry || !entry.install) {
@@ -1537,9 +1570,20 @@ class Installer {
     if (!rawCmd) {
       throw new Error(`No install command for ${agentType} on ${Installer.platform()}`);
     }
+    const route = this._installRouteFor(agentType, entry, opts);
 
-    // Auto-install Node.js if this is an npm-based agent and Node.js is missing
+    // Auto-install Node.js if this is an npm-based agent and Node.js is missing.
+    // The portable Node download is not checked against a pinned checksum, so
+    // it is an unverified route of its own.
     if (rawCmd.startsWith('npm install') && !this.hasNodejs()) {
+      if (!this._mayRunUnverified(opts)) {
+        throw new UnverifiedInstallError(
+          `${entry.label || agentType} needs Node.js, which is not installed here, and OpenAgents cannot verify `
+          + 'the Node.js download before running it. Install Node.js on this computer (https://nodejs.org), '
+          + `or run: agn install ${agentType} --allow-unverified`,
+          route,
+        );
+      }
       await this.installNodejs(onData);
     }
 
@@ -1572,6 +1616,7 @@ class Installer {
     let useShell;
     let installCwd;
     let displayCmd;
+    let verifiedTarball = null;
 
     if (rawCmd.startsWith('npm install')) {
       const prefixDir = getRuntimePrefix(agentType);
@@ -1579,12 +1624,18 @@ class Installer {
       installCwd = prefixDir;
 
       // `npm install [-g] <pkg…>` → install --save --prefix <dir> <pkg…>
-      const pkgArgs = rawCmd
+      let pkgArgs = rawCmd
         .replace(/^npm install\s*/, '')
         .replace(/(^|\s)-g(\s|$)/, ' ')
         .trim()
         .split(/\s+/)
         .filter(Boolean);
+      // A pinned route installs the tarball it just checked, not whatever the
+      // registry hands out for the name.
+      if (route.kind === 'npm' && route.verified) {
+        verifiedTarball = await this._fetchVerifiedTarball(agentType, route, onData);
+        pkgArgs = [verifiedTarball];
+      }
       // Use --save so npm tracks the package in package.json (prevents pruning
       // on next install). --registry is added only when we'd be helping — see
       // installRegistry(); a user's own registry choice is never overridden.
@@ -1613,7 +1664,8 @@ class Installer {
       } else {
         // Legacy fallback: quoted prefix inside a shell string.
         const registryArg = registry ? `--registry ${registry} ` : '';
-        const args = `install --loglevel=verbose ${NPM_INSTALL_SPEED_FLAGS.join(' ')} --save --prefix "${prefixDir}" ${registryArg}${pkgArgs.join(' ')}`;
+        const shellPkgArgs = pkgArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a));
+        const args = `install --loglevel=verbose ${NPM_INSTALL_SPEED_FLAGS.join(' ')} --save --prefix "${prefixDir}" ${registryArg}${shellPkgArgs.join(' ')}`;
         spawnFile = this._wrapForWindowsShell(this._resolveNpmCommand(args));
         useShell = isWin ? (env.ComSpec || 'C:\\Windows\\System32\\cmd.exe') : true;
         displayCmd = spawnFile;
@@ -1764,6 +1816,7 @@ class Installer {
             if (fixed.length && onData) onData(`\nMade ${fixed.length} node-pty spawn-helper(s) executable.\n`);
           }
           const markDone = () => {
+            if (verifiedTarball) this._pruneVerifiedStash(agentType, verifiedTarball);
             this._markInstalled(agentType);
             if (onData) onData(`\nDone! ${agentType} is now installed.\n`);
             resolve({ success: true, command: displayCmd });
@@ -1801,6 +1854,119 @@ class Installer {
         }
       });
     });
+  }
+
+  // -- Verified installs (see install-verify.js) --
+
+  /**
+   * Whether this call may run an install route nobody can verify: never under
+   * the daemon, and otherwise unless the caller said no (the CLI, without
+   * --allow-unverified).
+   */
+  _mayRunUnverified(opts = {}) {
+    if (isUnattended()) return false;
+    return !opts || opts.allowUnverified !== false;
+  }
+
+  /** The install fields shipped with this launcher for `agentType`, or null: the trusted pins. */
+  _shippedInstall(agentType) {
+    const shipped = shippedEntry(agentType);
+    return (shipped && shipped.install) || null;
+  }
+
+  /** The entry's install route, or UnverifiedInstallError when this call may not run it. */
+  _installRouteFor(agentType, entry, opts = {}) {
+    // The type names a folder under ~/.openagents/runtimes: never a path.
+    if (!isSafeTypeName(agentType)) throw new Error(`'${agentType}' is not an agent type this launcher can install.`);
+    const route = installRoute(entry, Installer.platform(), { shipped: this._shippedInstall(agentType) });
+    if (!route.verified && !this._mayRunUnverified(opts)) {
+      throw new UnverifiedInstallError(unverifiedMessage(agentType, entry, route), route);
+    }
+    return route;
+  }
+
+  /** Run npm with an argv (no shell where it can be avoided); never rejects. */
+  _runNpm(args, { cwd, env, timeoutMs = 600000 } = {}) {
+    return new Promise((resolve) => {
+      const isWin = process.platform === 'win32';
+      const direct = this._resolveNodeNpmCli();
+      const file = direct ? direct.node : (whichBinary('npm') || (isWin ? 'npm.cmd' : 'npm'));
+      const argv = direct ? [direct.npmCli, ...args] : args;
+      execFile(file, argv, {
+        cwd,
+        env: env || this._buildShellEnv(),
+        windowsHide: true,
+        timeout: timeoutMs,
+        maxBuffer: 16 * 1024 * 1024,
+        // npm.cmd cannot be started without a shell on current Node.
+        shell: !direct && isWin,
+      }, (err, stdout, stderr) => {
+        const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+        resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || (err && !stdout ? err.message : '')) });
+      });
+    });
+  }
+
+  /** Where verified tarballs are kept: npm's package.json for the prefix points at them. */
+  _verifiedStash(agentType) {
+    return path.join(getRuntimePrefix(agentType), '.verified');
+  }
+
+  /**
+   * Download `route.pkg@route.version`, check it against `route.integrity`
+   * and keep it under the runtime prefix for npm to install. Throws
+   * IntegrityError on a mismatch: nothing is installed and nothing is kept.
+   * @returns {Promise<string>} the verified tarball's path
+   */
+  async _fetchVerifiedTarball(agentType, route, onData) {
+    const spec = `${route.pkg}@${route.version}`;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oa-verify-'));
+    try {
+      if (onData) onData(`Downloading ${spec} to check it against its pinned checksum...\n`);
+      const registry = installRegistry();
+      const r = await this._runNpm(
+        ['pack', spec, '--ignore-scripts', '--loglevel=error', ...(registry ? ['--registry', registry] : [])],
+        { cwd: tmp },
+      );
+      const tarballs = fs.readdirSync(tmp).filter((f) => f.endsWith('.tgz'));
+      if (r.code !== 0 || tarballs.length !== 1) {
+        const why = String(r.stderr || r.stdout || '').trim().split(/\r?\n/).slice(-6).join('\n');
+        throw new Error(`Could not download ${spec} from the npm registry${why ? `:\n${why}` : '.'}`);
+      }
+      const file = path.join(tmp, tarballs[0]);
+      const check = verifyFileIntegrity(file, route.integrity);
+      if (!check.ok) {
+        throw new IntegrityError(
+          `Refusing to install ${spec}: the download does not match the checksum OpenAgents pinned for it `
+          + `(expected ${route.integrity}, got ${check.actual}). The package, or the registry or mirror it came `
+          + 'from, may have been tampered with. Nothing was installed.',
+        );
+      }
+      const stash = this._verifiedStash(agentType);
+      fs.mkdirSync(stash, { recursive: true });
+      const kept = path.join(stash, tarballs[0]);
+      fs.copyFileSync(file, kept);
+      // Checked again where npm will read it, in case the copy is not the file.
+      if (!verifyFileIntegrity(kept, route.integrity).ok) {
+        try { fs.unlinkSync(kept); } catch {}
+        throw new IntegrityError(`Refusing to install ${spec}: the kept copy no longer matches its checksum.`);
+      }
+      if (onData) onData(`Checksum verified (${route.integrity.slice(0, 22)}…).\n`);
+      return kept;
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  /** After a successful install, drop the tarballs earlier installs left. */
+  _pruneVerifiedStash(agentType, keep) {
+    const stash = this._verifiedStash(agentType);
+    try {
+      for (const f of fs.readdirSync(stash)) {
+        const p = path.join(stash, f);
+        if (p !== keep && f.endsWith('.tgz')) { try { fs.unlinkSync(p); } catch {} }
+      }
+    } catch {}
   }
 
   /**

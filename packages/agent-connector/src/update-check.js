@@ -4,8 +4,17 @@
  * Update check + prompt flow.
  *
  * Queries the npm registry for the latest @openagents-org/agent-launcher
- * version and, if newer than the running version, prints a notification
- * and (for TTY invocations) prompts the user to update in place.
+ * version and, if newer than the running version, prints a notification.
+ * Nothing here installs on its own: `agn update` does, run by a person.
+ *
+ * What `agn update` trusts (verifiedUpdate): the exact version it installs
+ * (the one named with --version, else npm's `latest`), and that version's
+ * sha512 integrity as the npm registry publishes it — or as given with
+ * --integrity, which must then agree with the registry. The tarball is
+ * downloaded, hashed here and installed from that file; a mismatch installs
+ * nothing. It never installs a floating `@latest` spec. What it cannot catch
+ * is a registry that publishes a malicious version under a matching hash:
+ * --integrity from a source the person trusts is the answer to that.
  */
 
 const https = require('https');
@@ -16,6 +25,7 @@ const readline = require('readline');
 const { spawnSync } = require('child_process');
 const { npmUrls } = require('./mirrors');
 const { whereBinary } = require('./paths');
+const { isSha512Integrity, verifyFileIntegrity } = require('./install-verify');
 
 const PKG_NAME = '@openagents-org/agent-launcher';
 const CACHE_FILE = path.join(os.homedir(), '.openagents', '.update-check.json');
@@ -86,6 +96,40 @@ async function fetchLatest(timeoutMs = 2500) {
   for (const url of urls) {
     const version = await fetchLatestFrom(url, perOrigin);
     if (version) return version;
+  }
+  return null;
+}
+
+function fetchJson(url, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = https.request(
+      url,
+      { method: 'GET', timeout: timeoutMs, headers: { Accept: 'application/json' } },
+      (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) return resolve(null);
+          try { resolve(JSON.parse(body)); } catch { resolve(null); }
+        });
+      }
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+/**
+ * The registry's record of one exact version: { version, integrity, tarball },
+ * or null when no registry answers.
+ */
+async function fetchVersionMeta(version, timeoutMs = 10000) {
+  for (const url of npmUrls(`${PKG_NAME}/${encodeURIComponent(version)}`)) {
+    const doc = await fetchJson(url, timeoutMs);
+    if (doc && doc.version && doc.dist) {
+      return { version: doc.version, integrity: doc.dist.integrity || null, tarball: doc.dist.tarball || null };
+    }
   }
   return null;
 }
@@ -196,13 +240,44 @@ function findNpmBin(opts = {}) {
   } catch { return platform === 'win32' ? 'npm.cmd' : 'npm'; }
 }
 
+/** How npm is started on this platform: [file, argv]. npm.cmd needs cmd.exe. */
+function npmInvocation(npmBin, args, platform) {
+  if (platform === 'win32') return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', npmBin, ...args]];
+  return [npmBin, args];
+}
+
 /**
- * Run npm install to update to the latest version. Blocking.
- * Returns true on success. `opts` are injectable for testing.
+ * Download `<pkg>@<version>`'s tarball into `dir` with `npm pack` (no
+ * scripts run), and return its path. Blocking; throws when npm fails.
+ */
+function packTarball(opts = {}) {
+  const platform = opts.platform || process.platform;
+  const spawn = opts.spawn || spawnSync;
+  const npmBin = opts.npmBin || findNpmBin({ platform });
+  const [cmd, cmdArgs] = npmInvocation(npmBin, ['pack', opts.spec, '--ignore-scripts', '--loglevel=error'], platform);
+  const r = spawn(cmd, cmdArgs, { cwd: opts.dir, encoding: 'utf-8', windowsHide: true });
+  if (r && r.error) throw new Error(`could not run npm (${cmd}): ${r.error.message}`);
+  const files = fs.readdirSync(opts.dir).filter((f) => f.endsWith('.tgz'));
+  if (!r || r.status !== 0 || files.length !== 1) {
+    const why = String((r && (r.stderr || r.stdout)) || '').trim().split(/\r?\n/).slice(-4).join(' ');
+    throw new Error(`could not download ${opts.spec}${why ? `: ${why}` : ''}`);
+  }
+  return path.join(opts.dir, files[0]);
+}
+
+/**
+ * Install the launcher from a tarball already checked (verifiedUpdate). Blocking.
+ * Returns true on success. Without `opts.tarball` it refuses: a bare
+ * `<pkg>@latest` install is what this replaced. `opts` are injectable for testing.
  */
 function runUpdate(opts = {}) {
   const platform = opts.platform || process.platform;
   const spawn = opts.spawn || spawnSync;
+  const tarball = opts.tarball;
+  if (!tarball || !path.isAbsolute(String(tarball))) {
+    process.stderr.write('[launcher] Refusing to update without a verified package (agn update checks it first).\n');
+    return false;
+  }
   const npmBin = opts.npmBin || findNpmBin({ platform });
   const isoDir = opts.isolatedDir !== undefined ? opts.isolatedDir : isolatedRuntimeDir();
 
@@ -215,7 +290,7 @@ function runUpdate(opts = {}) {
     // project dir instead. `--no-save` leaves package.json untouched (install.sh
     // owns it), and because <dir>'s package.json already lists our deps npm has
     // nothing extraneous to prune.
-    args = ['install', '--no-save', `${PKG_NAME}@latest`, '--prefix', isoDir];
+    args = ['install', '--no-save', tarball, '--prefix', isoDir];
   } else {
     // Global / nvm install. A LOCAL install (`npm install <pkg> --prefix <dir>`)
     // here would treat <dir> as a project root and prune every node_modules
@@ -223,21 +298,14 @@ function runUpdate(opts = {}) {
     // npm/corepack. A global install only adds/updates the named package into
     // <prefix>/node_modules and never prunes its siblings.
     const prefix = opts.prefix !== undefined ? opts.prefix : npmPrefixFromBin(npmBin, platform);
-    args = ['install', '-g', `${PKG_NAME}@latest`];
+    args = ['install', '-g', tarball];
     if (prefix) args.push('--prefix', prefix);
   }
 
   // On Windows, npm.cmd is a batch file and must be invoked through cmd.exe.
   // Passing the args via cmd.exe with shell:false lets Node quote paths that
   // contain spaces (e.g. C:\Program Files\nodejs\npm.cmd) correctly.
-  let cmd, cmdArgs;
-  if (platform === 'win32') {
-    cmd = process.env.ComSpec || 'cmd.exe';
-    cmdArgs = ['/d', '/s', '/c', npmBin, ...args];
-  } else {
-    cmd = npmBin;
-    cmdArgs = args;
-  }
+  const [cmd, cmdArgs] = npmInvocation(npmBin, args, platform);
 
   process.stderr.write(`[launcher] Running: ${npmBin} ${args.join(' ')}\n`);
   const r = spawn(cmd, cmdArgs, { stdio: 'inherit' });
@@ -256,6 +324,59 @@ function runUpdate(opts = {}) {
     return false;
   }
   return true;
+}
+
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * Update the launcher to exactly `opts.version`, installing only a tarball
+ * whose sha512 matches the registry's record for that version (and
+ * `opts.integrity`, when given). Returns { ok: true, integrity } or
+ * { ok: false, error }. `fetchMeta`, `pack` and the runUpdate seams are
+ * injectable for tests.
+ */
+async function verifiedUpdate(opts = {}) {
+  const version = String(opts.version || '').trim();
+  if (!EXACT_VERSION.test(version)) {
+    return { ok: false, error: `'${version}' is not an exact version (for example: agn update --version 0.2.209)` };
+  }
+  if (opts.integrity !== undefined && !isSha512Integrity(opts.integrity)) {
+    return { ok: false, error: '--integrity must be the sha512-… value npm publishes for that version' };
+  }
+  const meta = await (opts.fetchMeta || fetchVersionMeta)(version);
+  if (!meta || meta.version !== version) {
+    return { ok: false, error: `could not read ${PKG_NAME}@${version} from the npm registry` };
+  }
+  if (!isSha512Integrity(meta.integrity)) {
+    return { ok: false, error: `the registry publishes no sha512 checksum for ${PKG_NAME}@${version}; nothing was installed` };
+  }
+  if (opts.integrity && opts.integrity !== meta.integrity) {
+    return {
+      ok: false,
+      error: `the checksum given (${opts.integrity}) is not what the registry publishes for ${version} (${meta.integrity}); nothing was installed`,
+    };
+  }
+  const expected = opts.integrity || meta.integrity;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oa-update-'));
+  try {
+    let tarball;
+    try {
+      tarball = (opts.pack || packTarball)({ ...opts, spec: `${PKG_NAME}@${version}`, dir });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+    const check = verifyFileIntegrity(tarball, expected);
+    if (!check.ok) {
+      return {
+        ok: false,
+        error: `the downloaded package does not match its checksum (expected ${expected}, got ${check.actual}); nothing was installed`,
+      };
+    }
+    const ok = (opts.runUpdate || runUpdate)({ ...opts, tarball });
+    return ok ? { ok: true, integrity: expected } : { ok: false, error: 'npm could not install the verified package' };
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 /**
@@ -305,6 +426,9 @@ module.exports = {
   checkForUpdate,
   notifyAndMaybeUpdate,
   runUpdate,
+  verifiedUpdate,
+  fetchVersionMeta,
+  packTarball,
   findNpmBin,
   npmPrefixFromBin,
   isolatedRuntimeDir,

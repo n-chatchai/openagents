@@ -27,6 +27,8 @@
       "cmdc"
     ],
     "npm_package": "command-code",
+    "npm_version": "1.88.2",
+    "npm_integrity": "sha512-B/+JVQecxHlkouzsVnFsRlxZ3e8VY35Grr934T1fx+c8aq4Em9kxI79B1gQ195xW50f3Svq8qc8j0QThSpNjWw==",
     "requires": [
       "nodejs"
     ],
