@@ -118,7 +118,9 @@ class HermesAdapter extends BaseAdapter {
    * @param {string} [opts.hermesProfile] - explicit Hermes profile, or 'auto'
    * @param {string} [opts.hermesSource]  - `--source` label (default: 'tool')
    * @param {number} [opts.maxTurns]      - `--max-turns` value
-   * @param {boolean} [opts.yolo]         - pass `--yolo` to skip prompts
+   * @param {boolean} [opts.yolo]         - ignored: `--yolo` (skip Hermes's
+   *   dangerous-command approvals) is passed only for an execute turn of an
+   *   agent this computer allowed to run unrestricted (policy.json)
    * @param {Set} [opts.disabledModules]
    */
   constructor(opts) {
@@ -129,7 +131,8 @@ class HermesAdapter extends BaseAdapter {
     this.hermesProfile = this._resolveProfile(opts.hermesProfile, this.agentName);
     this.hermesSource = opts.hermesSource || 'tool';
     this.maxTurns = Number.isInteger(opts.maxTurns) ? opts.maxTurns : 60;
-    this.yolo = !!opts.yolo;
+    // Kept for callers that read it; it no longer turns anything on.
+    this.yolo = false;
 
     this._channelSessions = {};
     this._channelProcesses = {};
@@ -539,7 +542,9 @@ class HermesAdapter extends BaseAdapter {
   // Subprocess lifecycle
   // ------------------------------------------------------------------
 
-  _buildHermesCmd(prompt, resumeSessionId) {
+  _buildHermesCmd(prompt, resumeSessionId, posture = null) {
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = posture || this._approvalGate();
     if (!this._hermesBin) {
       throw new Error(`hermes CLI not found. Install with: ${HERMES_INSTALL_HINT}`);
     }
@@ -555,7 +560,9 @@ class HermesAdapter extends BaseAdapter {
       '--max-turns', String(this.maxTurns),
     );
     if (resumeSessionId) args.push('--resume', resumeSessionId);
-    if (this.yolo) args.push('--yolo');
+    // Hermes's own approval stops the commands it classes as dangerous; --yolo
+    // turns that off, so only for an agent allowed unrestricted here.
+    if (gate.mode === 'execute' && gate.unrestricted === true) args.push('--yolo');
     return args;
   }
 

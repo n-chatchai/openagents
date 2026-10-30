@@ -2,10 +2,62 @@
 
 const fs = require('fs');
 const path = require('path');
+const policy = require('./env-policy');
+const fsProtect = require('./fs-protect');
+
+/**
+ * A daemon.yaml write refused because a value would change the file's
+ * structure (a line break in a scalar starts a new key or a new agent). The
+ * message names the field, never the value.
+ */
+class ConfigValidationError extends Error {
+  constructor(field, reason) {
+    super(`Refused daemon.yaml ${field}: ${reason}`);
+    this.name = 'ConfigValidationError';
+    this.code = 'CONFIG_INVALID';
+    this.field = field;
+    this.reason = reason;
+  }
+}
+
+/** Field names a caller may set on an agent (updateAgent). */
+const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+/** What ends a line for this parser, for YAML 1.1 parsers (PyYAML) too. */
+const LINE_BREAKS = /[\r\n\0\u0085\u2028\u2029]/;
+
+const warnedOnce = new Set();
+function warnOnce(id, message) {
+  if (warnedOnce.has(id)) return;
+  warnedOnce.add(id);
+  try { process.stderr.write(`[openagents] ${message}\n`); } catch {}
+}
+
+/**
+ * An agent's env as read from daemon.yaml, held to env-policy.js like the env
+ * files: a runtime-control variable or a value that could not be saved today
+ * (left by an older version or a hand edit) never reaches the agent.
+ */
+function sanitizeAgentEnvOnLoad(agent) {
+  if (!agent || agent.env === undefined) return;
+  const who = policy.describeName(String(agent.name || '?'));
+  if (agent.env === null || typeof agent.env !== 'object' || Array.isArray(agent.env)) {
+    warnOnce(`agent-env:${who}`, `daemon.yaml: ignoring the env of agent ${who} (not a KEY: value map)`);
+    delete agent.env;
+    return;
+  }
+  agent.env = policy.sanitizeEnv(agent.env, {
+    onDrop: (key, reason) => warnOnce(`agent-env:${who}:${key}`, `daemon.yaml: ignoring ${key} in the env of agent ${who} (${reason})`),
+  });
+}
 
 /**
  * Manages ~/.openagents/daemon.yaml — the agent/network configuration file.
  * Compatible with the Python SDK's daemon_config.py format.
+ *
+ * The file holds workspace tokens and agents' keys: it is written 0600 (a
+ * user-only ACL on Windows) and re-protected when an older version left it
+ * readable. Per-agent env is validated on every save (env-policy.js), and no
+ * scalar may carry a line break into the line-based format.
  */
 class Config {
   constructor(configDir) {
@@ -15,6 +67,8 @@ class Config {
     this.pidFile = path.join(configDir, 'daemon.pid');
     this.cmdFile = path.join(configDir, 'daemon.cmd');
     this.logFile = path.join(configDir, 'daemon.log');
+    // { platform, execFileSync } overrides for fs-protect (tests).
+    this._fsOptions = {};
   }
 
   // -- Read --
@@ -22,8 +76,11 @@ class Config {
   load() {
     try {
       if (fs.existsSync(this.configFile)) {
+        try { fsProtect.protectFile(this.configFile, this._fsOptions); } catch {}
         const text = fs.readFileSync(this.configFile, 'utf-8');
-        return parseYaml(text);
+        const config = parseYaml(text);
+        for (const agent of config.agents || []) sanitizeAgentEnvOnLoad(agent);
+        return config;
       }
     } catch (err) {
       console.error('Failed to load config:', err.message);
@@ -46,8 +103,16 @@ class Config {
   // -- Write --
 
   save(config) {
+    for (const agent of (config && config.agents) || []) {
+      if (agent && agent.env !== undefined) {
+        policy.validateEnvObject(agent.env, { subject: `env of agent ${policy.describeName(String(agent.name || '?'))}` });
+      }
+    }
+    const text = serializeYaml(config);
     fs.mkdirSync(this.configDir, { recursive: true });
-    fs.writeFileSync(this.configFile, serializeYaml(config), 'utf-8');
+    // In place rather than temp + rename: the daemon watches this path with
+    // fs.watch, which follows the inode and goes quiet after a rename.
+    fsProtect.writePrivateFile(this.configFile, text, { ...this._fsOptions, atomic: false });
   }
 
   addAgent({ name, type, role, path: agentPath, env }) {
@@ -73,6 +138,11 @@ class Config {
   }
 
   updateAgent(name, updates) {
+    for (const field of Object.keys(updates || {})) {
+      if (!FIELD_NAME.test(field)) {
+        throw new ConfigValidationError(`field ${policy.describeName(field)}`, 'not a valid field name');
+      }
+    }
     const config = this.load();
     const agent = config.agents.find((a) => a.name === name);
     if (!agent) throw new Error(`Agent '${name}' not found`);
@@ -548,10 +618,10 @@ function serializeYaml(config) {
   for (const agent of (config.agents || [])) {
     const keys = Object.keys(agent);
     if (keys.length === 0) continue;
-    lines.push(`- name: ${serializeYamlValue(agent.name)}`);
+    lines.push(`- name: ${serializeYamlValue(agent.name, 'agents[].name')}`);
     for (const key of keys) {
       if (key === 'name') continue;
-      lines.push(`  ${key}: ${serializeYamlValue(agent[key])}`);
+      lines.push(`  ${serializeYamlKey(key, 'agents[]')}: ${serializeYamlValue(agent[key], `agents[].${key}`)}`);
     }
   }
   if (!config.agents || config.agents.length === 0) {
@@ -563,9 +633,9 @@ function serializeYaml(config) {
     const keys = Object.keys(net);
     if (keys.length === 0) continue;
     const firstKey = keys[0];
-    lines.push(`- ${firstKey}: ${serializeYamlValue(net[firstKey])}`);
+    lines.push(`- ${serializeYamlKey(firstKey, 'networks[]')}: ${serializeYamlValue(net[firstKey], `networks[].${firstKey}`)}`);
     for (const key of keys.slice(1)) {
-      lines.push(`  ${key}: ${serializeYamlValue(net[key])}`);
+      lines.push(`  ${serializeYamlKey(key, 'networks[]')}: ${serializeYamlValue(net[key], `networks[].${key}`)}`);
     }
   }
   if (!config.networks || config.networks.length === 0) {
@@ -575,12 +645,23 @@ function serializeYaml(config) {
   return lines.join('\n') + '\n';
 }
 
-function serializeYamlValue(val) {
+function serializeYamlKey(key, where) {
+  if (LINE_BREAKS.test(key) || key.includes(':') || !key.trim()) {
+    throw new ConfigValidationError(`${where} field ${policy.describeName(key)}`, 'not a valid field name');
+  }
+  return key;
+}
+
+function serializeYamlValue(val, field = 'value') {
   if (val === null || val === undefined) return 'null';
   if (typeof val === 'boolean') return val ? 'true' : 'false';
   if (typeof val === 'number') return String(val);
+  // JSON escapes control characters, so an object stays on its line.
   if (typeof val === 'object') return JSON.stringify(val);
   const s = String(val);
+  if (LINE_BREAKS.test(s)) {
+    throw new ConfigValidationError(field, 'value contains a line break or NUL character');
+  }
   // Quote strings that contain special YAML chars
   if (s.includes(':') || s.includes('#') || s.includes("'") || s.includes('"') ||
       s.includes('\n') || s.startsWith(' ') || s.endsWith(' ') ||
@@ -590,4 +671,4 @@ function serializeYamlValue(val) {
   return s;
 }
 
-module.exports = { Config, parseYaml, serializeYaml };
+module.exports = { Config, ConfigValidationError, parseYaml, serializeYaml };

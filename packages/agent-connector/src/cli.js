@@ -7,6 +7,7 @@ require('./win-console').installWindowsHideDefault();
 const { AgentConnector, Daemon } = require('./index');
 const { hasCredentialMetadata, formatAuthGuidance } = require('./auth-guidance');
 const { AUTH_MODE_KEY, CLI_LOGIN, isCliLogin } = require('./env');
+const { validateKey: validateEnvKey, isSecretKey: isSecretEnvKey } = require('./env-policy');
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -54,6 +55,36 @@ function getConnector(flags) {
 }
 
 function print(msg) { process.stdout.write(msg + '\n'); }
+
+/**
+ * Install a runtime for this CLI. `--allow-unverified` is the person's go-ahead
+ * for a route OpenAgents cannot verify; without it such a route is refused
+ * with what to run instead. Never honoured under the daemon
+ * (OPENAGENTS_UNATTENDED): no remote command reaches a vendor script.
+ */
+async function installRuntime(connector, type, flags) {
+  const { isUnattended } = require('./install-verify');
+  const allowUnverified = !!flags['allow-unverified'];
+  if (allowUnverified && isUnattended()) {
+    const err = new Error('--allow-unverified is refused here: this command was started by the OpenAgents daemon, not by a person at this computer.');
+    err.code = 'INSTALL_UNVERIFIED';
+    throw err;
+  }
+  let output = '';
+  const result = await connector.installer.installStreaming(type, (chunk) => {
+    output = (output + String(chunk)).slice(-8000);
+  }, { allowUnverified });
+  return { ...result, output: output.trim() };
+}
+
+/** What `agn create` says about a runtime that is not installed: the way to install it. */
+function installHint(connector, type) {
+  const { installRoute } = require('./install-verify');
+  const route = installRoute(connector.registry.getEntry(type));
+  if (route.verified) return `Run: agn install ${type}`;
+  if (route.kind === 'manual') return `Set it up by hand: ${String(route.command || '').replace(/^echo\s+/, '')}`;
+  return `Its installer cannot be verified. Run: agn install ${type} --allow-unverified${route.command ? `, or install it yourself: ${route.command}` : ''}`;
+}
 
 // ---------------------------------------------------------------------------
 // Banner — the OpenAgents wordmark (figlet "Small Slant", pure ASCII so it
@@ -226,13 +257,13 @@ async function cmdCreate(connector, flags, positional) {
 
     if (!connector.isInstalled(type)) {
       if (!flags.install) {
-        print(`Runtime '${type}' is not installed. Run: agn install ${type}`);
+        print(`Runtime '${type}' is not installed. ${installHint(connector, type)}`);
         return;
       }
 
       print(`Installing ${type}...`);
       try {
-        await connector.install(type);
+        await installRuntime(connector, type, flags);
         print(`${type} installed`);
       } catch (e) {
         print(`Warning: install failed: ${e.message}`);
@@ -274,9 +305,9 @@ async function cmdStop(connector, _flags, positional) {
   print(`Sent stop command for '${name}'`);
 }
 
-async function cmdInstall(connector, _flags, positional) {
+async function cmdInstall(connector, flags, positional) {
   const type = positional[0];
-  if (!type) { print('Usage: agn install <type>'); return; }
+  if (!type) { print('Usage: agn install <type> [--allow-unverified]'); return; }
 
   if (connector.isInstalled(type)) {
     print(`${type} is already installed`);
@@ -285,11 +316,11 @@ async function cmdInstall(connector, _flags, positional) {
 
   print(`Installing ${type}...`);
   try {
-    const result = await connector.install(type);
+    const result = await installRuntime(connector, type, flags);
     print(`${type} installed successfully`);
     if (result.output) print(result.output);
   } catch (e) {
-    print(`Error: ${e.message}`);
+    print(e && (e.code === 'INSTALL_UNVERIFIED' || e.code === 'INSTALL_INTEGRITY') ? e.message : `Error: ${e.message}`);
     process.exitCode = 1;
   }
 }
@@ -816,30 +847,97 @@ async function cmdWorkspace(connector, flags, positional) {
   }
 }
 
+/**
+ * A value for `agn env <type> --set-stdin KEY`: everything on stdin (one
+ * trailing newline dropped, as `echo` or a here-doc adds it), or typed at a
+ * prompt that does not echo it. Either way the key stays out of argv (which
+ * `ps` shows every user) and out of shell history.
+ */
+async function readEnvValueFromStdin(key) {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) {
+    const chunks = [];
+    for await (const chunk of stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    return Buffer.concat(chunks).toString('utf-8').replace(/\r?\n$/, '');
+  }
+  return new Promise((resolve, reject) => {
+    let value = '';
+    process.stderr.write(`Value for ${key} (input hidden): `);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf-8');
+    const finish = (err) => {
+      stdin.removeListener('data', onData);
+      try { stdin.setRawMode(false); } catch {}
+      stdin.pause();
+      process.stderr.write('\n');
+      if (err) reject(err); else resolve(value);
+    };
+    const onData = (text) => {
+      for (const ch of text) {
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') return finish();
+        if (ch === '\u0003') return finish(new Error('Cancelled'));
+        if (ch === '\u007f' || ch === '\b') { value = value.slice(0, -1); continue; }
+        value += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
 async function cmdEnv(connector, flags, positional) {
   const type = positional[0];
-  if (!type) { print('Usage: agn env <type> [--set KEY=VALUE]'); return; }
+  if (!type) { print('Usage: agn env <type> [--set KEY=VALUE | --set-stdin KEY]'); return; }
 
+  const stdinKey = flags['set-stdin'];
   const setVal = flags.set;
-  if (setVal) {
-    const eq = setVal.indexOf('=');
-    if (eq < 1) { print('Usage: --set KEY=VALUE'); return; }
-    const key = setVal.slice(0, eq);
-    const val = setVal.slice(eq + 1);
-    connector.saveAgentEnv(type, { [key]: val });
+  if (stdinKey !== undefined || setVal) {
+    let key;
+    let val;
+    if (stdinKey !== undefined) {
+      if (typeof stdinKey !== 'string' || !stdinKey) { print('Usage: --set-stdin KEY'); process.exitCode = 1; return; }
+      key = stdinKey;
+      // Refuse a bad name before asking for the value.
+      try { validateEnvKey(key); } catch (e) { print(`Error: ${e.message}`); process.exitCode = 1; return; }
+      try {
+        val = await readEnvValueFromStdin(key);
+      } catch (e) {
+        print(`Error: ${e.message}`);
+        process.exitCode = 1;
+        return;
+      }
+      // An empty stdin is a mistake, not a removal (that is `--set KEY=`).
+      if (!val.trim()) { print(`Error: no value for ${key} on stdin`); process.exitCode = 1; return; }
+    } else {
+      const eq = typeof setVal === 'string' ? setVal.indexOf('=') : -1;
+      if (eq < 1) { print('Usage: --set KEY=VALUE'); process.exitCode = 1; return; }
+      key = setVal.slice(0, eq);
+      val = setVal.slice(eq + 1);
+    }
+    try {
+      connector.saveAgentEnv(type, { [key]: val });
+    } catch (e) {
+      // EnvValidationError names the key and the reason, never the value.
+      const why = typeof e.code === 'string' && /^E[A-Z]+$/.test(e.code) ? ` (${e.code})` : '';
+      print(`Error: ${e.code === 'ENV_INVALID' ? e.message : `could not save ${key} for ${type}${why}`}`);
+      process.exitCode = 1;
+      return;
+    }
     try { connector.sendDaemonCommand('reload'); } catch {}
     print(`Saved ${key} for ${type}`);
     return;
   }
 
-  // Show current env
+  // Show current env. Secrets are masked whether or not the registry marks
+  // the field as a password.
   const env = connector.getAgentEnv(type);
   const fields = connector.getEnvFields(type);
+  const shown = (name, val) => ((val && isSecretEnvKey(name)) ? '***' : val);
 
   if (fields.length > 0) {
     for (const field of fields) {
       const val = env[field.name];
-      const display = field.password && val ? '***' : (val || '(not set)');
+      const display = (field.password || isSecretEnvKey(field.name)) && val ? '***' : (val || '(not set)');
       print(`  ${field.name}: ${display}  ${field.required ? '(required)' : ''}`);
     }
     return;
@@ -865,7 +963,7 @@ async function cmdEnv(connector, flags, positional) {
     print(`No env vars configured for ${type}`);
   } else {
     for (const [k, v] of entries) {
-      print(`  ${k}: ${v}`);
+      print(`  ${k}: ${shown(k, v)}`);
     }
   }
 }
@@ -1113,26 +1211,43 @@ async function cmdVersion() {
   print(`${pkg.name} v${pkg.version}`);
 }
 
-async function cmdUpdate(connector) {
-  const { checkForUpdate, runUpdate, currentVersion } = require('./update-check');
-  const info = await checkForUpdate();
-  if (!info) {
-    print('Could not reach the npm registry. Check your network.');
+async function cmdUpdate(connector, flags = {}) {
+  const { checkForUpdate, verifiedUpdate, currentVersion } = require('./update-check');
+  const { isUnattended } = require('./install-verify');
+  if (isUnattended()) {
+    print('Refused: `agn update` was started by the OpenAgents daemon, not by a person at this computer.');
     process.exitCode = 1;
     return;
   }
-  if (!info.isNewer) {
-    print(`Already on the latest version (${currentVersion()}).`);
-    return;
+  // The version is the person's to name (--version), or npm's `latest` when
+  // they name none. Either way the tarball installed is the one whose sha512
+  // matches: what the registry publishes for that exact version, or the
+  // --integrity given here, which must agree with it.
+  let target = typeof flags.version === 'string' ? flags.version.trim().replace(/^v/, '') : null;
+  if (!target) {
+    const info = await checkForUpdate();
+    if (!info) {
+      print('Could not reach the npm registry. Check your network.');
+      process.exitCode = 1;
+      return;
+    }
+    if (!info.isNewer) {
+      print(`Already on the latest version (${currentVersion()}).`);
+      return;
+    }
+    target = info.latest;
   }
-  print(`Updating ${info.current} → ${info.latest}...`);
-  const ok = runUpdate();
-  if (!ok) {
-    print('Update failed.');
+  print(`Updating ${currentVersion()} → ${target}...`);
+  const res = await verifiedUpdate({
+    version: target,
+    integrity: typeof flags.integrity === 'string' ? flags.integrity.trim() : undefined,
+  });
+  if (!res.ok) {
+    print(`Update failed: ${res.error}`);
     process.exitCode = 1;
     return;
   }
-  print(`Updated to ${info.latest}.`);
+  print(`Updated to ${target} (package checksum verified: ${res.integrity.slice(0, 22)}…).`);
 
   // Recycle a running daemon so the new build takes effect immediately. Without
   // this, a long-lived daemon keeps executing the OLD in-memory code (and misses
@@ -1152,6 +1267,19 @@ async function cmdUpdate(connector) {
   }
 }
 
+async function cmdPolicy(connector, flags, positional) {
+  const { runPolicyCommand } = require('./policy');
+  const { isUnattended } = require('./install-verify');
+  const res = runPolicyCommand(connector.config.configDir, positional, {
+    interactive: !!(process.stdin.isTTY && process.stdout.isTTY),
+    unattended: isUnattended(),
+    json: !!flags.json,
+    agentExists: (name) => !!connector.config.getAgent(name),
+  });
+  for (const line of res.lines) print(line);
+  if (res.code) process.exitCode = res.code;
+}
+
 async function cmdHelp() {
   printBanner();
   print(`Usage: agn <command> [options]
@@ -1166,7 +1294,8 @@ Commands:
   remove <name>               Remove an agent
   start <name>                Start a single agent
   stop <name>                 Stop a single agent
-  install <type>              Install an agent runtime
+  install <type>              Install an agent runtime (checked against its pinned checksum;
+                              --allow-unverified runs a vendor script OpenAgents cannot check)
   uninstall <type>            Uninstall an agent runtime
   search [query]              Browse agent catalog
   runtimes                    List installed runtimes
@@ -1175,6 +1304,7 @@ Commands:
   connect <agent> <token>     Connect agent to workspace (or --workspace <slug> for a paired one)
   disconnect <agent>          Disconnect agent from workspace
   env <type> [--set K=V]      View/set env vars for agent type
+             [--set-stdin K]  Set K from stdin, kept out of argv and shell history
   skills [agent] [action]     Manage agent skills (enable/disable)
   tool-mode [agent] [mode]    View/set tool mode (mcp or skills)
   autostart [--disable]       Enable/disable auto-start on login
@@ -1187,7 +1317,12 @@ Commands:
   workspace join <token>      Join workspace with token
   workspace list              List configured workspaces
   mcp-server                  Start MCP server (stdio) for workspace tools
-  update                      Upgrade launcher to the latest npm release
+  update [--version X.Y.Z]    Upgrade the launcher: the newest release, or the version named,
+         [--integrity sha512-…]   installed only if its tarball matches its sha512
+  policy [show]               What a paired workspace may do on this computer
+  policy allow|deny <op>      create-in-dir, install-runtime, remove-agent, configure-agent, list-dir
+  policy dirs add|remove <folder>        Folders workspaces may create agents in and browse
+  policy unrestricted add|remove <agent> Let an agent run without its runtime's approvals
   version                     Show version
   help                        Show this help
 
@@ -1205,7 +1340,8 @@ async function main() {
   const { cmd, flags, positional } = parseArgs(process.argv);
 
   if (cmd === 'help' || flags.help) { await cmdHelp(); return; }
-  if (cmd === 'version' || flags.version) { await cmdVersion(); return; }
+  // `agn update --version X.Y.Z` names the version to update to.
+  if (cmd === 'version' || (flags.version && cmd !== 'update')) { await cmdVersion(); return; }
 
   // Check for a newer launcher version and offer to install it. Skip for:
   //   - mcp-server: JSON-RPC subprocess spawned by Claude Code
@@ -1275,7 +1411,8 @@ async function main() {
     'test-llm': () => cmdTestLLM(connector, flags, positional),
     probe: () => cmdProbe(connector, flags, positional),
     models: () => cmdModels(connector, flags, positional),
-    update: () => cmdUpdate(connector),
+    update: () => cmdUpdate(connector, flags),
+    policy: () => cmdPolicy(connector, flags, positional),
     'mcp-server': () => {
       const { runMcpServer } = require('./mcp-server');
       const workspaceId = flags['workspace-id'] || process.env.OPENAGENTS_WORKSPACE_ID;

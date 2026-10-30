@@ -77,6 +77,7 @@ const {
   isOfficialDeepseekRoot,
   classifyDshEndpoint,
   nodeRequirementText,
+  normalizePermissionMode,
   resolvePermissionMode,
   safeDshHomeName,
   selectSessionsForGc,
@@ -875,6 +876,20 @@ class DeepSeekAdapter extends BaseAdapter {
   // Subprocess execution
   // ------------------------------------------------------------------
 
+  /**
+   * dsh runs inside its own sandbox (workspace-write, approval never — see the
+   * private patch). Only DSH_PERMISSION_MODE=danger-full-access takes that
+   * away, and only this computer's opt-in may ask for it.
+   */
+  _approvalRefusal(mode) {
+    if (mode === 'plan') return null;
+    const configured = normalizePermissionMode(this.agentEnv.DSH_PERMISSION_MODE);
+    if (configured !== 'danger-full-access') return null;
+    return this._needsUnrestricted(
+      'DSH_PERMISSION_MODE=danger-full-access turns off DeepSeek Harness\'s sandbox for this agent.',
+    );
+  }
+
   async _runDsh({ content, attachments, msgChannel, msg }) {
     const permissionMode = resolvePermissionMode({
       workspaceMode: this._mode,
@@ -891,6 +906,14 @@ class DeepSeekAdapter extends BaseAdapter {
           `Invalid DSH_PERMISSION_MODE "${this.agentEnv.DSH_PERMISSION_MODE}". `
           + 'Valid values are read-only, workspace-write, danger-full-access.',
       };
+    }
+    // DSH_PERMISSION_MODE is a setting a workspace can write (configure_agent),
+    // so on its own it never removes the sandbox: danger-full-access runs only
+    // for an agent this computer allowed to run unrestricted (policy.json).
+    const refusal = this._approvalRefusal(this._approvalMode());
+    if (refusal && !this._isUnrestricted()) {
+      this._log(`Not running this turn: ${refusal}`, 'warn');
+      return { text: '', error: refusal };
     }
 
     // Keep the patch current (model changes) before every run. A failure here

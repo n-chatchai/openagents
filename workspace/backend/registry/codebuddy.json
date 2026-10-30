@@ -31,6 +31,8 @@
       "cbc"
     ],
     "npm_package": "@tencent-ai/codebuddy-code",
+    "npm_version": "2.178.1",
+    "npm_integrity": "sha512-YiBJz78yxUQBbXc6XZNUSBsfdKhZco6KVRYYnJckf4FTb2rTwRgwfHOkuWbKa0zn05wFwFCeysG/PSZxg111rg==",
     "requires": [
       "nodejs"
     ],

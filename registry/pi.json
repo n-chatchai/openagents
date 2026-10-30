@@ -23,6 +23,8 @@
   "install": {
     "binary": "pi",
     "npm_package": "@earendil-works/pi-coding-agent",
+    "npm_version": "0.83.0",
+    "npm_integrity": "sha512-uYhF+FsZxogoSX/AxBcUdiY+ZklubwaXyAoEGA2eQwsHcyEAhUYIKh/WLXe/a8+k8eTCmxb+ZN2Zo9mzQtzbWw==",
     "requires": [
       "nodejs"
     ],

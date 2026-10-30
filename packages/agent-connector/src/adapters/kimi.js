@@ -4,7 +4,9 @@
  *
  * Primary (CLI) mode:
  *   - one `kimi -p <prompt> --output-format stream-json` subprocess per user
- *     message (print mode runs the full agent loop with tools auto-approved)
+ *     message (print mode runs the full agent loop with tools auto-approved,
+ *     so it runs only for an agent this computer allowed to run unrestricted:
+ *     `agn policy unrestricted add <name>`)
  *   - the JSONL stream is parsed (see kimi-stream.js) and mapped to the
  *     standard OpenAgents events (thinking / status / response / error)
  *   - real session continuity via `-S <session_id>`: the CLI emits the id
@@ -482,6 +484,18 @@ class KimiAdapter extends LlmDirectAdapter {
     }
   }
 
+  /**
+   * Kimi Code's print mode (`-p`) auto-approves every tool and rejects
+   * --plan alongside it (verified v0.39.1), and it has no sandbox — so a CLI
+   * turn in either mode needs this computer's opt-in. The direct-API fallback
+   * has no tools and is not held to this.
+   */
+  _approvalRefusal() {
+    return this._needsUnrestricted(
+      'Kimi Code can only run unattended in print mode, which approves every tool itself and cannot be limited to planning.',
+    );
+  }
+
   // ------------------------------------------------------------------
   // Message handling
   // ------------------------------------------------------------------
@@ -558,6 +572,13 @@ class KimiAdapter extends LlmDirectAdapter {
       return;
     }
     try { fs.mkdirSync(workingDir, { recursive: true }); } catch {}
+
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(channel, gate.message);
+      return;
+    }
 
     // Auto-title + resume-from on first encounter (parity with other adapters).
     if (!this._titledSessions.has(channel)) {

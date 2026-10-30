@@ -34,12 +34,15 @@ describe('buildCodeBuddyArgs', () => {
     assert.equal(args[args.indexOf('-p') + 1], '--output-format');
   });
 
-  it('bypasses permission prompts in execute mode and stays read-only in plan mode', () => {
-    const exec = buildCodeBuddyArgs();
+  it('bypasses permission prompts only for an allowed agent, and stays read-only in plan mode', () => {
+    // Not allowed on this computer: no -y (the adapter refuses the turn).
+    assert.ok(!buildCodeBuddyArgs().includes('-y'));
+
+    const exec = buildCodeBuddyArgs({ unrestricted: true });
     assert.ok(exec.includes('-y'));
     assert.ok(!exec.includes('--permission-mode'));
 
-    const plan = buildCodeBuddyArgs({ planMode: true });
+    const plan = buildCodeBuddyArgs({ planMode: true, unrestricted: true });
     assert.equal(plan[plan.indexOf('--permission-mode') + 1], 'plan');
     // -y alongside plan mode would defeat read-only investigation.
     assert.ok(!plan.includes('-y'));

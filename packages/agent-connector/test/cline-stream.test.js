@@ -159,15 +159,23 @@ describe('buildClineArgs', () => {
     assert.equal(args[args.indexOf('-c') + 1], '/tmp/x');
   });
 
-  it('defaults to act mode with explicit --auto-approve true', () => {
+  it('keeps tool approval on by default (--auto-approve false)', () => {
     const args = buildClineArgs({ prompt: 'hi' });
-    assert.ok(args.includes('--auto-approve'));
+    assert.equal(args[args.indexOf('--auto-approve') + 1], 'false');
+    assert.ok(!args.includes('-p'));
+    const plan = buildClineArgs({ prompt: 'hi', planMode: true });
+    assert.ok(plan.includes('-p'));
+    assert.equal(plan[plan.indexOf('--auto-approve') + 1], 'false');
+  });
+
+  it('act mode auto-approves only for an agent allowed unrestricted', () => {
+    const args = buildClineArgs({ prompt: 'hi', unrestricted: true });
     assert.equal(args[args.indexOf('--auto-approve') + 1], 'true');
     assert.ok(!args.includes('-p'));
   });
 
-  it('uses -p for plan mode (no auto-approve)', () => {
-    const args = buildClineArgs({ prompt: 'hi', planMode: true });
+  it('uses -p for plan mode (an allowed agent keeps Cline\'s default)', () => {
+    const args = buildClineArgs({ prompt: 'hi', planMode: true, unrestricted: true });
     assert.ok(args.includes('-p'));
     assert.ok(!args.includes('--auto-approve'));
   });

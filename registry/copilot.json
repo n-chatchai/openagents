@@ -22,6 +22,8 @@
   "install": {
     "binary": "copilot",
     "npm_package": "@github/copilot",
+    "npm_version": "1.0.105",
+    "npm_integrity": "sha512-k5JPVZrc0Ms4YdAmYS80OGxDvwjDZNVqDS3dxphIFUVSTFJRwcHkbHh3yUKk7MEyBjKqQYKLKNAKSF+dVmjl7A==",
     "requires": [
       "nodejs"
     ],

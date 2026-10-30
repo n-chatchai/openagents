@@ -2,7 +2,8 @@
  * Codex adapter for OpenAgents workspace.
  *
  * Bridges OpenAI Codex CLI to an OpenAgents workspace via:
- * - Codex CLI subprocess (exec --json --full-auto) as primary mode
+ * - Codex CLI subprocess (exec --json) as primary mode, inside Codex's own
+ *   sandbox with approvals that never prompt (see approvalArgs)
  * - Direct HTTP mode for OpenAI-compatible LLM APIs as fallback
  *
  * Similar to ClaudeAdapter: spawns the CLI per message, processes
@@ -259,6 +260,43 @@ class CodexAdapter extends BaseAdapter {
   }
 
   /**
+   * Sandbox and approval flags for one `codex exec` run. Pure.
+   *
+   * Verified against codex-cli 0.149.1 (`codex exec --help`: -s/--sandbox
+   * read-only|workspace-write|danger-full-access, -c key=value; the config
+   * keys `approval_policy` = "never" and `sandbox_workspace_write.network_access`
+   * are in its config reference and binary). They sit before a `resume`
+   * subcommand, where `exec` parses them, like the bypass flag did.
+   *
+   *  - plan: read-only sandbox — nothing written, no network from commands.
+   *  - execute: workspace-write sandbox — commands write only inside the
+   *    working directory (plus the temp dirs); approvals never prompt, so a
+   *    blocked command fails back to the model instead of hanging the turn.
+   *    Commands keep network access: Codex's stable sandbox has no host
+   *    allowlist, and every workspace tool in this agent's instructions
+   *    (files, todos, knowledge, approval requests) is a curl call to the
+   *    workspace endpoint from that sandbox — off would cut all of them.
+   *  - execute, allowed unrestricted on this computer: the bypass flag.
+   *
+   * @param {{ mode: 'plan'|'execute', unrestricted: boolean }} posture
+   * @returns {string[]}
+   */
+  static approvalArgs(posture) {
+    const mode = posture && posture.mode === 'plan' ? 'plan' : 'execute';
+    if (mode === 'plan') {
+      return ['--sandbox', 'read-only', '-c', 'approval_policy="never"'];
+    }
+    if (posture && posture.unrestricted === true) {
+      return ['--dangerously-bypass-approvals-and-sandbox'];
+    }
+    return [
+      '--sandbox', 'workspace-write',
+      '-c', 'approval_policy="never"',
+      '-c', 'sandbox_workspace_write.network_access=true',
+    ];
+  }
+
+  /**
    * Decode CLI output. Codex writes UTF-8, but text that came from Windows
    * itself (cmd.exe, a system error) is in the console code page, which on a
    * Chinese system is GBK and showed up in chat as rows of "�". Fall back to
@@ -288,7 +326,7 @@ class CodexAdapter extends BaseAdapter {
    * Codex has no native skills-directory discovery (unlike Claude Code), so
    * we inject installed Skill Hub skills directly into its context. Each
    * skill's SKILL.md lives at <workingDir>/.codex/skills/<id>/SKILL.md and
-   * Codex (running with cwd=workingDir, full file access) can read it.
+   * Codex (running with cwd=workingDir; its sandbox lets it read) can read it.
    */
   _buildInstalledSkillsSection() {
     let skills = [];
@@ -402,11 +440,15 @@ class CodexAdapter extends BaseAdapter {
     const context = this._buildSystemContext(msgChannel);
     const fullPrompt = `${context}\n\n---\n\nUser message:\n${content}${this._attachmentInstructions(attachments)}`;
 
+    // Plan/execute and the local opt-in, re-read for this turn. Nothing the
+    // workspace sends reaches the sandbox flags.
+    const posture = this._approvalGate();
+
     // Run up to 2 attempts: first with resume, then fresh if stale
     for (let attempt = 0; attempt < 2; attempt++) {
       const cmd = [this._codexBin, 'exec'];
 
-      cmd.push('--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check');
+      cmd.push('--json', ...CodexAdapter.approvalArgs(posture), '--skip-git-repo-check');
 
       // Model override
       if (effectiveModel) {
@@ -435,7 +477,8 @@ class CodexAdapter extends BaseAdapter {
         cmd.push('-C', this.workingDir);
       }
 
-      // Resume goes LAST, after the exec options. `codex exec resume` takes
+      // Resume goes LAST, after the exec options (sandbox and approval flags
+      // included — `exec` parses them). `codex exec resume` takes
       // -m, --json, --skip-git-repo-check and the bypass flags, but not -C,
       // so the old order died with "unexpected argument '-C'" on every
       // follow-up. That read as a stale thread, the id was dropped and the
