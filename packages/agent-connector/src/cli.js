@@ -55,6 +55,36 @@ function getConnector(flags) {
 
 function print(msg) { process.stdout.write(msg + '\n'); }
 
+/**
+ * Install a runtime for this CLI. `--allow-unverified` is the person's go-ahead
+ * for a route OpenAgents cannot verify; without it such a route is refused
+ * with what to run instead. Never honoured under the daemon
+ * (OPENAGENTS_UNATTENDED): no remote command reaches a vendor script.
+ */
+async function installRuntime(connector, type, flags) {
+  const { isUnattended } = require('./install-verify');
+  const allowUnverified = !!flags['allow-unverified'];
+  if (allowUnverified && isUnattended()) {
+    const err = new Error('--allow-unverified is refused here: this command was started by the OpenAgents daemon, not by a person at this computer.');
+    err.code = 'INSTALL_UNVERIFIED';
+    throw err;
+  }
+  let output = '';
+  const result = await connector.installer.installStreaming(type, (chunk) => {
+    output = (output + String(chunk)).slice(-8000);
+  }, { allowUnverified });
+  return { ...result, output: output.trim() };
+}
+
+/** What `agn create` says about a runtime that is not installed: the way to install it. */
+function installHint(connector, type) {
+  const { installRoute } = require('./install-verify');
+  const route = installRoute(connector.registry.getEntry(type));
+  if (route.verified) return `Run: agn install ${type}`;
+  if (route.kind === 'manual') return `Set it up by hand: ${String(route.command || '').replace(/^echo\s+/, '')}`;
+  return `Its installer cannot be verified. Run: agn install ${type} --allow-unverified${route.command ? `, or install it yourself: ${route.command}` : ''}`;
+}
+
 // ---------------------------------------------------------------------------
 // Banner — the OpenAgents wordmark (figlet "Small Slant", pure ASCII so it
 // renders on every console including legacy Windows codepages). Colored with
@@ -226,13 +256,13 @@ async function cmdCreate(connector, flags, positional) {
 
     if (!connector.isInstalled(type)) {
       if (!flags.install) {
-        print(`Runtime '${type}' is not installed. Run: agn install ${type}`);
+        print(`Runtime '${type}' is not installed. ${installHint(connector, type)}`);
         return;
       }
 
       print(`Installing ${type}...`);
       try {
-        await connector.install(type);
+        await installRuntime(connector, type, flags);
         print(`${type} installed`);
       } catch (e) {
         print(`Warning: install failed: ${e.message}`);
@@ -274,9 +304,9 @@ async function cmdStop(connector, _flags, positional) {
   print(`Sent stop command for '${name}'`);
 }
 
-async function cmdInstall(connector, _flags, positional) {
+async function cmdInstall(connector, flags, positional) {
   const type = positional[0];
-  if (!type) { print('Usage: agn install <type>'); return; }
+  if (!type) { print('Usage: agn install <type> [--allow-unverified]'); return; }
 
   if (connector.isInstalled(type)) {
     print(`${type} is already installed`);
@@ -285,11 +315,11 @@ async function cmdInstall(connector, _flags, positional) {
 
   print(`Installing ${type}...`);
   try {
-    const result = await connector.install(type);
+    const result = await installRuntime(connector, type, flags);
     print(`${type} installed successfully`);
     if (result.output) print(result.output);
   } catch (e) {
-    print(`Error: ${e.message}`);
+    print(e && (e.code === 'INSTALL_UNVERIFIED' || e.code === 'INSTALL_INTEGRITY') ? e.message : `Error: ${e.message}`);
     process.exitCode = 1;
   }
 }
@@ -1113,26 +1143,43 @@ async function cmdVersion() {
   print(`${pkg.name} v${pkg.version}`);
 }
 
-async function cmdUpdate(connector) {
-  const { checkForUpdate, runUpdate, currentVersion } = require('./update-check');
-  const info = await checkForUpdate();
-  if (!info) {
-    print('Could not reach the npm registry. Check your network.');
+async function cmdUpdate(connector, flags = {}) {
+  const { checkForUpdate, verifiedUpdate, currentVersion } = require('./update-check');
+  const { isUnattended } = require('./install-verify');
+  if (isUnattended()) {
+    print('Refused: `agn update` was started by the OpenAgents daemon, not by a person at this computer.');
     process.exitCode = 1;
     return;
   }
-  if (!info.isNewer) {
-    print(`Already on the latest version (${currentVersion()}).`);
-    return;
+  // The version is the person's to name (--version), or npm's `latest` when
+  // they name none. Either way the tarball installed is the one whose sha512
+  // matches: what the registry publishes for that exact version, or the
+  // --integrity given here, which must agree with it.
+  let target = typeof flags.version === 'string' ? flags.version.trim().replace(/^v/, '') : null;
+  if (!target) {
+    const info = await checkForUpdate();
+    if (!info) {
+      print('Could not reach the npm registry. Check your network.');
+      process.exitCode = 1;
+      return;
+    }
+    if (!info.isNewer) {
+      print(`Already on the latest version (${currentVersion()}).`);
+      return;
+    }
+    target = info.latest;
   }
-  print(`Updating ${info.current} → ${info.latest}...`);
-  const ok = runUpdate();
-  if (!ok) {
-    print('Update failed.');
+  print(`Updating ${currentVersion()} → ${target}...`);
+  const res = await verifiedUpdate({
+    version: target,
+    integrity: typeof flags.integrity === 'string' ? flags.integrity.trim() : undefined,
+  });
+  if (!res.ok) {
+    print(`Update failed: ${res.error}`);
     process.exitCode = 1;
     return;
   }
-  print(`Updated to ${info.latest}.`);
+  print(`Updated to ${target} (package checksum verified: ${res.integrity.slice(0, 22)}…).`);
 
   // Recycle a running daemon so the new build takes effect immediately. Without
   // this, a long-lived daemon keeps executing the OLD in-memory code (and misses
@@ -1152,6 +1199,19 @@ async function cmdUpdate(connector) {
   }
 }
 
+async function cmdPolicy(connector, flags, positional) {
+  const { runPolicyCommand } = require('./policy');
+  const { isUnattended } = require('./install-verify');
+  const res = runPolicyCommand(connector.config.configDir, positional, {
+    interactive: !!(process.stdin.isTTY && process.stdout.isTTY),
+    unattended: isUnattended(),
+    json: !!flags.json,
+    agentExists: (name) => !!connector.config.getAgent(name),
+  });
+  for (const line of res.lines) print(line);
+  if (res.code) process.exitCode = res.code;
+}
+
 async function cmdHelp() {
   printBanner();
   print(`Usage: agn <command> [options]
@@ -1166,7 +1226,8 @@ Commands:
   remove <name>               Remove an agent
   start <name>                Start a single agent
   stop <name>                 Stop a single agent
-  install <type>              Install an agent runtime
+  install <type>              Install an agent runtime (checked against its pinned checksum;
+                              --allow-unverified runs a vendor script OpenAgents cannot check)
   uninstall <type>            Uninstall an agent runtime
   search [query]              Browse agent catalog
   runtimes                    List installed runtimes
@@ -1187,7 +1248,12 @@ Commands:
   workspace join <token>      Join workspace with token
   workspace list              List configured workspaces
   mcp-server                  Start MCP server (stdio) for workspace tools
-  update                      Upgrade launcher to the latest npm release
+  update [--version X.Y.Z]    Upgrade the launcher: the newest release, or the version named,
+         [--integrity sha512-…]   installed only if its tarball matches its sha512
+  policy [show]               What a paired workspace may do on this computer
+  policy allow|deny <op>      create-in-dir, install-runtime, remove-agent, configure-agent, list-dir
+  policy dirs add|remove <folder>        Folders workspaces may create agents in and browse
+  policy unrestricted add|remove <agent> Let an agent run without its runtime's approvals
   version                     Show version
   help                        Show this help
 
@@ -1205,7 +1271,8 @@ async function main() {
   const { cmd, flags, positional } = parseArgs(process.argv);
 
   if (cmd === 'help' || flags.help) { await cmdHelp(); return; }
-  if (cmd === 'version' || flags.version) { await cmdVersion(); return; }
+  // `agn update --version X.Y.Z` names the version to update to.
+  if (cmd === 'version' || (flags.version && cmd !== 'update')) { await cmdVersion(); return; }
 
   // Check for a newer launcher version and offer to install it. Skip for:
   //   - mcp-server: JSON-RPC subprocess spawned by Claude Code
@@ -1275,7 +1342,8 @@ async function main() {
     'test-llm': () => cmdTestLLM(connector, flags, positional),
     probe: () => cmdProbe(connector, flags, positional),
     models: () => cmdModels(connector, flags, positional),
-    update: () => cmdUpdate(connector),
+    update: () => cmdUpdate(connector, flags),
+    policy: () => cmdPolicy(connector, flags, positional),
     'mcp-server': () => {
       const { runMcpServer } = require('./mcp-server');
       const workspaceId = flags['workspace-id'] || process.env.OPENAGENTS_WORKSPACE_ID;

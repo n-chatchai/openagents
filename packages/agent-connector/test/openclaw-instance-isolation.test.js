@@ -256,6 +256,14 @@ describe('OpenClaw launcher instance isolation', () => {
       connector.config.addAgent({ name: 'dp', type: 'openclaw', env: deepseek, path: home });
       connector.config.addAgent({ name: 'glm', type: 'openclaw', env: glm });
       connector.config.setAgentNetwork('dp', 'ws1');
+      if (move) {
+        // Moving to a folder of the workspace's choice is the computer's to allow.
+        const policy = require('../src/policy');
+        const granted = policy.defaultPolicy();
+        granted.remote['create-in-dir'] = true;
+        granted.dirs = [fs.realpathSync(home)];
+        policy.savePolicy(connector.config.configDir, granted);
+      }
       const commands = [];
       daemon._runAgn = async args => {
         commands.push(args);

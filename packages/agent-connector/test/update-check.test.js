@@ -4,6 +4,10 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { findNpmBin, runUpdate, npmPrefixFromBin, isolatedRuntimeDir } = require('../src/update-check');
 
+// runUpdate installs only a tarball verifiedUpdate already checked
+// (test/install-verify.test.js covers that check).
+const TARBALL = require('node:path').resolve('/tmp/openagents-org-agent-launcher-9.9.9.tgz');
+
 // Capture everything written to process.stderr while `fn` runs.
 function captureStderr(fn) {
   const original = process.stderr.write;
@@ -57,6 +61,7 @@ describe('runUpdate', () => {
     err.code = 'ENOENT';
     const { result, out } = captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'win32',
         npmBin: 'npm.cmd',
         prefix: null,
@@ -70,6 +75,7 @@ describe('runUpdate', () => {
   it('returns false and prints the exit code when npm exits non-zero', () => {
     const { result, out } = captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'linux',
         npmBin: 'npm',
         prefix: null,
@@ -82,6 +88,7 @@ describe('runUpdate', () => {
   it('returns true when npm exits zero', () => {
     const { result } = captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'linux',
         npmBin: 'npm',
         prefix: null,
@@ -94,6 +101,7 @@ describe('runUpdate', () => {
     let captured = null;
     captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'win32',
         npmBin: 'C:\\Program Files\\nodejs\\npm.cmd',
         prefix: null,
@@ -104,10 +112,39 @@ describe('runUpdate', () => {
     assert.ok(captured.args.includes('-g')); // prefix:null → global install
   });
 
+  it('refuses without a verified tarball: no bare @latest install', () => {
+    let spawned = false;
+    const { result, out } = captureStderr(() =>
+      runUpdate({
+        platform: 'linux',
+        npmBin: 'npm',
+        prefix: null,
+        spawn: () => { spawned = true; return { status: 0 }; },
+      }));
+    assert.equal(result, false);
+    assert.equal(spawned, false);
+    assert.match(out, /verified package/);
+  });
+
+  it('installs the verified tarball itself, never a registry spec', () => {
+    let captured = null;
+    captureStderr(() =>
+      runUpdate({
+        tarball: TARBALL,
+        platform: 'linux',
+        npmBin: '/usr/local/bin/npm',
+        prefix: null,
+        spawn: (cmd, args) => { captured = { cmd, args }; return { status: 0 }; },
+      }));
+    assert.deepEqual(captured.args, ['install', '-g', TARBALL]);
+    assert.ok(!captured.args.some((a) => /@latest$/.test(a)));
+  });
+
   it('invokes npm directly on non-Windows', () => {
     let captured = null;
     captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'linux',
         npmBin: '/usr/local/bin/npm',
         prefix: null,
@@ -126,6 +163,7 @@ describe('runUpdate', () => {
     let captured = null;
     captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'linux',
         npmBin: '/home/u/.nvm/versions/node/v24.15.0/bin/npm', // prefix is undefined → derive
         spawn: (cmd, args) => { captured = { cmd, args }; return { status: 0 }; },
@@ -139,6 +177,7 @@ describe('runUpdate', () => {
     let captured = null;
     captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'win32',
         npmBin: 'C:\\Program Files\\nodejs\\npm.cmd',
         spawn: (cmd, args) => { captured = { cmd, args }; return { status: 0 }; },
@@ -201,6 +240,7 @@ describe('runUpdate isolated runtime', () => {
     let captured = null;
     captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'linux',
         npmBin: '/home/u/.openagents/nodejs/bin/npm',
         isolatedDir: '/home/u/.openagents/nodejs',
@@ -217,6 +257,7 @@ describe('runUpdate isolated runtime', () => {
     let captured = null;
     captureStderr(() =>
       runUpdate({
+        tarball: TARBALL,
         platform: 'linux',
         npmBin: '/usr/local/bin/npm',
         isolatedDir: null,

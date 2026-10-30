@@ -18,6 +18,9 @@
   "support": {},
   "install": {
     "binary": "opencode",
+    "npm_package": "opencode-ai",
+    "npm_version": "1.17.11",
+    "npm_integrity": "sha512-a4331YhfsIiDSve0YRP2eNdlY1iDqhzw979Ky66XWiKDA8jeykfsqGUDAmKYKjS3hLV8U8+krFBuMFVO7p5ptQ==",
     "requires": [
       "nodejs"
     ],

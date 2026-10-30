@@ -20,10 +20,8 @@ const { getEnhancedEnv, whichBinary, IS_WINDOWS, defaultAgentWorkdir } = require
 const { LogWriter } = require('./log-writer');
 const { redactDiagnostic } = require('./adapters/health-status');
 const { installCommandFor } = require('./probe');
-
-/** Types whose endpoint is one device-wide config file of their own. OpenClaw
- *  left it: each keyed agent gets a private store (adapters/openclaw.js). */
-const SHARED_NATIVE_CONFIG = new Set(['hermes']);
+const policyLib = require('./policy');
+const { installRoute, shippedEntry, UNATTENDED_ENV } = require('./install-verify');
 
 // A signed-in agent's model list is asked for again after this long. What a
 // CLI is offered changes when the CLI is upgraded (a vendor holds new models
@@ -52,10 +50,10 @@ function maskApiKey(key) {
 }
 
 /**
- * Top-level filesystem locations the workspace folder picker can jump to.
- * Windows has one root per mounted drive; POSIX systems have a single root.
- * Keeping this as a small pure helper makes the Windows behaviour testable on
- * every CI platform.
+ * Top-level filesystem locations of this device. Windows has one root per
+ * mounted drive; POSIX systems have a single root. Not sent to a workspace any
+ * more: its folder picker gets only the folders this computer allows
+ * (Daemon._buildFs). Kept as a small pure helper for local callers.
  */
 function filesystemRoots(platform = os.platform(), exists = fs.existsSync) {
   if (platform !== 'win32') return ['/'];
@@ -119,6 +117,18 @@ function _sentKey(args) {
 function installFailureOf(stdout) {
   const m = /Warning: install failed: ([\s\S]*)$/.exec(String(stdout || ''));
   return m ? m[1].trim() || 'unknown error' : null;
+}
+
+/** Whether `agn create` (without --install) said the agent's runtime is missing. */
+function notInstalledOf(stdout) {
+  return /Runtime '[^']+' is not installed\./.test(String(stdout || ''));
+}
+
+/** A remote command this computer's policy refused: logged as a refusal, never with values. */
+function refusedError(message) {
+  const err = new Error(message);
+  err.refused = true;
+  return err;
 }
 
 /**
@@ -593,10 +603,19 @@ class Daemon {
         const local = a.display_name || null;
         const wanted = remote.displayName || null;
         if (local === wanted) continue;
+        // A label is one line of plain text: anything else the workspace
+        // sends is not written into this computer's config.
+        if (wanted !== null && (typeof wanted !== 'string' || wanted.length > 200 || /[\u0000-\u001f\u007f]/.test(wanted))) {
+          this._log(`display name for ${a.name} from workspace not saved: not a one-line label`, 'warn');
+          continue;
+        }
         try {
           this.config.updateAgent(a.name, { display_name: wanted || undefined });
           this._log(`display name for ${a.name} updated from workspace`);
-        } catch {}
+        } catch (e) {
+          // The config store's refusal (CONFIG_INVALID) can quote the value: name the agent only.
+          if (e && e.code === 'CONFIG_INVALID') this._log(`display name for ${a.name} from workspace not saved: refused by the config store`, 'warn');
+        }
       }
     }
   }
@@ -698,26 +717,6 @@ class Daemon {
     return this._hasCliSignIn(a.type) ? CLI_LOGIN : null;
   }
 
-  /**
-   * Whether a key, endpoint, model and the type's own credential fields the
-   * workspace sends for one agent stay on that agent alone, rather than also
-   * going to <type>.env, which every agent of the type without settings of
-   * its own runs on. Sharing turned signed-in agents into key agents (add a
-   * codex agent on a relay key, and every keyless codex agent ran on that key
-   * from its next restart, tool-less, in direct mode), and it moved agents
-   * set up in the launcher onto another one's key, endpoint and model: add a
-   * second DeepSeek or CodeArts agent from the workspace, and the first one
-   * ran on the new one's settings from its next restart.
-   * Hermes keeps sharing: its endpoint lives in one config file of its own
-   * for the whole device, which only a save to <type>.env updates (index.js
-   * _configureNativeAuth), so a key kept on the agent would never reach it.
-   * OpenClaw writes each keyed agent's private openclaw.json from the agent's
-   * own env when it starts, so it keeps its key on the agent like the rest.
-   */
-  _keepsKeysPerAgent(type) {
-    return !SHARED_NATIVE_CONFIG.has(type);
-  }
-
   /** Whether this type's CLI has a sign-in of its own (`codex login`, …). */
   _hasCliSignIn(type) {
     try {
@@ -781,34 +780,44 @@ class Daemon {
   }
 
   /**
-   * Filesystem hint for the working-directory picker: home, its immediate
-   * (non-hidden) subfolders, and the device's filesystem roots. Roots let a
-   * Windows user switch drives instead of being trapped on the home drive.
+   * Filesystem hint for the workspace's working-directory picker: only the
+   * folders this computer lets a workspace use (policy.js allowedRoots) — the
+   * managed agents root and the folders listed with `agn policy dirs add`.
+   * Nothing about the home folder: its path and the names in it are the
+   * person's, and a workspace has no use for them. `home` (where the picker
+   * opens) is the managed root, listed empty: its folders are agents', some of
+   * them another workspace's; a list_dir there shows the asking workspace its own.
    */
   _buildFs() {
     try {
-      const home = os.homedir();
-      const dirs = fs.readdirSync(home, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
-        .map((d) => d.name)
-        .sort((a, b) => a.localeCompare(b))
-        .slice(0, 100);
-      return { home, dirs, roots: filesystemRoots() };
+      const policy = policyLib.loadPolicy(this.config.configDir);
+      const roots = policyLib.allowedRoots(policy, this.config.configDir);
+      return { home: roots[0], dirs: [], roots };
     } catch {
       return {};
     }
   }
 
-  /** List the (non-hidden) subfolders of a directory, for on-demand browsing. */
-  _listDir(dir) {
-    const target = dir && String(dir).trim() ? String(dir) : os.homedir();
+  /**
+   * List the (non-hidden) subfolders of `dir`, a folder already cleared for
+   * the asker (remoteListTarget). `only` limits the names listed; `within(p)`
+   * says whether the parent may be offered to go up to.
+   */
+  _listDir(dir, { only, within } = {}) {
+    const root = policyLib.managedAgentsRoot(this.config.configDir);
+    const target = dir && String(dir).trim() ? String(dir) : root;
+    if (target === root) {
+      try { fs.mkdirSync(target, { recursive: true }); } catch {}
+    }
     const dirs = fs.readdirSync(target, { withFileTypes: true })
       .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
       .map((d) => d.name)
+      .filter((name) => !only || only.includes(name))
       .sort((a, b) => a.localeCompare(b))
       .slice(0, 500);
     const parent = path.dirname(target);
-    return { path: target, parent: parent === target ? null : parent, dirs };
+    const offerParent = parent !== target && (!within || within(parent));
+    return { path: target, parent: offerParent ? parent : null, dirs };
   }
 
   /**
@@ -818,24 +827,12 @@ class Daemon {
    * daemon's event loop. Result is reported to the workspace on the heartbeat.
    */
   /**
-   * Persist an agent's model. Sets the generic LLM_MODEL (used by LLM-direct
-   * adapters) plus the env var the agent's own CLI reads, so a model picked in
-   * the workspace actually takes effect (e.g. Claude reads ANTHROPIC_MODEL).
-   */
-  async _setModelEnv(type, model) {
-    const val = String(model || '');
-    await this._runAgn(['env', type, '--set', `LLM_MODEL=${val}`]);
-    const nativeVar = { claude: 'ANTHROPIC_MODEL', gemini: 'GEMINI_MODEL' }[type] || this._nativeModelVar(type);
-    if (nativeVar) await this._runAgn(['env', type, '--set', `${nativeVar}=${val}`]);
-  }
-
-  /**
    * A node command targets one agent. The launcher may already have saved an
    * instance-level model/key/URL, which wins over the type env written above.
    * Mirror the command onto that instance so the running adapter and the
    * launcher's "This Computer" row both see the requested settings.
    */
-  _saveNodeAgentEnv(name, type, args) {
+  _saveNodeAgentEnv(name, type, args, node) {
     const changes = {};
     if (type === 'codex' && args.codexWireApi !== undefined) {
       if (!['responses', 'chat'].includes(args.codexWireApi)) {
@@ -891,10 +888,25 @@ class Daemon {
     if (Object.keys(changes).length) this.config.updateAgentEnv(name, changes);
     // Hermes reads its endpoint from config.yaml, not the agent env: without
     // this a Hermes agent moved to the sign-in kept calling the relay
-    // (AgentConnector._configureAgentNativeAuth does the same for agn).
-    if (type === 'hermes' && changes[AUTH_MODE_KEY] === CLI_LOGIN) {
+    // (AgentConnector._configureAgentNativeAuth does the same for agn). That
+    // file is the whole computer's, so a workspace changes it only when every
+    // other Hermes agent here is its own too; otherwise it is the person's call.
+    if (type === 'hermes' && changes[AUTH_MODE_KEY] === CLI_LOGIN && this._typeWideChangeContained(type, name, node)) {
       try { require('./adapters/hermes').restoreNativeAuth(); } catch {}
     }
+  }
+
+  /**
+   * Whether a change to `type`'s device-wide settings, asked for by the
+   * workspace of `node` for agent `name`, reaches no agent but that
+   * workspace's: every other agent of the type is bound to it too.
+   */
+  _typeWideChangeContained(type, name, node) {
+    let agents = [];
+    try { agents = this.config.getAgents(); } catch { return false; }
+    return agents
+      .filter((a) => a && a.name !== name && (a.type || 'openclaw') === type)
+      .every((a) => !!node && this._agentOnNodeWorkspace(a, node));
   }
 
   /**
@@ -966,57 +978,133 @@ class Daemon {
   }
 
   /**
-   * Execute one remote command by shelling out to this same launcher's CLI, so
-   * all of create/install/connect/start/stop/remove reuses the exact code path a
-   * local `agn` invocation would — then report the outcome back to the workspace.
-   */
-    /**
-   * Apply a workspace-sent config map, ALLOWLISTED to the agent type's own
-   * registry env_config keys. Arbitrary env is refused — a workspace admin
-   * must not be able to push NODE_OPTIONS-class variables onto a device.
-   * (Credential contract: config flows down transiently, secrets persist
-   * only here, in the device's env store.)
+   * Apply a workspace-sent config map to ONE agent: the keys its type's
+   * registry env_config declares, saved in that agent's own env
+   * (config.updateAgentEnv). Never to <type>.env, which every agent of the
+   * type without a setting of its own runs on — agents bound to other
+   * workspaces and local ones too — and never through an `agn env … KEY=VALUE`
+   * child, whose argv any process on this computer can read. Hermes, whose
+   * custom endpoint lives in one device-wide config.yaml that only a
+   * <type>.env save updates, gets the values on the agent like the rest:
+   * pointing the whole computer's Hermes at an endpoint is done on the
+   * computer (`agn env hermes --set …`), not by one workspace.
+   *
+   * Arbitrary env is refused — a workspace must not push NODE_OPTIONS-class
+   * variables onto a device — and so is a value that widens what the agent
+   * may do (policy.js AUTHORITY_ENV). (Credential contract: config flows down
+   * transiently, secrets persist only here, in the device's own store.)
+   * Returns the keys saved on the agent.
    */
   async _applyConfigMap(type, config, name) {
-    // Returns the keys saved to <type>.env. A type that keeps them on the
-    // agent (_keepsKeysPerAgent) gets them on `name` instead, and none back.
     const applied = [];
-    const own = {};
-    const perAgent = !!name && this._keepsKeysPerAgent(type);
     if (!config || typeof config !== 'object') return applied;
-    let allowed = null;
+    let entry = null;
     try {
-      const entry = this.registry.getEntry(type);
-      allowed = new Set(
-        ((entry && entry.env_config) || []).map((f) => f.name).filter(Boolean)
-      );
+      entry = this.registry.getEntry(type);
     } catch {
       return applied; // no registry entry — refuse everything rather than guess
     }
+    const allowed = this._envConfigKeys(type, entry) || new Set();
+    const own = {};
     for (const [key, value] of Object.entries(config)) {
       if (!allowed.has(key)) {
         this._log(`config for '${type}': refused non-env_config key '${key}'`, 'warn');
         continue;
       }
+      if (!policyLib.remoteEnvValueAllowed(key, value)) {
+        this._log(`config for '${type}': refused '${key}', which changes what the agent may do`, 'warn');
+        continue;
+      }
       if (value === null || value === undefined) continue;
-      if (perAgent) { own[key] = String(value); continue; }
-      const r = await this._runAgn(['env', type, '--set', `${key}=${String(value)}`]);
-      // Stop here rather than count it: the caller drops the agent's own copy
-      // of what was applied, which would leave it with no credential at all.
-      if (r.code !== 0) throw new Error(r.stderr || r.stdout || `Could not save ${key}`);
-      applied.push(key);
+      own[key] = String(value);
     }
-    if (Object.keys(own).length) this.config.updateAgentEnv(name, own);
+    if (!Object.keys(own).length) return applied;
+    if (!name) {
+      this._log(`config for '${type}': not saved, no agent named to keep it on`, 'warn');
+      return applied;
+    }
+    this.config.updateAgentEnv(name, own);
+    applied.push(...Object.keys(own));
     return applied;
   }
 
-async _runNodeCommand(n, cmd) {
+  /** The registry entry for `type`, or null. */
+  _registryEntry(type) {
+    try { return (type && this.registry.getEntry(type)) || null; } catch { return null; }
+  }
+
+  /**
+   * The env keys a workspace may set on a `type` agent, or null for an
+   * unknown type: its env_config as shipped with this launcher — the catalog
+   * a server sends can declare any key — or, for a type only a server lists,
+   * that one's; never a key that steers the process itself (NODE_OPTIONS and
+   * the like, policy.js isProcessEnvKey).
+   */
+  _envConfigKeys(type, entry = this._registryEntry(type)) {
+    const source = shippedEntry(type) || entry;
+    if (!source) return null;
+    return new Set(
+      (source.env_config || []).map((f) => f && f.name).filter((k) => k && !policyLib.isProcessEnvKey(k)),
+    );
+  }
+
+  /**
+   * Whether a remote create may install `type`'s runtime: `{ flag }` to pass
+   * `--install` to `agn create`, and `why` it may not. Only with
+   * install-runtime allowed, and only a route the installer can verify
+   * (install-verify.js). The `agn` child refuses an unverified route on its own
+   * too (OPENAGENTS_UNATTENDED), whatever this says.
+   */
+  _remoteInstall(policy, type, entry) {
+    const route = installRoute(entry);
+    const label = (entry && entry.label) || type;
+    if (route.kind === 'api_only') return { flag: true, why: null };
+    if (!policyLib.isRemoteAllowed(policy, 'install-runtime')) {
+      return { flag: false, why: policyLib.refusal('install-runtime', `install ${label}`) };
+    }
+    if (!route.verified) {
+      const manual = route.command ? ` Or install it yourself: ${route.command}` : '';
+      return {
+        flag: false,
+        why: `${label}'s installer cannot be verified, so no workspace can run it. On this computer, run: agn install ${type} --allow-unverified.${manual}`,
+      };
+    }
+    return { flag: true, why: null };
+  }
+
+  /** Report a runtime this computer would not install for `name`, as its probe result. */
+  _recordInstallRefused(name, type, why) {
+    this._probes[name] = {
+      type, agent: name, ok: false, method: 'install', code: 'install_not_allowed',
+      message: why,
+      guidance: [why],
+      at: new Date().toISOString(),
+    };
+    this._saveProbes();
+  }
+
+  /**
+   * Execute one remote command — by shelling out to this same launcher's CLI
+   * where that is how a local `agn` does it (create, connect, remove) — and
+   * report the outcome back to the workspace.
+   *
+   * Pairing gives a workspace a credential, not authority. Every command is
+   * checked here, when it runs, against this computer's policy (policy.js),
+   * read afresh for each command; nothing a command carries can change it,
+   * and the `agn` children run unattended (see _runAgn). A refused command
+   * changes nothing and reports why, with what the person would run on this
+   * computer to allow it.
+   */
+  async _runNodeCommand(n, cmd) {
     const action = cmd.action;
-    const args = cmd.args || {};
-    const name = (args.name || '').trim();
+    const args = cmd.args && typeof cmd.args === 'object' && !Array.isArray(cmd.args) ? cmd.args : {};
+    const name = String(args.name || '').trim();
+    const configDir = this.config.configDir;
+    const policy = policyLib.loadPolicy(configDir);
     let ok = false;
     let message = '';
     let data = null;
+    let ignored = [];
     // An agent this create_agent wrote to config but did not finish setting up.
     let halfCreated = null;
     // SECURITY: a workspace may only act on agents bound to it. Reject commands
@@ -1025,35 +1113,63 @@ async _runNodeCommand(n, cmd) {
     // belong to another one (they surface in no roster of ours either).
     const AGENT_SCOPED = new Set(['start_agent', 'stop_agent', 'remove_agent', 'configure_agent']);
     try {
+      let existing = null;
       if (AGENT_SCOPED.has(action)) {
-        const existing = this.config.getAgent(name);
+        existing = this.config.getAgent(name);
         if (!existing || !this._agentOnNodeWorkspace(existing, n)) {
           throw new Error(`Agent '${name}' is not managed by this workspace`);
         }
       }
+      // Fields beyond what the action reads: refused when they ask for more
+      // authority (a bypass mode, "unrestricted", a code-loading path), and
+      // otherwise ignored, which the result says.
+      const screenType = existing ? (existing.type || 'openclaw') : String(args.type || '').trim();
+      const screened = policyLib.screenRemoteArgs(action, args, this._envConfigKeys(screenType));
+      if (screened.refused.length) {
+        throw refusedError(policyLib.refusal(
+          'agent-authority', `set ${screened.refused.join(', ')}, which changes what an agent may do`,
+        ));
+      }
+      ignored = screened.ignored;
+      // Text the config and env files could not hold as sent: refused before
+      // anything is written, rather than half-applied.
+      const unstorable = policyLib.unstorableFields(args);
+      if (unstorable.length) {
+        throw refusedError(`This computer cannot store ${unstorable.join(', ')} as sent (not plain text). Nothing was changed.`);
+      }
+
       if (action === 'create_agent') {
-        const type = (args.type || '').trim();
-        // Working directory: use the one the user picked, else a managed folder
-        // under the launcher home so every remote-created agent has a clean,
-        // predictable home without the user typing a path.
-        let workingDir = (args.workingDir || '').trim();
-        if (!workingDir) workingDir = path.join(os.homedir(), '.openagents', 'agents', name);
-        try { fs.mkdirSync(workingDir, { recursive: true }); } catch {}
-        const r1 = await this._runAgn(['create', name, '--type', type, '--install', '--path', workingDir]);
+        const type = String(args.type || '').trim();
+        // A type is also a folder, a file name and an argv word: a name a
+        // served catalog made up ('../x', '--flag') goes no further.
+        if (!policyLib.isSafeTypeName(type)) throw refusedError(`'${type}' is not an agent type this computer knows.`);
+        if (!policyLib.isSafeAgentName(name)) {
+          throw refusedError(`'${name}' cannot be an agent name here: use letters, digits, '_', '-' or '.', starting with a letter, digit or '_'.`);
+        }
+        const entry = this._registryEntry(type);
+        if (!entry) throw new Error(`Unknown agent type '${type}'`);
+        if (this.config.getAgent(name)) throw new Error(`Agent '${name}' already exists`);
+        if (policyLib.isUnrestricted(policy, name)) {
+          throw refusedError(`The name '${name}' is kept on this computer for an agent allowed to run without approvals. Pick another name, or on this computer run: agn policy unrestricted remove ${name}`);
+        }
+        // No folder (or the managed root) is the agent's own managed folder;
+        // any other needs create-in-dir and a folder listed in `dirs`.
+        const where = policyLib.remoteWorkingDir(policy, configDir, name, args.workingDir);
+        if (where.refused) throw refusedError(where.refused);
+        try { fs.mkdirSync(where.dir, { recursive: true }); } catch {}
+        const install = this._remoteInstall(policy, type, entry);
+        const r1 = await this._runAgn([
+          'create', name, '--type', type, ...(install.flag ? ['--install'] : []), '--path', where.dir,
+        ]);
         if (r1.code !== 0) throw new Error(r1.stderr || r1.stdout || 'create failed');
         const installError = installFailureOf(r1.stdout);
+        const notInstalled = !installError && notInstalledOf(r1.stdout);
         halfCreated = name;
-        // Optional credentials for API-key agents (generic → provider mapping
-        // happens in env resolution). `useDeviceCredentials` means the device
+        // Credentials go on this agent alone (generic → provider mapping
+        // happens in env resolution); `useDeviceCredentials` means the device
         // already holds them — nothing to write.
-        if (!this._keepsKeysPerAgent(type)) {
-          if (_sentKey(args))
-            await this._runAgn(['env', type, '--set', `LLM_API_KEY=${args.apiKey}`]);
-          if (args.model) await this._setModelEnv(type, args.model);
-          if (args.baseUrl) await this._runAgn(['env', type, '--set', `LLM_BASE_URL=${args.baseUrl}`]);
-        }
         await this._applyConfigMap(type, args.config, name);
-        this._saveNodeAgentEnv(name, type, args);
+        this._saveNodeAgentEnv(name, type, args, n);
         // Attach to this node's workspace BY SLUG: the daemon already knows
         // which workspace this command came from, so there is no token to
         // pass and no /v1/token/resolve round-trip to fail (the outage class
@@ -1070,6 +1186,13 @@ async _runNodeCommand(n, cmd) {
           // Say why on the card: a probe now could only answer "Not installed".
           message = `Agent '${name}' created, but installing ${type} failed: ${installError}`;
           this._recordInstallFailure(name, type, installError);
+          this._nodeHeartbeat();
+        } else if (notInstalled) {
+          // Not installed, and not installed by this command: say what the
+          // person can do on the computer, on the card and as its probe.
+          const why = install.why || `Install ${entry.label || type} on this computer: agn install ${type}`;
+          message = `Agent '${name}' created, but ${type} is not installed on this computer. ${why}`;
+          this._recordInstallRefused(name, type, why);
           this._nodeHeartbeat();
         } else {
           // First-connect smoke test, in the background (a probe can take its
@@ -1092,39 +1215,54 @@ async _runNodeCommand(n, cmd) {
         ok = true;
         message = `Agent '${name}' ${action === 'stop_agent' ? 'stopped' : 'started'}`;
       } else if (action === 'remove_agent') {
+        if (!policyLib.isRemoteAllowed(policy, 'remove-agent')) {
+          throw refusedError(policyLib.refusal('remove-agent', `remove agent '${name}'`));
+        }
+        // `agn remove` drops the agent's entry from this computer's config and
+        // the private state OpenAgents keeps for it in its own folder. The
+        // agent's working folder, managed or not, stays as it is: a workspace
+        // never deletes files on this computer.
         const r = await this._runAgn(['remove', name]);
         ok = r.code === 0;
         message = ok ? `Agent '${name}' removed` : (r.stderr || r.stdout || 'remove failed');
       } else if (action === 'configure_agent') {
-        // Reconfigure an existing agent: update model/key (type-level env), then
-        // restart it so the change takes effect. Working-dir changes require a
-        // recreate (agn has no in-place path change) at the new path.
-        const type = (args.type || '').trim();
-        if (!this._keepsKeysPerAgent(type)) {
-          if (_sentKey(args))
-            await this._runAgn(['env', type, '--set', `LLM_API_KEY=${args.apiKey}`]);
-          if (args.model !== undefined) await this._setModelEnv(type, args.model);
-          if (args.baseUrl !== undefined) await this._runAgn(['env', type, '--set', `LLM_BASE_URL=${args.baseUrl}`]);
+        if (!policyLib.isRemoteAllowed(policy, 'configure-agent')) {
+          throw refusedError(policyLib.refusal('configure-agent', `change agent '${name}'`));
         }
-        const applied = await this._applyConfigMap(type, args.config, name);
-        // Those just went to the type env (Hermes, OpenClaw), which a copy on
-        // the agent itself (one the launcher saved) outranks at launch: drop
-        // that copy, or the agent keeps running on the old key while the save
-        // says ok.
-        const unshadow = Object.fromEntries(applied.map((key) => [key, '']));
-        const newDir = (args.workingDir || '').trim();
-        if (newDir && newDir !== (args.currentWorkingDir || '')) {
-          try { fs.mkdirSync(newDir, { recursive: true }); } catch {}
+        // The agent's own type, not the command's: a type sent here would
+        // otherwise choose which env the values land in, or recreate the agent
+        // as another runtime.
+        const type = existing.type || 'openclaw';
+        const sentType = String(args.type || '').trim();
+        if (!policyLib.isSafeTypeName(type)) throw refusedError(`Agent '${name}' has a type this computer cannot use ('${type}').`);
+        if (sentType && sentType !== type) {
+          throw new Error(`Agent '${name}' is ${type}; a configure cannot make it ${sentType}. Remove it and add a new agent instead.`);
+        }
+        // Working-dir changes require a recreate (agn has no in-place path
+        // change) at the new path, which gets create's folder rules.
+        const newDir = String(args.workingDir || '').trim();
+        const moving = !!newDir && (!existing.path || path.resolve(newDir) !== path.resolve(existing.path));
+        let where = null;
+        if (moving) {
+          where = policyLib.remoteWorkingDir(policy, configDir, name, newDir);
+          if (where.refused) throw refusedError(where.refused);
+        }
+        await this._applyConfigMap(type, args.config, name);
+        if (moving) {
+          try { fs.mkdirSync(where.dir, { recursive: true }); } catch {}
           // The agent's own env goes with the entry remove/create replace, and
           // for a type that keeps its key on the agent that is the key, the
           // endpoint and the model. The form sends only what changed, so carry
           // the rest over before applying this command.
           const ownEnv = { ...((this.config.getAgent(name) || {}).env || {}) };
+          const install = this._remoteInstall(policy, type, this._registryEntry(type));
           await this._runAgn(['remove', name]);
-          const rc = await this._runAgn(['create', name, '--type', type, '--install', '--path', newDir]);
+          const rc = await this._runAgn([
+            'create', name, '--type', type, ...(install.flag ? ['--install'] : []), '--path', where.dir,
+          ]);
           if (rc.code !== 0) throw new Error(rc.stderr || rc.stdout || 'recreate failed');
-          if (Object.keys(ownEnv).length) this.config.updateAgentEnv(name, { ...ownEnv, ...unshadow });
-          this._saveNodeAgentEnv(name, type, args);
+          if (Object.keys(ownEnv).length) this.config.updateAgentEnv(name, ownEnv);
+          this._saveNodeAgentEnv(name, type, args, n);
           const rc2 = await this._runAgn([
             'connect', name, '--workspace', n.workspace_slug || n.workspace_id, '--connection', n.node_id,
           ]);
@@ -1133,8 +1271,7 @@ async _runNodeCommand(n, cmd) {
           // Restart in-process. `agn stop` + `agn start` both round-trip
           // through daemon.cmd, and the pair can interleave with the poll so
           // the agent stops and never restarts.
-          if (applied.length) this.config.updateAgentEnv(name, unshadow);
-          this._saveNodeAgentEnv(name, type, args);
+          this._saveNodeAgentEnv(name, type, args, n);
           await this.restartAgent(name);
         }
         ok = true;
@@ -1179,7 +1316,13 @@ async _runNodeCommand(n, cmd) {
         message = ok ? `Listed ${listed.models.length} model(s)` : listed.error;
         data = { models: listed.models };
       } else if (action === 'list_dir') {
-        data = this._listDir(args.path);
+        // Only inside the folders this computer allows (realpath-checked, so a
+        // symlink or `..` cannot lead out), and in the managed root only this
+        // workspace's own agents' folders.
+        const own = this.config.getAgents().filter((a) => this._agentOnNodeWorkspace(a, n)).map((a) => a.name);
+        const target = policyLib.remoteListTarget(policy, configDir, args.path, own);
+        if (target.refused) throw refusedError(target.refused);
+        data = this._listDir(target.dir, { only: target.only, within: target.within });
         ok = true;
         message = `Listed ${data.dirs.length} folder(s)`;
       } else {
@@ -1188,12 +1331,25 @@ async _runNodeCommand(n, cmd) {
     } catch (e) {
       ok = false;
       message = e.message || String(e);
+      if (e && e.code === 'CONFIG_INVALID') {
+        // The config store refused a value the workspace sent. Its own wording
+        // may quote the value (a key, say): name the field, never the value.
+        const field = e.field || e.key || null;
+        message = `This computer could not save what the workspace sent${field ? ` for ${field}` : ''}: it is not a value OpenAgents can store. Nothing more was changed.`;
+        this._log(`remote ${action}${name ? ` for '${name}'` : ''}: config refused a value${field ? ` (${field})` : ''}`, 'warn');
+      }
+      // Names and paths only: a refusal never quotes a value the command sent.
+      if (e.refused) this._log(`remote ${action}${name ? ` for '${name}'` : ''} refused: ${message}`, 'warn');
       // Undo a create that failed after `agn create`: the entry stays in config
       // without this workspace's binding, so no roster here shows it, the
       // workspace's failed card cannot remove it, and every retry under the
       // same name hit "Agent '…' already exists". Only an entry this command
       // made is removed — a create refused for a taken name never sets it.
       if (halfCreated) await this._runAgn(['remove', halfCreated]);
+    }
+    if (ignored.length) {
+      message = `${message}${message ? ' ' : ''}(Not used: ${ignored.join(', ')}.)`;
+      data = { ...(data || {}), ignored };
     }
     try {
       // Report back to the workspace that issued the command — with several
@@ -1217,7 +1373,10 @@ async _runNodeCommand(n, cmd) {
         bin = process.argv[1];
       }
       const child = spawn(process.execPath, [bin, ...cliArgs], {
-        env: { ...getEnhancedEnv(), OPENAGENTS_SKIP_UPDATE_CHECK: '1' },
+        // UNATTENDED: nobody is at the keyboard of a child the daemon runs, so
+        // it may not run an unverified installer or grant itself policy
+        // (install-verify.js, policy.js), whatever a remote command asked.
+        env: { ...getEnhancedEnv(), OPENAGENTS_SKIP_UPDATE_CHECK: '1', [UNATTENDED_ENV]: '1' },
         // Run from home so a created agent's default working dir is sensible
         // (not the ~/.openagents config dir).
         cwd: os.homedir(),

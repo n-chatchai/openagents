@@ -22,6 +22,9 @@
     },
     "install": {
       "binary": "claude",
+      "npm_package": "@anthropic-ai/claude-code",
+      "npm_version": "2.1.312",
+      "npm_integrity": "sha512-/gx8byG8VOm4YoNuT5tal/Ov5Z5oydJzZkmHCJcBFLbNGGpyYDbKA/CNdB+iIKwcLQC8pVwBoj6Dt7H3L2J5bw==",
       "requires": [
         "nodejs",
         "git"
@@ -124,6 +127,9 @@
     },
     "install": {
       "binary": "openclaw",
+      "npm_package": "openclaw",
+      "npm_version": "2026.10.8",
+      "npm_integrity": "sha512-fWOIOOyddIBqeuPz82DBCdY5kNl1yD51qebAHnxlTN7SmVoH5/WSIudR/N1zDhcIIksgJXe6ZgGy5ngSRxZOrQ==",
       "requires": [
         "nodejs>=22",
         "git"
@@ -225,6 +231,9 @@
     },
     "install": {
       "binary": "codex",
+      "npm_package": "@openai/codex",
+      "npm_version": "0.165.0",
+      "npm_integrity": "sha512-aiwtQVp2KBhJld966CuU5bVfQ46VNB4mNTl6giX3WGZdt4euI3tv2RUqJpnupPNA8DXHg2z+RoQ0Zfw87dy8Lw==",
       "requires": [
         "nodejs"
       ],
@@ -450,6 +459,9 @@
     "support": {},
     "install": {
       "binary": "opencode",
+      "npm_package": "opencode-ai",
+      "npm_version": "1.17.11",
+      "npm_integrity": "sha512-a4331YhfsIiDSve0YRP2eNdlY1iDqhzw979Ky66XWiKDA8jeykfsqGUDAmKYKjS3hLV8U8+krFBuMFVO7p5ptQ==",
       "requires": [
         "nodejs"
       ],
@@ -682,6 +694,9 @@
     },
     "install": {
       "binary": "kimi",
+      "npm_package": "@moonshot-ai/kimi-code",
+      "npm_version": "2.4.0",
+      "npm_integrity": "sha512-EugvJSkGbfWYHgPgVmpIyEPyxtyhGptbWI+ItPoWLu6yDTkcZ1LYE3dhWzNu2+InMmpmgNMrW7Yj25qg9TEN6Q==",
       "requires": [
         "nodejs"
       ],
@@ -798,6 +813,8 @@
     "install": {
       "binary": "copilot",
       "npm_package": "@github/copilot",
+      "npm_version": "1.0.105",
+      "npm_integrity": "sha512-k5JPVZrc0Ms4YdAmYS80OGxDvwjDZNVqDS3dxphIFUVSTFJRwcHkbHh3yUKk7MEyBjKqQYKLKNAKSF+dVmjl7A==",
       "requires": [
         "nodejs"
       ],
@@ -1153,6 +1170,9 @@
     },
     "install": {
       "binary": "cline",
+      "npm_package": "cline",
+      "npm_version": "3.0.74",
+      "npm_integrity": "sha512-pCaRaJ6Jx50Urej+BYjpGkpZnFbPDCPsibKEbIjEuVxETXbZ/A1SMij8Thy8FobercevXX6hV7joAzU7OG5lzA==",
       "requires": [
         "nodejs"
       ],
@@ -1277,6 +1297,9 @@
     },
     "install": {
       "binary": "gemini",
+      "npm_package": "@google/gemini-cli",
+      "npm_version": "0.66.0",
+      "npm_integrity": "sha512-EAtsJ9/JxiphHlduzvhoCkb7I0LdOxyugB5NpUtVqKVGZIWjV3JmurvK89ZrvMbV3kwk5SdWINz1M5ZN/2K/Lw==",
       "requires": [
         "nodejs"
       ],
@@ -1616,6 +1639,8 @@
     "install": {
       "binary": "pi",
       "npm_package": "@earendil-works/pi-coding-agent",
+      "npm_version": "0.83.0",
+      "npm_integrity": "sha512-uYhF+FsZxogoSX/AxBcUdiY+ZklubwaXyAoEGA2eQwsHcyEAhUYIKh/WLXe/a8+k8eTCmxb+ZN2Zo9mzQtzbWw==",
       "requires": [
         "nodejs"
       ],
@@ -1804,6 +1829,8 @@
     "install": {
       "binary": "dsh",
       "npm_package": "@deepseek-ai/dsh",
+      "npm_version": "0.2.1-rc.2",
+      "npm_integrity": "sha512-tvY+yhfKRifthbqPe/OK0AYxM5ZkvqfYq/jMYgJcEUxiRRL1Vwra3Ti5TB6AXgSWQdiPHYh/Vp6SJa9yHwMNuw==",
       "requires": [
         "nodejs"
       ],
@@ -1917,6 +1944,8 @@
         "cmdc"
       ],
       "npm_package": "command-code",
+      "npm_version": "1.88.2",
+      "npm_integrity": "sha512-B/+JVQecxHlkouzsVnFsRlxZ3e8VY35Grr934T1fx+c8aq4Em9kxI79B1gQ195xW50f3Svq8qc8j0QThSpNjWw==",
       "requires": [
         "nodejs"
       ],
@@ -2184,6 +2213,8 @@
         "cbc"
       ],
       "npm_package": "@tencent-ai/codebuddy-code",
+      "npm_version": "2.178.1",
+      "npm_integrity": "sha512-YiBJz78yxUQBbXc6XZNUSBsfdKhZco6KVRYYnJckf4FTb2rTwRgwfHOkuWbKa0zn05wFwFCeysG/PSZxg111rg==",
       "requires": [
         "nodejs"
       ],

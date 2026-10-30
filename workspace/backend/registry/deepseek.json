@@ -23,6 +23,8 @@
   "install": {
     "binary": "dsh",
     "npm_package": "@deepseek-ai/dsh",
+    "npm_version": "0.2.1-rc.2",
+    "npm_integrity": "sha512-tvY+yhfKRifthbqPe/OK0AYxM5ZkvqfYq/jMYgJcEUxiRRL1Vwra3Ti5TB6AXgSWQdiPHYh/Vp6SJa9yHwMNuw==",
     "requires": [
       "nodejs"
     ],

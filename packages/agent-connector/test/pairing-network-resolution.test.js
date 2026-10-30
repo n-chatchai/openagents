@@ -109,77 +109,94 @@ describe('daemon network resolution (pairing first)', () => {
 describe('workspace config map allowlist', () => {
   function harness(envConfig) {
     const calls = [];
-    const self = {
+    const saved = [];
+    const self = Object.assign(Object.create(Daemon.prototype), {
       registry: { getEntry: () => ({ env_config: envConfig }) },
+      config: { updateAgentEnv: (name, env) => { saved.push([name, env]); } },
       _runAgn: async (args) => { calls.push(args); return { code: 0 }; },
       _log: () => {},
-    };
-    return { self, calls };
+    });
+    return { self, calls, saved };
   }
 
-  it('applies keys declared in the registry env_config', async () => {
-    const { self, calls } = harness([{ name: 'PI_API_FORMAT' }, { name: 'PI_PROVIDER' }]);
+  it('applies keys declared in the registry env_config, on the agent itself', async () => {
+    const { self, calls, saved } = harness([{ name: 'PI_API_FORMAT' }, { name: 'PI_PROVIDER' }]);
     await Daemon.prototype._applyConfigMap.call(self, 'pi', {
       PI_API_FORMAT: 'openai-completions',
       PI_PROVIDER: 'openai',
-    });
-    assert.equal(calls.length, 2);
-    assert.deepEqual(calls[0], ['env', 'pi', '--set', 'PI_API_FORMAT=openai-completions']);
+    }, 'pi-1');
+    // Never `agn env pi --set …`: that is every pi agent's, and its argv shows the value.
+    assert.equal(calls.length, 0);
+    assert.deepEqual(saved, [['pi-1', { PI_API_FORMAT: 'openai-completions', PI_PROVIDER: 'openai' }]]);
   });
 
   it('refuses keys outside env_config — no NODE_OPTIONS-class injection', async () => {
-    const { self, calls } = harness([{ name: 'PI_API_KEY' }]);
+    const { self, calls, saved } = harness([{ name: 'PI_API_KEY' }]);
     await Daemon.prototype._applyConfigMap.call(self, 'pi', {
       NODE_OPTIONS: '--require /tmp/evil.js',
       PATH: '/tmp',
       PI_API_KEY: 'sk-x',
-    });
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0], ['env', 'pi', '--set', 'PI_API_KEY=sk-x']);
+    }, 'pi-1');
+    assert.equal(calls.length, 0);
+    assert.deepEqual(saved, [['pi-1', { PI_API_KEY: 'sk-x' }]]);
+  });
+
+  it('saves nothing type-wide when no agent is named', async () => {
+    const { self, calls, saved } = harness([{ name: 'PI_API_KEY' }]);
+    await Daemon.prototype._applyConfigMap.call(self, 'pi', { PI_API_KEY: 'sk-x' });
+    assert.equal(calls.length, 0);
+    assert.deepEqual(saved, []);
   });
 
   it('applies nothing when the type has no registry entry', async () => {
     const calls = [];
-    const self = {
+    const self = Object.assign(Object.create(Daemon.prototype), {
       registry: { getEntry: () => { throw new Error('unknown'); } },
       _runAgn: async (args) => { calls.push(args); return { code: 0 }; },
       _log: () => {},
-    };
-    await Daemon.prototype._applyConfigMap.call(self, 'ghost', { ANY: 'x' });
+    });
+    await Daemon.prototype._applyConfigMap.call(self, 'ghost', { ANY: 'x' }, 'g');
     assert.equal(calls.length, 0);
   });
 });
 
 describe('workspace model → the agent\'s own model setting', () => {
+  const { Config } = require('../src/config');
   function harness(entry) {
-    const calls = [];
-    const self = {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oa-model-'));
+    const config = new Config(dir);
+    const self = Object.assign(Object.create(Daemon.prototype), {
+      config,
       registry: { getEntry: () => entry },
-      _runAgn: async (args) => { calls.push(args); return { code: 0 }; },
       _log: () => {},
-    };
-    self._nativeModelVar = Daemon.prototype._nativeModelVar.bind(self);
-    return { self, calls };
+    });
+    return { self, config, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
   }
 
-  it('also writes the model a type reads natively (CodeArts: CODEARTS_MODEL)', async () => {
-    const { self, calls } = harness({
+  it('also writes the model a type reads natively (CodeArts: CODEARTS_MODEL)', () => {
+    const { self, config, cleanup } = harness({
       env_config: [{ name: 'CODEARTS_CLI_AK' }, { name: 'CODEARTS_CLI_SK' }, { name: 'CODEARTS_MODEL' }],
     });
-    await Daemon.prototype._setModelEnv.call(self, 'codearts', 'huaweicloud-maas/GLM-5.2');
-    assert.deepEqual(calls, [
-      ['env', 'codearts', '--set', 'LLM_MODEL=huaweicloud-maas/GLM-5.2'],
-      ['env', 'codearts', '--set', 'CODEARTS_MODEL=huaweicloud-maas/GLM-5.2'],
-    ]);
+    try {
+      config.addAgent({ name: 'ca', type: 'codearts' });
+      self._saveNodeAgentEnv('ca', 'codearts', { model: 'huaweicloud-maas/GLM-5.2' });
+      assert.deepEqual(config.getAgent('ca').env, {
+        LLM_MODEL: 'huaweicloud-maas/GLM-5.2',
+        CODEARTS_MODEL: 'huaweicloud-maas/GLM-5.2',
+      });
+    } finally { cleanup(); }
   });
 
-  it('leaves a type that maps LLM_MODEL itself to env resolution', async () => {
-    const { self, calls } = harness({
+  it('leaves a type that maps LLM_MODEL itself to env resolution', () => {
+    const { self, config, cleanup } = harness({
       env_config: [{ name: 'LLM_MODEL' }, { name: 'OPENCODE_MODEL' }],
       resolve_env: { rules: [{ from: 'LLM_MODEL', to: 'OPENCODE_MODEL' }] },
     });
-    await Daemon.prototype._setModelEnv.call(self, 'opencode', 'm');
-    assert.deepEqual(calls, [['env', 'opencode', '--set', 'LLM_MODEL=m']]);
+    try {
+      config.addAgent({ name: 'oc', type: 'opencode' });
+      self._saveNodeAgentEnv('oc', 'opencode', { model: 'm' });
+      assert.deepEqual(config.getAgent('oc').env, { LLM_MODEL: 'm' });
+    } finally { cleanup(); }
   });
 });
 

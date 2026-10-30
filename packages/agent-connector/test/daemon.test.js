@@ -9,8 +9,12 @@ const { Daemon, filesystemRoots } = require('../src/daemon');
 const { Config } = require('../src/config');
 const { EnvManager } = require('../src/env');
 const { Registry } = require('../src/registry');
+const policyLib = require('../src/policy');
 
 let tmpDir;
+// A user's own folders: outside the launcher's config dir (tmpDir here), as
+// ~/code is outside ~/.openagents.
+let userDir;
 let scrubbedEnv;
 
 // The roster and agent env read the daemon's own process.env, so a model or
@@ -19,6 +23,7 @@ const AMBIENT_CREDENTIAL = /^(MODEL|.*_(MODEL|API_KEY|BASE_URL|AUTH_TOKEN))$/;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-daemon-'));
+  userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-daemon-user-'));
   scrubbedEnv = {};
   for (const k of Object.keys(process.env)) {
     if (AMBIENT_CREDENTIAL.test(k)) { scrubbedEnv[k] = process.env[k]; delete process.env[k]; }
@@ -27,6 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(userDir, { recursive: true, force: true });
   Object.assign(process.env, scrubbedEnv);
 });
 
@@ -46,6 +52,18 @@ function withProcessEnv(vars, body) {
       else process.env[k] = v;
     }
   }
+}
+
+/**
+ * What a person on the computer would grant with `agn policy dirs add <dir>`
+ * and `agn policy allow create-in-dir`: workspaces may then use folders in it.
+ */
+function allowFolders(configDir, dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  const policy = policyLib.defaultPolicy();
+  policy.remote['create-in-dir'] = true;
+  policy.dirs = [fs.realpathSync(dir)];
+  policyLib.savePolicy(configDir, policy);
 }
 
 /** withProcessEnv for an async body: the override holds until it settles. */
@@ -277,7 +295,7 @@ describe('Daemon', () => {
     daemon._nodeClients.set('n1', { nodeCommandResult: async (_id, _tok, res) => { result = res; } });
     await daemon._runNodeCommand(
       { node_id: 'n1', workspace_id: 'w1', workspace_slug: 'ws', token: 'tok', endpoint: 'https://ws' },
-      { commandId: 'c1', action: 'create_agent', args: { workingDir: path.join(tmpDir, 'wd'), ...args } },
+      { commandId: 'c1', action: 'create_agent', args },
     );
     assert.equal(result && result.ok, true, result && result.message);
     return calls;
@@ -359,11 +377,16 @@ describe('Daemon', () => {
     });
   });
 
-  it('create_agent still saves a Hermes key for the type: its endpoint is one device-wide config', async () => {
+  // It used to go to hermes.env (one device-wide endpoint), and so to every
+  // Hermes agent on the computer, other workspaces' included.
+  it('create_agent keeps a Hermes key on its agent: the type-wide setting is the computer\'s', async () => {
     const config = new Config(tmpDir);
-    const daemon = new Daemon(config, new EnvManager(tmpDir), new Registry(tmpDir));
+    const env = new EnvManager(tmpDir);
+    const daemon = new Daemon(config, env, new Registry(tmpDir));
     const calls = await createFromWorkspace(config, daemon, { name: 'hermes', type: 'hermes', apiKey: 'sk-h-123456' });
-    assert.deepEqual(calls[1], ['env', 'hermes', '--set', 'LLM_API_KEY=sk-h-123456']);
+    assert.equal(calls.some((c) => c[0] === 'env'), false);
+    assert.deepEqual(env.load('hermes'), {});
+    assert.equal(config.getAgent('hermes').env.LLM_API_KEY, 'sk-h-123456');
   });
 
   it('a sign-in sent by the workspace takes an agent off its key, endpoint and the key\'s model', () => {
@@ -998,13 +1021,16 @@ describe('Daemon', () => {
     };
     let reported = null;
     daemon._nodeClients.set('n1', { nodeCommandResult: async (id, tok, res) => { reported = { id, res }; } });
-    const wd = path.join(tmpDir, 'wd');
+    // A folder of the user's choice: allowed on this computer first.
+    allowFolders(tmpDir, path.join(userDir, 'projects'));
+    const wd = path.join(userDir, 'projects', 'wd');
     await daemon._runNodeCommand(
       { node_id: 'n1', workspace_id: 'w1', workspace_slug: 'ws-slug', token: 'tok', endpoint: 'https://ws' },
       { commandId: 'c1', action: 'create_agent', args: { name: 'coder', type: 'claude', apiKey: 'sk-x', baseUrl: 'https://relay.example/v1', model: 'relay-model', workingDir: wd } },
     );
 
-    assert.deepEqual(calls[0], ['create', 'coder', '--type', 'claude', '--install', '--path', wd]);
+    // No --install: install-runtime is off unless the computer allows it.
+    assert.deepEqual(calls[0], ['create', 'coder', '--type', 'claude', '--path', wd]);
     // Claude signs in on its own, so the key stays on this agent: written to
     // claude.env it became the key of every signed-in claude agent too.
     assert.equal(calls.some((c) => c[0] === 'env'), false);
@@ -1036,7 +1062,7 @@ describe('Daemon', () => {
     daemon._nodeClients.set('n1', { nodeCommandResult: async (id, tok, res) => { reported = res; } });
     await daemon._runNodeCommand(
       { node_id: 'n1', workspace_id: 'w1', workspace_slug: 'ws-slug', token: 'tok', endpoint: 'https://ws' },
-      { commandId: 'c5', action: 'create_agent', args: { name: 'coder', type: 'claude', workingDir: path.join(tmpDir, 'wd') } },
+      { commandId: 'c5', action: 'create_agent', args: { name: 'coder', type: 'claude' } },
     );
     assert.equal(reported.ok, false);
     assert.match(reported.message, /connect boom/);
@@ -1084,9 +1110,9 @@ describe('Daemon', () => {
     } finally {
       if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
     }
-    // No workingDir given → --path to a managed folder under the launcher home.
-    assert.equal(calls[0][5], '--path');
-    assert.match(calls[0][6], /[\\/]\.openagents[\\/]agents[\\/]coder$/);
+    // No workingDir given → --path to the agent's managed folder under the
+    // launcher's config dir (~/.openagents/agents/<name> by default).
+    assert.deepEqual(calls[0], ['create', 'coder', '--type', 'claude', '--path', path.join(tmpDir, 'agents', 'coder')]);
   });
 
   it('_refreshRuntimes parses child JSON into the roster', async () => {
@@ -1253,20 +1279,20 @@ describe('Daemon', () => {
   it('configure_agent moving an agent to another folder keeps its own key, endpoint and model', async () => {
     const config = new Config(tmpDir);
     const daemon = new Daemon(config, new EnvManager(tmpDir), new Registry(tmpDir));
+    allowFolders(tmpDir, path.join(userDir, 'new'));
     const own = { LLM_API_KEY: 'sk-relay-123456', LLM_BASE_URL: 'https://relay.example/v1', LLM_MODEL: 'relay-model', CODEX_WIRE_API: 'chat' };
-    config.addAgent({ name: 'codex-key', type: 'codex', path: path.join(tmpDir, 'old'), env: own });
+    config.addAgent({ name: 'codex-key', type: 'codex', path: path.join(userDir, 'old'), env: own });
     config.setAgentNetwork('codex-key', 'ws1');
     // Only the folder changed: the form sends no key, and no model it did not change.
     const calls = await configureFromWorkspace(config, daemon, {
-      name: 'codex-key', type: 'codex', workingDir: path.join(tmpDir, 'new'), currentWorkingDir: path.join(tmpDir, 'old'),
+      name: 'codex-key', type: 'codex', workingDir: path.join(userDir, 'new'), currentWorkingDir: path.join(userDir, 'old'),
     });
     assert.deepEqual(calls.map((c) => c[0]), ['remove', 'create', 'connect']);
-    assert.equal(config.getAgent('codex-key').path, path.join(tmpDir, 'new'));
+    assert.equal(config.getAgent('codex-key').path, path.join(userDir, 'new'));
     assert.deepEqual(config.getAgent('codex-key').env, own);
   });
 
-  // CodeArts keeps its AK/SK on the agent; Hermes saves its key for the type,
-  // where a copy on the agent itself (one the launcher saved) would outrank it.
+  // CodeArts and Hermes alike keep what the workspace sends on the agent.
   for (const [type, ownEnv, sent, keyVar, modelVar] of [
     ['codearts', { CODEARTS_CLI_AK: 'old-ak', CODEARTS_CLI_SK: 'old-sk', CODEARTS_MODEL: 'own-model' }, { CODEARTS_CLI_AK: 'new-ak', CODEARTS_CLI_SK: 'new-sk' }, 'CODEARTS_CLI_AK', 'CODEARTS_MODEL'],
     ['hermes', { LLM_API_KEY: 'sk-old-123456', LLM_MODEL: 'own-model' }, { LLM_API_KEY: 'sk-new-123456' }, 'LLM_API_KEY', 'LLM_MODEL'],
@@ -1276,11 +1302,12 @@ describe('Daemon', () => {
         const config = new Config(tmpDir);
         const env = new EnvManager(tmpDir);
         const daemon = new Daemon(config, env, new Registry(tmpDir));
-        config.addAgent({ name: 'x', type, path: path.join(tmpDir, 'old'), env: ownEnv });
+        if (moved) allowFolders(tmpDir, path.join(userDir, 'new'));
+        config.addAgent({ name: 'x', type, path: path.join(userDir, 'old'), env: ownEnv });
         config.setAgentNetwork('x', 'ws1');
         await configureFromWorkspace(config, daemon, {
           name: 'x', type, config: sent,
-          ...(moved ? { workingDir: path.join(tmpDir, 'new'), currentWorkingDir: path.join(tmpDir, 'old') } : {}),
+          ...(moved ? { workingDir: path.join(userDir, 'new'), currentWorkingDir: path.join(userDir, 'old') } : {}),
         }, env);
         withProcessEnv(NO_CREDENTIALS, () => {
           const built = daemon._buildAgentEnv(config.getAgent('x'));
@@ -1294,13 +1321,17 @@ describe('Daemon', () => {
   it('configure_agent keeps the agent\'s own credentials when saving the new ones fails', async () => {
     const config = new Config(tmpDir);
     const daemon = new Daemon(config, new EnvManager(tmpDir), new Registry(tmpDir));
-    // Hermes saves its fields for the type (one device-wide config file).
     const own = { LLM_API_KEY: 'sk-old-123456', LLM_BASE_URL: 'https://old.example/v1' };
     config.addAgent({ name: 'h', type: 'hermes', env: own });
     config.setAgentNetwork('h', 'ws1');
-    daemon._runAgn = async (a) => (a[0] === 'env'
-      ? { code: 1, stdout: '', stderr: 'disk full' }
-      : { code: 0, stdout: '', stderr: '' });
+    daemon._runAgn = async () => ({ code: 0, stdout: '', stderr: '' });
+    // The save of the sent values is the agent's own env now: it fails.
+    const realUpdate = config.updateAgentEnv.bind(config);
+    let failed = false;
+    config.updateAgentEnv = (n, e) => {
+      if (!failed) { failed = true; throw new Error('disk full'); }
+      return realUpdate(n, e);
+    };
     const restarted = [];
     daemon.restartAgent = async (name) => { restarted.push(name); };
     daemon._probeAgent = async () => null;
@@ -1339,12 +1370,13 @@ describe('Daemon', () => {
     });
   });
 
-  it('_buildFs returns home, its subfolders, and filesystem roots', () => {
+  it('_buildFs reports only the folders this computer allows, not the home folder', () => {
     const daemon = new Daemon(new Config(tmpDir), new EnvManager(tmpDir), new Registry(tmpDir));
+    const managed = path.join(tmpDir, 'agents');
+    assert.deepEqual(daemon._buildFs(), { home: managed, dirs: [], roots: [managed] });
+    allowFolders(tmpDir, path.join(userDir, 'projects'));
     const fsInfo = daemon._buildFs();
-    assert.ok(typeof fsInfo.home === 'string' && fsInfo.home.length > 0);
-    assert.ok(Array.isArray(fsInfo.dirs));
-    assert.ok(Array.isArray(fsInfo.roots) && fsInfo.roots.length > 0);
+    assert.deepEqual(fsInfo, { home: managed, dirs: [], roots: [managed, fs.realpathSync(path.join(userDir, 'projects'))] });
   });
 
   it('filesystemRoots exposes every mounted Windows drive', () => {
@@ -1365,17 +1397,21 @@ describe('Daemon', () => {
     assert.ok(res.parent);
   });
 
-  it('_runNodeCommand list_dir returns folder data', async () => {
+  it('_runNodeCommand list_dir returns folder data for a folder the computer allows', async () => {
     const daemon = new Daemon(new Config(tmpDir), new EnvManager(tmpDir), new Registry(tmpDir));
-    fs.mkdirSync(path.join(tmpDir, 'proj'));
+    const allowed = path.join(userDir, 'code');
+    allowFolders(tmpDir, allowed);
+    fs.mkdirSync(path.join(allowed, 'proj'));
     let reported = null;
     daemon._nodeClients.set('n1', { nodeCommandResult: async (id, tok, res) => { reported = res; } });
     await daemon._runNodeCommand(
       { node_id: 'n1', workspace_id: 'w1', token: 'tok', endpoint: 'https://ws' },
-      { commandId: 'cd', action: 'list_dir', args: { path: tmpDir } },
+      { commandId: 'cd', action: 'list_dir', args: { path: allowed } },
     );
-    assert.equal(reported.ok, true);
+    assert.equal(reported.ok, true, reported.message);
     assert.deepEqual(reported.data.dirs, ['proj']);
+    // Its parent is outside what is allowed: not offered.
+    assert.equal(reported.data.parent, null);
   });
 
   /** Run a list_models command for `agent` with fetch stubbed; returns the report and requests. */

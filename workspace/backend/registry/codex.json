@@ -21,6 +21,9 @@
   },
   "install": {
     "binary": "codex",
+    "npm_package": "@openai/codex",
+    "npm_version": "0.165.0",
+    "npm_integrity": "sha512-aiwtQVp2KBhJld966CuU5bVfQ46VNB4mNTl6giX3WGZdt4euI3tv2RUqJpnupPNA8DXHg2z+RoQ0Zfw87dy8Lw==",
     "requires": [
       "nodejs"
     ],

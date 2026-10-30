@@ -21,6 +21,9 @@
   },
   "install": {
     "binary": "cline",
+    "npm_package": "cline",
+    "npm_version": "3.0.74",
+    "npm_integrity": "sha512-pCaRaJ6Jx50Urej+BYjpGkpZnFbPDCPsibKEbIjEuVxETXbZ/A1SMij8Thy8FobercevXX6hV7joAzU7OG5lzA==",
     "requires": [
       "nodejs"
     ],

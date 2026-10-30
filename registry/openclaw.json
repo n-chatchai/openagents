@@ -20,6 +20,9 @@
   },
   "install": {
     "binary": "openclaw",
+    "npm_package": "openclaw",
+    "npm_version": "2026.10.8",
+    "npm_integrity": "sha512-fWOIOOyddIBqeuPz82DBCdY5kNl1yD51qebAHnxlTN7SmVoH5/WSIudR/N1zDhcIIksgJXe6ZgGy5ngSRxZOrQ==",
     "requires": [
       "nodejs>=22",
       "git"
