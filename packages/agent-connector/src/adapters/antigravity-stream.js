@@ -15,17 +15,22 @@
 
 const { redactSecrets } = require('./utils');
 
-/** Build the argv tail (everything after the binary) for one headless run. */
-function buildAgyArgv({ prompt, model, conversationId, skipResume = false } = {}) {
-  const args = [
-    '-p', prompt || '',
-    // Counterpart of gemini's `-y`: headless runs have no interactive
-    // approval prompt, and a soft-denied tool call silently degrades the
-    // answer. The daemon is the approval boundary here, same as every other
-    // CLI adapter.
-    '--dangerously-skip-permissions',
-    '--output-format', 'stream-json',
-  ];
+/**
+ * Build the argv tail (everything after the binary) for one headless run.
+ *
+ * Headless agy soft-denies any tool that would need a confirmation and names
+ * the allow-rule that would permit it (its changelog: "the CLI now soft-denies
+ * such tools and prints a stderr notice"), and it honors the permission rules
+ * in its own settings.json. That is the boundary an agent runs within.
+ * `--dangerously-skip-permissions` ("auto-approving all tool permissions") is
+ * added only for an execute turn of an agent this computer allowed to run
+ * unrestricted (policy.json) — never in plan mode, and never from anything a
+ * workspace sends. Flags verified in the installed agy binary.
+ */
+function buildAgyArgv({ prompt, model, conversationId, skipResume = false, unrestricted = false } = {}) {
+  const args = ['-p', prompt || ''];
+  if (unrestricted === true) args.push('--dangerously-skip-permissions');
+  args.push('--output-format', 'stream-json');
   if (model) args.push('--model', model);
   if (conversationId && !skipResume) args.push('--conversation', conversationId);
   return args;

@@ -297,7 +297,10 @@ function classifyClineAuth(providersJson, env = {}) {
  * @param {string} o.prompt        required — the task text (positional)
  * @param {string} [o.cwd]         working directory (-c)
  * @param {string} [o.sessionId]   resume an existing session (--id)
- * @param {boolean} [o.planMode]   plan mode (-p) vs default act+auto-approve
+ * @param {boolean} [o.planMode]   plan mode (-p) vs act mode
+ * @param {boolean} [o.unrestricted] this computer allowed the agent to run with
+ *                                   Cline's tool approvals off (policy.json);
+ *                                   anything else gets `--auto-approve false`
  * @param {string} [o.provider]    provider id (-P)
  * @param {string} [o.model]       model id (-m)
  * @param {string} [o.apiKey]      per-run API key (-k) — caller must keep out of logs
@@ -311,13 +314,17 @@ function buildClineArgs(o) {
   const args = ['--json'];
   if (o.cwd) args.push('-c', o.cwd);
   if (o.sessionId) args.push('--id', o.sessionId);
-  // Default (no -p) is "act mode with auto-approve enabled" per `cline --help`.
-  // We make auto-approval explicit so a future change to Cline's default can't
-  // silently start blocking on tool prompts in our non-interactive context.
-  if (o.planMode) {
-    args.push('-p');
+  // Default (no -p) is "act mode with auto-approve enabled" per `cline --help`,
+  // and `--auto-approve <boolean>` covers every tool (Cline 3.0.60). Plan mode
+  // only changes the prompt and adds a switch-to-act tool — the same tools,
+  // commands included, stay auto-approved — so neither mode is a boundary.
+  // Approval is ON unless this computer opted the agent out of it; the adapter
+  // refuses the turn before that is ever needed (see ClineAdapter).
+  if (o.planMode) args.push('-p');
+  if (o.unrestricted === true) {
+    if (!o.planMode) args.push('--auto-approve', 'true');
   } else {
-    args.push('--auto-approve', 'true');
+    args.push('--auto-approve', 'false');
   }
   if (o.provider) args.push('-P', o.provider);
   if (o.model) args.push('-m', o.model);

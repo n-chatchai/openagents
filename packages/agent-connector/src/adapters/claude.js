@@ -28,6 +28,144 @@ const { defaultAgentWorkdir, whichBinary, whereBinary } = require('../paths');
 
 const IS_WINDOWS = process.platform === 'win32';
 
+// ── Execute mode within Claude Code's own controls ──
+//
+// Verified against Claude Code 2.1.232 (`claude --help`, its settings schema)
+// and code.claude.com/docs (permissions, sandboxing, settings):
+//
+//  - `--permission-mode dontAsk` denies every call that would otherwise ask,
+//    instead of waiting on a prompt nobody can answer. Reads inside the
+//    working directory need no approval; everything else needs a rule.
+//  - `Edit(/**)` from a CLI flag anchors at the primary working directory —
+//    the spawn cwd — so file edits (Edit, Write, NotebookEdit) stay inside it.
+//    A bare `Edit` or `Write` would allow them anywhere.
+//  - Bash is never pre-approved. It runs only inside Claude Code's OS sandbox
+//    (Seatbelt on macOS, bubblewrap on Linux/WSL2), auto-approved there by
+//    `sandbox.autoAllowBashIfSandboxed`, with `allowUnsandboxedCommands: false`
+//    so the model cannot ask to leave it. Network from the sandbox goes only to
+//    the workspace endpoint (the skills-mode instructions curl it). If the
+//    sandbox cannot start (bubblewrap/socat missing), commands are not
+//    sandboxed, so they are not auto-approved, so dontAsk denies them.
+//  - Native Windows has no sandbox: Bash and PowerShell are removed.
+//  - `--settings` that fail validation are silently dropped under -p, so
+//    nothing here depends on them to ALLOW anything: a dropped file only
+//    takes Bash away.
+
+/** Credential stores no agent command needs to read, relative to home. */
+const CREDENTIAL_DIRS = [
+  '.ssh', '.aws', '.gnupg', '.azure', '.netrc', '.git-credentials',
+  path.join('.config', 'gcloud'), path.join('.config', 'gh'),
+];
+
+/** Files under the OpenAgents config dir that hold other agents' secrets. */
+const CONFIG_SECRETS = ['daemon.yaml', 'env', 'identity.json', 'mcp-configs'];
+
+function isInsideDir(root, target) {
+  if (!root || !target) return false;
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * An absolute path as a Claude Code permission-rule path: `//` + POSIX form,
+ * gitignore metacharacters escaped (rules written by hand are matched as
+ * patterns). Windows drive paths become `//c/...`, as Claude Code normalizes.
+ */
+function rulePath(p, platform = process.platform) {
+  let s = String(p);
+  if (platform === 'win32') {
+    s = s.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`);
+  }
+  s = s.replace(/([*?[\]!#\\])/g, '\\$1');
+  return `/${s.startsWith('/') ? s : `/${s}`}`;
+}
+
+/** Host of the workspace endpoint, for the sandbox's network allowlist. */
+function endpointHost(endpoint) {
+  try { return new URL(endpoint).hostname || null; } catch { return null; }
+}
+
+/**
+ * Permission flags for an execute-mode Claude Code session that is NOT
+ * allowed to run unrestricted. Pure — every input is a parameter.
+ *
+ * @param {object} o
+ * @param {string[]} [o.tools]       workspace MCP tools to pre-approve
+ * @param {string} [o.skillName]     the workspace skill (skills mode)
+ * @param {string} o.endpoint        workspace endpoint (sandbox network allowlist)
+ * @param {string} o.configDir       ~/.openagents
+ * @param {string} o.workingDir      the spawn cwd
+ * @param {string} [o.home]
+ * @param {string} [o.platform]
+ * @param {(p: string) => boolean} [o.exists]
+ * @returns {string[]}
+ */
+function claudeSafeExecuteArgs({
+  tools = [], skillName = null, endpoint, configDir, workingDir,
+  home = os.homedir(), platform = process.platform, exists = fs.existsSync,
+} = {}) {
+  const allowed = [
+    ...tools,
+    'Edit(/**)',
+    'WebSearch',
+  ];
+  if (skillName) allowed.push(`Skill(${skillName})`);
+
+  const credentialPaths = CREDENTIAL_DIRS.map((d) => path.join(home, d));
+  const configSecrets = CONFIG_SECRETS.map((f) => path.join(configDir, f));
+  const policyFile = path.join(configDir, 'policy.json');
+
+  // Never deny the agent its own folder, however oddly it was placed.
+  const notAroundCwd = (p) => !isInsideDir(p, workingDir);
+  const deny = [];
+  for (const p of [...credentialPaths, ...configSecrets].filter(notAroundCwd)) {
+    deny.push(`Read(${rulePath(p, platform)})`, `Read(${rulePath(p, platform)}/**)`);
+  }
+  for (const p of [policyFile, ...configSecrets].filter(notAroundCwd)) {
+    deny.push(`Edit(${rulePath(p, platform)})`, `Edit(${rulePath(p, platform)}/**)`);
+  }
+
+  const settings = { permissions: { deny } };
+
+  if (platform !== 'win32') {
+    // OS-level: what sandboxed commands may not read or write. Paths that do
+    // not exist are left out — bubblewrap mounts over what it denies.
+    const denyRead = [...credentialPaths, ...configSecrets].filter((p) => exists(p) && notAroundCwd(p));
+    const allowRead = [];
+    const agentsRoot = path.join(configDir, 'agents');
+    // Other agents' folders hold their workspace tokens (skills-mode SKILL.md).
+    if (exists(agentsRoot)) {
+      denyRead.push(agentsRoot);
+      if (isInsideDir(agentsRoot, workingDir)) allowRead.push(workingDir);
+    }
+    // Writes already stop at the working directory and the temp dir. When the
+    // working directory holds this computer's OpenAgents settings, those stay
+    // read-only — an agent must never be able to edit its own permissions.
+    const denyWrite = [];
+    if (isInsideDir(workingDir, configDir)) {
+      if (path.resolve(workingDir) !== path.resolve(configDir)) denyWrite.push(configDir);
+      else denyWrite.push(...[policyFile, ...configSecrets].filter((p) => exists(p)));
+    }
+    const filesystem = { denyRead };
+    if (allowRead.length) filesystem.allowRead = allowRead;
+    if (denyWrite.length) filesystem.denyWrite = denyWrite;
+    const host = endpointHost(endpoint);
+    settings.sandbox = {
+      enabled: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      network: { allowedDomains: host ? [host] : [], strictAllowlist: true },
+      filesystem,
+    };
+  }
+
+  return [
+    '--permission-mode', 'dontAsk',
+    '--allowedTools', ...allowed,
+    '--settings', JSON.stringify(settings),
+  ];
+}
+
 class ClaudeAdapter extends BaseAdapter {
   /**
    * The env the spawned `claude` CLI runs with. Pure — takes the agent's env
@@ -458,11 +596,15 @@ class ClaudeAdapter extends BaseAdapter {
     return null;
   }
 
-  _buildClaudeCmd(prompt, channelName, { skipResume = false, browserEnabled = false, glossary = null } = {}) {
+  _buildClaudeCmd(prompt, channelName, { skipResume = false, browserEnabled = false, glossary = null, posture = null } = {}) {
     const claudeBin = this._findClaudeBinary();
     if (!claudeBin) {
       throw new Error('claude CLI not found. Install with: curl -fsSL https://claude.ai/install.sh | bash');
     }
+    // plan | execute, and whether this computer lets the agent run without
+    // Claude Code's permission checks — read from policy.json, never from
+    // anything the workspace sent.
+    this._posture = posture || this._approvalGate();
 
     // The builder emits the correct tool-reference block for toolMode directly
     // (mcp → workspace_* tools, skills → openagents-workspace skill), so there
@@ -492,6 +634,11 @@ class ClaudeAdapter extends BaseAdapter {
       // WebSearch stays allowed (pure search, no page fetching).
       disallowedTools.push('WebFetch');
     }
+    if (this._safeExecute() && this._platform() === 'win32') {
+      // No OS sandbox on native Windows, and a shell outside one is exactly
+      // what execute mode must not hand out without the local opt-in.
+      disallowedTools.push('Bash', 'PowerShell', 'Monitor');
+    }
     cmd.push('--disallowedTools', ...disallowedTools);
 
     // Resume existing conversation (skipped on retry after stale session)
@@ -509,16 +656,43 @@ class ClaudeAdapter extends BaseAdapter {
     return this._buildMcpCmd(cmd, channelName);
   }
 
+  /** Test seam: the platform the spawned CLI runs on. */
+  _platform() {
+    return process.platform;
+  }
+
+  /** Execute mode, not allowed to run unrestricted on this computer. */
+  _safeExecute() {
+    const posture = this._posture || this._approvalGate();
+    return posture.mode === 'execute' && !posture.unrestricted;
+  }
+
+  _safeExecuteArgs(tools, skillName) {
+    return claudeSafeExecuteArgs({
+      tools,
+      skillName,
+      endpoint: this.endpoint,
+      configDir: this.configDir,
+      workingDir: this.workingDir || defaultAgentWorkdir(this.agentName),
+      platform: this._platform(),
+    });
+  }
+
   /**
-   * Skills mode: write a SKILL.md file and allow Bash + curl for workspace ops.
+   * Skills mode: write a SKILL.md file; workspace ops are curl calls from
+   * Bash (inside the sandbox in execute mode, see claudeSafeExecuteArgs).
    */
   _buildSkillsCmd(cmd, channelName) {
-    if (this._mode === 'plan') {
+    const posture = this._posture || this._approvalGate();
+    if (posture.mode === 'plan') {
       cmd.push('--permission-mode', 'plan');
       cmd.push('--allowedTools', 'Read', 'Glob', 'Grep', 'Bash');
-    } else {
+    } else if (posture.unrestricted) {
+      // Allowed on this computer for this agent only (policy.json).
       cmd.push('--dangerously-skip-permissions');
       cmd.push('--allowedTools', 'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep');
+    } else {
+      cmd.push(...this._safeExecuteArgs([], workspaceSkillName(this.agentName)));
     }
 
     // Write SKILL.md to .claude/skills/ in the working directory. Never use
@@ -604,12 +778,16 @@ class ClaudeAdapter extends BaseAdapter {
     mcpTools.push(`${pfx}workspace_get_todos`, `${pfx}workspace_list_timers`, `${pfx}workspace_list_routines`);
     mcpWriteTools.push(`${pfx}workspace_put_todos`, `${pfx}workspace_create_timer`, `${pfx}workspace_cancel_timer`, `${pfx}workspace_create_routine`, `${pfx}workspace_update_routine`, `${pfx}workspace_cancel_routine`);
 
-    if (this._mode === 'plan') {
+    const posture = this._posture || this._approvalGate();
+    if (posture.mode === 'plan') {
       cmd.push('--permission-mode', 'plan');
       cmd.push('--allowedTools', ...mcpTools, 'Read', 'Glob', 'Grep');
-    } else {
+    } else if (posture.unrestricted) {
+      // Allowed on this computer for this agent only (policy.json).
       cmd.push('--dangerously-skip-permissions');
       cmd.push('--allowedTools', ...mcpTools, ...mcpWriteTools, 'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep');
+    } else {
+      cmd.push(...this._safeExecuteArgs([...mcpTools, ...mcpWriteTools], null));
     }
 
     // MCP config for workspace tools
@@ -1330,24 +1508,32 @@ class ClaudeAdapter extends BaseAdapter {
     // ── Persistent process fast-path ──
     // If we have a living persistent process for this channel, send via stdin
     // instead of spawning a new CLI (saves ~2s startup time).
+    // This turn's approval posture: plan/execute, and whether this computer
+    // lets the agent run without Claude Code's permission checks (re-read
+    // from policy.json now, so a local change applies to this turn).
+    const posture = this._approvalGate();
     const existingPP = this._persistentProcs[msgChannel];
     if (existingPP && existingPP.alive) {
       // Everything below was baked into the process at spawn time — the
       // system prompt AND the CLI permission flags (plan mode is read-only,
-      // execute skips permissions) — so a process from the other mode can
-      // never be reused. This check is deliberately independent of the
-      // pinned fingerprint: a failed knowledge fetch must not keep a
-      // read-only plan process serving execute requests.
+      // execute runs inside Claude Code's permission checks and sandbox, or
+      // skips them only when opted in here) — so a process spawned under
+      // another posture can never be reused. This check is deliberately
+      // independent of the pinned fingerprint: a failed knowledge fetch must
+      // not keep a read-only plan process serving execute requests.
       const modeStale = existingPP.spawnMode !== this._mode;
+      const postureStale = (existingPP.spawnUnrestricted === true) !== posture.unrestricted;
       const pinnedStale = pinnedHash !== null && existingPP.pinnedHash !== pinnedHash;
       const modelStale = (existingPP.spawnModel || null) !== (this.workspaceModel || null);
-      if (modeStale || modelStale) {
+      if (modeStale || postureStale || modelStale) {
         // Kill it and fall through to a fresh spawn: --resume keeps the
         // conversation (it lives in the CLI transcript), while the new spawn
         // carries the current mode / model flags (and the current pins).
         this._log(modeStale
           ? `Mode changed to ${this._mode} for ${msgChannel} — respawning with resume`
-          : `Model changed to ${this.workspaceModel || '(default)'} for ${msgChannel} — respawning with resume`);
+          : postureStale
+            ? `Approval policy changed for ${this.agentName} (${posture.unrestricted ? 'unrestricted' : 'within Claude Code\'s permission checks'}) — respawning ${msgChannel} with resume`
+            : `Model changed to ${this.workspaceModel || '(default)'} for ${msgChannel} — respawning with resume`);
         await this._killPersistentProc(msgChannel);
       } else {
         // A pinned-knowledge change no longer restarts the process. The
@@ -1428,6 +1614,7 @@ class ClaudeAdapter extends BaseAdapter {
           skipResume: attempt > 0,
           browserEnabled,
           glossary: glossaryOpt,
+          posture,
         });
         cmd = built.cmd;
         mcpConfigFile = built.mcpConfigFile;
@@ -1448,6 +1635,7 @@ class ClaudeAdapter extends BaseAdapter {
           { entryId: glossaryOpt && glossaryOpt.entryId, content: glossaryOpt && glossaryOpt.content },
         ]);
         pp.spawnMode = this._mode;
+        pp.spawnUnrestricted = posture.unrestricted === true;
         pp.spawnModel = this.workspaceModel || null;
         const resumed = attempt === 0 && !!this._channelSessions[msgChannel];
         this._log(`Spawned persistent process for ${msgChannel} (attempt ${attempt + 1})`);
@@ -1525,3 +1713,4 @@ class ClaudeAdapter extends BaseAdapter {
 }
 
 module.exports = ClaudeAdapter;
+module.exports.claudeSafeExecuteArgs = claudeSafeExecuteArgs;

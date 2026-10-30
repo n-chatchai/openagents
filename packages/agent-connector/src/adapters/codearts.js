@@ -21,8 +21,10 @@
  *     CODEARTS_CLI_AK/CODEARTS_CLI_SK".
  *   - `run` has no --dir; the working directory is the spawn cwd.
  *   - `--auto` runs tools in always_allow mode. A headless run has nobody to
- *     answer a permission prompt; the daemon is the approval boundary, as it is
- *     for every other agent here.
+ *     answer a permission prompt, so it runs only for an agent this computer
+ *     allowed to run unrestricted (`agn policy unrestricted add <name>`);
+ *     otherwise the turn is refused. CodeArts has no read-only mode we could
+ *     verify, so that holds for plan turns too.
  *   - A model the account cannot use is reported on stderr — "error: 未找到模型：
  *     …" — and the CLI still exits 0 with nothing on stdout.
  */
@@ -185,8 +187,24 @@ class CodeArtsAdapter extends OpenCodeAdapter {
     };
   }
 
-  _buildRunArgs({ model, sessionId }) {
-    const args = ['run', '--format', 'json', '--auto', '--model', model];
+  /** CodeArts runs headless only with its tool approvals off (`--auto`). */
+  _approvalRefusal() {
+    return this._needsUnrestricted(
+      'CodeArts Agent can only run unattended with its tool approvals turned off (--auto).',
+    );
+  }
+
+  /** Not CodeArts': its runs are refused or allowed whole (see above). */
+  _permissionEnv() {
+    return {};
+  }
+
+  _buildRunArgs({ model, sessionId, posture = null }) {
+    const gate = posture || this._approvalGate();
+    const args = ['run', '--format', 'json'];
+    // Only for an agent this computer allowed to run unrestricted.
+    if (gate.unrestricted === true) args.push('--auto');
+    args.push('--model', model);
     if (sessionId) args.push('--session', sessionId);
     return args;
   }

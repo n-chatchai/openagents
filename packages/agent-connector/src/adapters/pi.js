@@ -50,6 +50,7 @@ const {
   PiStreamParser,
   PiAssistantAccumulator,
   buildPiArgs,
+  PI_READ_ONLY_TOOLS,
   inferLauncherProvider,
   classifyNodeVersion,
   classifyPiError,
@@ -1275,10 +1276,17 @@ class PiAdapter extends BaseAdapter {
    * spawn time, so a mode switch always forces a respawn — the resumed session
    * keeps the conversation, exactly like claude.js's --resume respawn.
    */
-  async _ensureProc(channel, workingDir, systemPrompt) {
+  async _ensureProc(channel, workingDir, systemPrompt, posture = null) {
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = posture || this._approvalGate();
+    const unrestricted = gate.unrestricted === true;
     const existing = this._persistentProcs[channel];
     if (existing && existing.alive) {
-      if (existing.spawnMode === this._mode && existing.workingDir === workingDir) {
+      // The tool set and project trust are baked in at spawn too: a process
+      // started for an agent allowed unrestricted is never reused once that
+      // is withdrawn (or the other way round).
+      if (existing.spawnMode === this._mode && existing.workingDir === workingDir
+          && (existing.spawnUnrestricted === true) === unrestricted) {
         this._resetIdleTimer(channel);
         return existing;
       }
@@ -1315,7 +1323,13 @@ class PiAdapter extends BaseAdapter {
       // and ~/.pi, this bypasses Pi's native auth resolver on installations
       // where it incorrectly reports a present provider env key as missing.
       extensions: cfg.baseUrl || launcherKey ? [LAUNCHER_PROVIDER_EXTENSION] : [],
-      trustProject: cfg.trustProject,
+      // PI_TRUST_PROJECT is a setting a workspace can write (configure_agent),
+      // and a trusted project loads its own extensions — code. Honoured only
+      // for an agent allowed to run unrestricted here.
+      trustProject: unrestricted && cfg.trustProject,
+      // Pi has no approvals and no sandbox. A plan turn gets only Pi's
+      // read-only tools; an execute turn only runs once allowed unrestricted.
+      tools: gate.mode === 'plan' || !unrestricted ? [...PI_READ_ONLY_TOOLS] : null,
     });
 
     const pp = this._spawnPersistentProc(channel, {
@@ -1326,7 +1340,20 @@ class PiAdapter extends BaseAdapter {
       sessionId,
     });
     if (pp.spawnError) throw new Error(pp.spawnError);
+    pp.spawnUnrestricted = unrestricted;
     return pp;
+  }
+
+  /**
+   * Pi has no approval prompts and no sandbox: every tool it has runs as soon
+   * as the model calls it. Execute turns therefore need this computer's
+   * opt-in; plan turns run with Pi's read-only tools only.
+   */
+  _approvalRefusal(mode) {
+    if (mode === 'plan') return null;
+    return this._needsUnrestricted(
+      'Pi runs every tool, shell included, with no approvals and no sandbox.',
+    );
   }
 
   async _handleMessage(msg) {
@@ -1354,6 +1381,13 @@ class PiAdapter extends BaseAdapter {
 
     const sender = msg.senderName || msg.senderType || 'user';
     this._log(`Processing message from ${sender} in ${channel}: ${this._redact(content.slice(0, 80))}...`);
+
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(channel, gate.message);
+      return;
+    }
 
     // Auto-title + resume-from on first encounter (parity with other adapters).
     if (!this._titledSessions.has(channel)) {
@@ -1393,7 +1427,7 @@ class PiAdapter extends BaseAdapter {
 
     let pp;
     try {
-      pp = await this._ensureProc(channel, workingDir, systemPrompt);
+      pp = await this._ensureProc(channel, workingDir, systemPrompt, gate);
     } catch (e) {
       await this.sendError(channel, this._redact(e && e.message) || 'Could not start the Pi CLI.');
       return;

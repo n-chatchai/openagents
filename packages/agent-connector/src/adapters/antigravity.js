@@ -175,11 +175,14 @@ class AntigravityAdapter extends BaseAdapter {
     const env = this.agentEnv || process.env;
     const model = (env.ANTIGRAVITY_MODEL || env.AGY_MODEL || '').trim();
 
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
     const args = buildAgyArgv({
       prompt: fullPrompt,
       model,
       conversationId: this._channelConversations[channelName],
       skipResume,
+      unrestricted: gate.mode === 'execute' && gate.unrestricted,
     });
     return { cmd: [agyBin, ...args] };
   }

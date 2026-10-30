@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { unrestrictedConfigDir } = require('./approval-helpers');
 
 const CodeBuddyAdapter = require('../src/adapters/codebuddy');
 const { ADAPTER_MAP, createAdapter } = require('../src/adapters');
@@ -130,6 +131,8 @@ function makeAdapter(extra = {}) {
     channelName: 'thread',
     token: 'token',
     agentName: 'cb-bot',
+    // Opted in on this computer: these suites drive execute turns.
+    configDir: extra.configDir || unrestrictedConfigDir('cb-bot'),
     endpoint: 'https://example.invalid',
     agentEnv: {
       ...(extra.agentEnv || {}),

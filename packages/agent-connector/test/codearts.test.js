@@ -17,6 +17,7 @@ const path = require('path');
 
 const CodeArtsAdapter = require('../src/adapters/codearts');
 const { ADAPTER_MAP } = require('../src/adapters');
+const { unrestrictedConfigDir } = require('./approval-helpers');
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -46,6 +47,8 @@ function makeAdapter(agentEnv = {}) {
     channelName: 'thread',
     token: 'token',
     agentName: 'codearts-test',
+    // Opted in on this computer: these suites drive execute turns.
+    configDir: unrestrictedConfigDir('codearts-test'),
   });
   adapter._log = () => {};
   adapter.agentEnv = agentEnv;

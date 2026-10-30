@@ -154,14 +154,45 @@ class OpenCodeAdapter extends BaseAdapter {
   }
 
   /** Arguments after the binary for one `run`. */
-  _buildRunArgs({ runCwd, model, sessionId }) {
+  _buildRunArgs({ runCwd, model, sessionId, posture = null }) {
     // Preflight guarantees a resolvable model; pin it explicitly — without it
     // opencode hangs waiting for interactive provider/model selection.
-    // Connected agents run unattended: let the CLI resolve permission prompts
-    // automatically instead of rejecting tools outside the working directory.
-    const args = ['run', '--format', 'json', '--dangerously-skip-permissions', '--dir', runCwd, '--model', model];
+    const gate = posture || this._approvalGate();
+    const args = ['run', '--format', 'json'];
+    // `--dangerously-skip-permissions` (alias of `--auto`: "auto-approve
+    // permissions that are not explicitly denied") only for an execute turn of
+    // an agent this computer allowed to run unrestricted (policy.json).
+    if (gate.mode === 'execute' && gate.unrestricted === true) args.push('--dangerously-skip-permissions');
+    args.push('--dir', runCwd, '--model', model);
     if (sessionId) args.push('--session', sessionId);
     return args;
+  }
+
+  /**
+   * The permission rules a run is held to, as OPENCODE_PERMISSION (merged over
+   * every config file OpenCode loads — the project's opencode.json included,
+   * which the agent itself can edit). In `run` mode a rule that would ask is
+   * rejected ("user rejected permission"), never left waiting:
+   *
+   *  - execute: OpenCode's file tools stay inside --dir (external_directory),
+   *    and `bash` — which OpenCode would otherwise allow, with no sandbox —
+   *    is rejected.
+   *  - plan: the same, and no edits.
+   *  - execute, allowed unrestricted on this computer: OpenCode's own config.
+   *
+   * Verified in the installed opencode binary: OPENCODE_PERMISSION is parsed as
+   * JSON and merged into `permission` after the config files.
+   */
+  static permissionEnv(posture) {
+    if (posture && posture.mode === 'execute' && posture.unrestricted === true) return {};
+    const permission = { bash: 'ask', external_directory: 'ask' };
+    if (!posture || posture.mode === 'plan') permission.edit = 'deny';
+    return { OPENCODE_PERMISSION: JSON.stringify(permission) };
+  }
+
+  /** The permission env for this adapter's runs (CodeArts overrides). */
+  _permissionEnv(posture) {
+    return OpenCodeAdapter.permissionEnv(posture);
   }
 
   /** Environment the CLI is spawned with. */
@@ -398,11 +429,18 @@ class OpenCodeAdapter extends BaseAdapter {
     const sender = msg.senderName || msg.senderType || 'user';
     this._log(`Processing message from ${sender} in ${msgChannel}: ${content.slice(0, 80)}...`);
 
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(msgChannel, gate.message);
+      return;
+    }
+
     await this._autoTitleChannel(msgChannel, content);
     await this.sendStatus(msgChannel, 'thinking...');
 
     try {
-      const responseText = await this._runOpencode(content, msgChannel);
+      const responseText = await this._runOpencode(content, msgChannel, gate);
 
       if (this._stoppingChannels.has(msgChannel)) {
         this._stoppingChannels.delete(msgChannel);
@@ -831,7 +869,8 @@ class OpenCodeAdapter extends BaseAdapter {
     }
   }
 
-  _runOpencode(content, msgChannel) {
+  _runOpencode(content, msgChannel, posture = null) {
+    const gate = posture || this._approvalGate();
     // Preflight BEFORE spawning: bail out with a structured, actionable error
     // instead of launching a child that will hang for 5 minutes or exit 1 with
     // an opaque message. Stubbing _runOpencode in tests bypasses this, exactly
@@ -850,7 +889,7 @@ class OpenCodeAdapter extends BaseAdapter {
     }
     const model = this._resolveModel();
     const sessionId = this._channelSessions[msgChannel];
-    const args = this._buildRunArgs({ runCwd, model, sessionId });
+    const args = this._buildRunArgs({ runCwd, model, sessionId, posture: gate });
 
     let fullPrompt;
     if (sessionId) {
@@ -863,7 +902,7 @@ class OpenCodeAdapter extends BaseAdapter {
 
     this._log(`CLI: ${binary} ${args.join(' ')}`);
 
-    const spawnEnv = this._spawnEnv();
+    const spawnEnv = { ...this._spawnEnv(), ...this._permissionEnv(gate) };
 
     let spawnBinary = binary;
     let spawnArgs = args;

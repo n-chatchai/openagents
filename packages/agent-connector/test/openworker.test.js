@@ -17,6 +17,7 @@ const path = require('node:path');
 
 const OpenWorkerAdapter = require('../src/adapters/openworker');
 const { ADAPTER_MAP, createAdapter } = require('../src/adapters');
+const { unrestrictedConfigDir } = require('./approval-helpers');
 
 const IS_WINDOWS = process.platform === 'win32';
 const MOCK_SRC = path.join(__dirname, 'fixtures', 'mock-openworker-server.js');
@@ -72,6 +73,8 @@ function makeAdapter(extra = {}) {
     token: 'workspace-token-value',
     agentName: `ow-bot-${id}`,
     endpoint: 'https://example.invalid',
+    // Opted in on this computer: these suites drive execute turns.
+    configDir: extra.configDir || unrestrictedConfigDir(`ow-bot-${id}`),
     workingDir: extra.workingDir || workDir,
     agentEnv: {
       // A real daemon hands the adapter a full environment; the mock's shebang

@@ -292,7 +292,7 @@ class CursorAdapter extends BaseAdapter {
     // prompt goes through cmd.exe and PowerShell before it reaches node, and
     // cmd.exe stops reading a command line at its first newline. Every prompt
     // carries one (the identity header ends in a blank line), so the message
-    // itself and every flag after it — --output-format, --trust, --force,
+    // itself and every flag after it — --output-format, --trust, --sandbox,
     // --model, --workspace, --resume — were dropped. The CLI then ran the
     // header alone, untrusted, and exited with "Workspace Trust Required",
     // which reached the chat as "No response generated".
@@ -358,7 +358,32 @@ class CursorAdapter extends BaseAdapter {
 
   // ── Command building ──
 
-  _buildCursorCmd(prompt, channelName, { skipResume = false } = {}) {
+  /** Test seam: the platform the spawned CLI runs on. */
+  _platform() {
+    return process.platform;
+  }
+
+  /**
+   * Approval flags for one headless run. Verified against cursor-agent
+   * 2026.05.01 (its CLI option table): `--sandbox <enabled|disabled>`,
+   * `--mode <plan|ask>` (read-only), `-f/--force` ("force allow commands
+   * unless explicitly denied"), `--trust` (headless workspace trust).
+   *
+   *  - plan: `--mode plan` — analyze and propose, no edits.
+   *  - execute: Cursor's own allowlist decides what runs, inside its sandbox
+   *    (workspace read/write); nothing is force-allowed. Native Windows has no
+   *    Cursor sandbox, so there commands outside the allowlist are denied.
+   *  - execute, allowed unrestricted on this computer: `--force`.
+   */
+  _approvalArgs(posture) {
+    if (posture.mode === 'plan') return ['--mode', 'plan'];
+    if (posture.unrestricted) return ['--force'];
+    return this._platform() === 'win32' ? [] : ['--sandbox', 'enabled'];
+  }
+
+  _buildCursorCmd(prompt, channelName, { skipResume = false, posture = null } = {}) {
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = posture || this._approvalGate();
     const agentBin = this._findCursorBinary();
     if (!agentBin) {
       throw new Error('Cursor CLI not found. Install with: curl https://cursor.com/install -fsSL | bash');
@@ -377,7 +402,7 @@ class CursorAdapter extends BaseAdapter {
       `openagents-workspace-* skills belong to OTHER agents and carry the ` +
       `wrong identity — never use them.\n\n`;
 
-    const cmd = [agentBin, '-p', identityHeader + prompt, '--output-format', 'stream-json', '--trust', '--force'];
+    const cmd = [agentBin, '-p', identityHeader + prompt, '--output-format', 'stream-json', '--trust', ...this._approvalArgs(gate)];
 
     // Model selection
     const model = (this.agentEnv || process.env).CURSOR_MODEL;

@@ -452,6 +452,17 @@ class ClineAdapter extends BaseAdapter {
     }
   }
 
+  /**
+   * Cline runs headless only with its tool approvals off, and its plan mode
+   * keeps the same tools (commands included), so both modes need this
+   * computer's opt-in.
+   */
+  _approvalRefusal() {
+    return this._needsUnrestricted(
+      'Cline can only run unattended with its tool approvals turned off, and its plan mode does not stop it running commands.',
+    );
+  }
+
   // ------------------------------------------------------------------
   // Message handling
   // ------------------------------------------------------------------
@@ -491,6 +502,13 @@ class ClineAdapter extends BaseAdapter {
       await this.sendError(channel,
         `Cline CLI ${ver.version} is below the minimum supported version ${MIN_CLINE_VERSION}. ` +
         'Please upgrade with: npm install -g cline@latest');
+      return;
+    }
+
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(channel, gate.message);
       return;
     }
 
@@ -539,7 +557,8 @@ class ClineAdapter extends BaseAdapter {
         prompt,
         cwd: workingDir,
         sessionId: resumeId || undefined,
-        planMode: this._mode === 'plan',
+        planMode: gate.mode === 'plan',
+        unrestricted: gate.unrestricted,
         provider: (this.agentEnv.CLINE_PROVIDER || '').trim() || undefined,
         model: (this.agentEnv.CLINE_MODEL || '').trim() || undefined,
         apiKey: (this.agentEnv.CLINE_API_KEY || '').trim() || undefined,

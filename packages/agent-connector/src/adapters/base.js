@@ -39,8 +39,25 @@ const {
   httpStatusOf,
 } = require('./health-status');
 const { FailureStreak, isTransientNetworkError, formatDuration } = require('./failure-streak');
+const { loadPolicy, isUnrestricted } = require('../policy');
 
 const DEFAULT_ENDPOINT = 'https://workspace-endpoint.openagents.org';
+
+/** The two modes a workspace may put an agent in (set_mode). Nothing else. */
+const WORKSPACE_MODES = Object.freeze(['plan', 'execute']);
+
+/**
+ * Set in the environment of every agent runtime this adapter starts. `agn`
+ * refuses, under it, what only the person at this computer may do — policy
+ * grants (`agn policy …`), unverified installs — so an agent with a shell
+ * cannot grant itself what policy.json withholds.
+ */
+const UNATTENDED_ENV = Object.freeze({ OPENAGENTS_UNATTENDED: '1' });
+
+/** `env` (or this process's) plus UNATTENDED_ENV, as a new object. */
+function withUnattended(env) {
+  return { ...(env || process.env), ...UNATTENDED_ENV };
+}
 
 // ── Presence detail (v1.1 M3) ──
 // A busy↔idle flip is sent as an immediate heartbeat (debounced) so the
@@ -151,6 +168,19 @@ function watchProcessRegistry(adapter, registry) {
 }
 
 class BaseAdapter {
+  /**
+   * The environment every runtime this agent starts is spawned from. Always a
+   * copy carrying OPENAGENTS_UNATTENDED=1, however it is assigned — adapters
+   * build their child env from it.
+   */
+  get agentEnv() {
+    return this.__agentEnv;
+  }
+
+  set agentEnv(env) {
+    this.__agentEnv = withUnattended(env);
+  }
+
   get _channelProcesses() {
     return this.__channelProcesses;
   }
@@ -167,7 +197,10 @@ class BaseAdapter {
    * @param {string} opts.agentName
    * @param {string} [opts.endpoint]
    */
-  constructor({ workspaceId, channelName, token, agentName, endpoint, agentEnv, agentType, workingDir, onStatus, logSink }) {
+  constructor({ workspaceId, channelName, token, agentName, endpoint, agentEnv, agentType, workingDir, onStatus, logSink, configDir }) {
+    // Where this computer's own settings live — policy.json among them. The
+    // daemon passes its config dir; standalone use falls back to the default.
+    this.configDir = configDir || path.join(os.homedir(), '.openagents');
     this.workspaceId = workspaceId;
     this.channelName = channelName;
     this.token = token;
@@ -359,6 +392,96 @@ class BaseAdapter {
   }
 
   // ------------------------------------------------------------------
+  // Approval and isolation
+  // ------------------------------------------------------------------
+  //
+  // Every agent runs inside its runtime's own approval and sandbox controls.
+  // `execute` means "act within those controls", never "turn them off". An
+  // agent runs without them only when the person at this computer listed it in
+  // policy.json (`agn policy unrestricted add <name>`), and only that agent.
+  //
+  // Nothing a workspace sends reaches this decision: not set_mode (which only
+  // chooses plan or execute), not create/configure arguments, not the agent's
+  // env (which a workspace can write through configure_agent). The policy file
+  // is read again for every turn, so a local change applies to the next one.
+
+  /** 'plan' or 'execute'; anything else a workspace sent reads as execute. */
+  _approvalMode() {
+    return this._mode === 'plan' ? 'plan' : 'execute';
+  }
+
+  /**
+   * Whether this computer lets THIS agent run without its runtime's approval
+   * and sandbox controls. Read from policy.json every call; any failure to
+   * read it means no.
+   */
+  _isUnrestricted() {
+    try {
+      return isUnrestricted(loadPolicy(this.configDir), this.agentName);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Why this runtime cannot run a turn in `mode` within its own controls, or
+   * null when it can. Subclasses whose runtime only runs unattended with its
+   * approvals off return `this._needsUnrestricted(...)` for those modes.
+   * Consulted only when the agent is NOT opted in.
+   */
+  // eslint-disable-next-line no-unused-vars
+  _approvalRefusal(mode) {
+    return null;
+  }
+
+  /**
+   * The refusal text for a runtime that needs the local opt-in, naming the
+   * one command that grants it for this agent.
+   */
+  _needsUnrestricted(what) {
+    return `${what} To allow that for this agent only, run on this computer: `
+      + `agn policy unrestricted add ${this.agentName}`;
+  }
+
+  /**
+   * The approval posture for the turn about to run:
+   *   { ok, mode, unrestricted, message? }
+   * `ok` false means do not start the runtime; `message` says why and how to
+   * allow it. Adapters build their command line from `mode` and
+   * `unrestricted` — never from anything else.
+   */
+  _approvalGate() {
+    const mode = this._approvalMode();
+    const unrestricted = this._isUnrestricted();
+    if (unrestricted) return { ok: true, mode, unrestricted: true };
+    const message = this._approvalRefusal(mode);
+    if (message) return { ok: false, mode, unrestricted: false, message };
+    return { ok: true, mode, unrestricted: false };
+  }
+
+  /**
+   * Refuse a turn: say why in the channel (where the person asked) and in the
+   * log. Never throws.
+   */
+  async _refuseTurn(channel, message) {
+    this._log(`Not running this turn: ${message}`, 'warn');
+    try { await this.sendError(channel || this.channelName, message); } catch {}
+  }
+
+  /** One line for the log at start: how this agent's runtime is held. */
+  _approvalSummary() {
+    const gate = this._approvalGate();
+    if (gate.unrestricted) {
+      return 'Approval: unrestricted — this computer allowed it to run without its runtime\'s approval and sandbox controls';
+    }
+    const plan = this._approvalRefusal('plan');
+    if (!gate.ok) {
+      return `Approval: execute turns are refused until allowed on this computer${plan ? ' (plan turns too)' : ''} — ${gate.message}`;
+    }
+    return 'Approval: runs within its runtime\'s own approval and sandbox controls';
+  }
+
+  // ------------------------------------------------------------------
   // Lifecycle
   // ------------------------------------------------------------------
 
@@ -415,6 +538,7 @@ class BaseAdapter {
 
   async run() {
     this._running = true;
+    try { this._log(this._approvalSummary()); } catch {}
 
     // Announce agent to workspace
     await this._joinWorkspace();
@@ -649,8 +773,11 @@ class BaseAdapter {
         const payload = ev.payload || {};
         const action = payload.action;
         if (action === 'set_mode') {
+          // Plan or execute, nothing else: a mode never carries a permission
+          // level. Whether an agent may run without its runtime's controls is
+          // decided on this computer (policy.json), not by this event.
           const newMode = payload.mode || 'execute';
-          if ((newMode === 'execute' || newMode === 'plan') && newMode !== this._mode) {
+          if (WORKSPACE_MODES.includes(newMode) && newMode !== this._mode) {
             const oldMode = this._mode;
             this._mode = newMode;
             this._log(`Mode changed: ${oldMode} -> ${newMode}`);
@@ -1997,3 +2124,6 @@ module.exports.PRESENCE_HEARTBEAT_DEBOUNCE_MS = PRESENCE_HEARTBEAT_DEBOUNCE_MS;
 module.exports.SHARED_CONTEXT_TTL_MS = SHARED_CONTEXT_TTL_MS;
 module.exports.buildPresenceFields = buildPresenceFields;
 module.exports.buildSharedContextBlock = buildSharedContextBlock;
+module.exports.WORKSPACE_MODES = WORKSPACE_MODES;
+module.exports.UNATTENDED_ENV = UNATTENDED_ENV;
+module.exports.withUnattended = withUnattended;

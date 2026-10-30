@@ -25,10 +25,10 @@
  *    (never in the project), removed afterwards, so concurrent channel runs never
  *    clash on a shared trajectory.
  *  - Stateless per task: mini keeps no memory across workspace messages (there is
- *    no fabricated persistent session). The agent is auto-authorized to run shell
- *    commands via --yolo — consistent with how Goose (GOOSE_MODE=auto) and Copilot
- *    (--no-ask-user) already auto-execute; there is no shared per-command approval
- *    gate to hook into.
+ *    no fabricated persistent session). --yolo runs shell commands unconfirmed
+ *    and unsandboxed, so a turn runs only for an agent this computer allowed to
+ *    run unrestricted (`agn policy unrestricted add <name>`); otherwise it is
+ *    refused with that command in the message.
  *  - Config: mini's config is set via the MSWEA_MINI_CONFIG_PATH env var (which
  *    mini reads as its default config file), forwarded through the agent env. We
  *    intentionally do NOT pass --config: a single --config / MSWEA_MINI_CONFIG_PATH
@@ -226,6 +226,17 @@ class MiniSweAgentAdapter extends BaseAdapter {
   }
 
   /**
+   * Every step mini takes is a shell command, and headless it runs them only
+   * under `--yolo` — no confirmation, no sandbox, no read-only mode. So every
+   * turn needs this computer's opt-in.
+   */
+  _approvalRefusal() {
+    return this._needsUnrestricted(
+      'mini-SWE-agent can only run unattended with command confirmation turned off (--yolo); every step is a shell command and there is no sandbox.',
+    );
+  }
+
+  /**
    * Preflight gate (run by the daemon before join). mini needs a resolvable CLI
    * to do anything useful; when none is found we surface 'runtime_missing' and
    * skip the join. We deliberately do NOT block on a missing model here — mini
@@ -271,10 +282,13 @@ class MiniSweAgentAdapter extends BaseAdapter {
    * carried verbatim with no shell involvement. Config is NOT a flag here — it
    * flows via the MSWEA_MINI_CONFIG_PATH env var (see the file header).
    */
-  _buildMiniArgs({ model, costLimit, trajectoryPath, task }) {
+  _buildMiniArgs({ model, costLimit, trajectoryPath, task, unrestricted = false }) {
     const args = [];
     if (model) args.push('--model', model);
-    args.push('--yolo', '--exit-immediately');
+    // `--yolo` only for an agent this computer allowed to run unrestricted; the
+    // adapter refuses the turn otherwise (see _approvalRefusal).
+    if (unrestricted === true) args.push('--yolo');
+    args.push('--exit-immediately');
     if (costLimit) args.push('--cost-limit', String(costLimit));
     if (trajectoryPath) args.push('--output', trajectoryPath);
     args.push('--task', task);
@@ -353,13 +367,20 @@ class MiniSweAgentAdapter extends BaseAdapter {
       return;
     }
 
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = this._approvalGate();
+    if (!gate.ok) {
+      await this._refuseTurn(msgChannel, gate.message);
+      return;
+    }
+
     await this._autoTitleChannel(msgChannel, content);
     this._stoppingChannels.delete(msgChannel);
     await this.sendStatus(msgChannel, 'mini-SWE-agent is working...');
 
     let result;
     try {
-      result = await this._runMini(content, msgChannel);
+      result = await this._runMini(content, msgChannel, gate);
     } catch (e) {
       // A failure to LAUNCH the process (ENOENT/EACCES) is a distinct, actionable
       // failure — surface it as spawn_failed with the resolved path + code.
@@ -407,7 +428,8 @@ class MiniSweAgentAdapter extends BaseAdapter {
   // Subprocess execution
   // ------------------------------------------------------------------
 
-  async _runMini(content, msgChannel) {
+  async _runMini(content, msgChannel, posture = null) {
+    const gate = posture || this._approvalGate();
     fs.mkdirSync(this._sessionsDir, { recursive: true });
     this._trajCounter += 1;
     // Per-run trajectory file — isolates concurrent channel runs from a shared
@@ -423,6 +445,7 @@ class MiniSweAgentAdapter extends BaseAdapter {
         costLimit: this._costLimit(),
         trajectoryPath,
         task: buildTaskPrompt(content),
+        unrestricted: gate.unrestricted === true,
       }),
     ];
     let result;

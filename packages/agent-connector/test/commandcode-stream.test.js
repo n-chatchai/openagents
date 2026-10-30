@@ -36,12 +36,15 @@ describe('buildCommandCodeArgs', () => {
     assert.equal(args[args.indexOf('-p') + 1], '--output-format');
   });
 
-  it('grants write/shell access in execute mode only', () => {
-    const exec = buildCommandCodeArgs();
+  it('grants write/shell access in execute mode only, and only to an allowed agent', () => {
+    // Not allowed on this computer: no --yolo (the adapter refuses the turn).
+    assert.ok(!buildCommandCodeArgs().includes('--yolo'));
+
+    const exec = buildCommandCodeArgs({ unrestricted: true });
     assert.ok(exec.includes('--yolo'));
     assert.ok(!exec.includes('--plan'));
 
-    const plan = buildCommandCodeArgs({ planMode: true });
+    const plan = buildCommandCodeArgs({ planMode: true, unrestricted: true });
     assert.ok(plan.includes('--plan'));
     // --yolo alongside --plan would defeat read-only exploration.
     assert.ok(!plan.includes('--yolo'));

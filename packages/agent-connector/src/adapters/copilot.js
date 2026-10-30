@@ -21,8 +21,9 @@
  *     via --add-dir, interactive prompts disabled (--no-ask-user) since the
  *     workspace cannot answer them. We never default to --allow-all / --yolo /
  *     --allow-all-paths / --allow-url.
- *   • plan mode → analysis only (--plan, no write tools); act mode → controlled
- *     read/write/shell within the working dir.
+ *   • plan mode → analysis only (--plan, no write tools); act mode → writes
+ *     within the working dir, no shell (Copilot has no sandbox for it). Shell
+ *     is granted only to an agent allowed unrestricted on this computer.
  *
  * ── Verification status ────────────────────────────────────────────────────
  * The concrete CLI flags and JSONL `type` strings used here follow the
@@ -74,7 +75,13 @@ const SECRET_ENV_VARS = [
 // `copilot help permissions` (v1.0.63): `shell` (all shell commands) and `write`
 // (file create/modify). Paths are scoped via --add-dir; we deliberately do NOT
 // enable network/URL or all-paths access by default.
-const ACT_ALLOW_TOOLS = ['shell', 'write'];
+//
+// `write` stays inside the paths Copilot was given. `shell` is every command,
+// run with no sandbox — Copilot has none — so it is granted only to an agent
+// this computer allowed to run unrestricted (policy.json). Without it,
+// --no-ask-user makes Copilot deny a shell call instead of asking.
+const ACT_ALLOW_TOOLS = ['write'];
+const UNRESTRICTED_ALLOW_TOOLS = ['shell', 'write'];
 
 // How long to wait for a turn before giving up (no output / hung CLI).
 const TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -276,7 +283,9 @@ class CopilotAdapter extends BaseAdapter {
    * single discrete argv element. Permissions are least-privilege and scoped to
    * the working directory.
    */
-  _buildArgs(prompt, channel, { skipResume = false } = {}) {
+  _buildArgs(prompt, channel, { skipResume = false, posture = null } = {}) {
+    // Plan/execute and the local opt-in (policy.json), never workspace data.
+    const gate = posture || this._approvalGate();
     const wd = this.workingDir || defaultAgentWorkdir(this.agentName);
     // Required-value flags take the space form; optional-value/variadic flags
     // (--resume, --secret-env-vars, --allow-tool — declared `[=value]` /
@@ -297,11 +306,12 @@ class CopilotAdapter extends BaseAdapter {
     // pre-authorize a least-privilege tool set instead of --allow-all/--yolo.
     // Tool IDs `shell` and `write` are verified against `copilot help permissions`.
     args.push('--no-ask-user');
-    if (this._mode === 'plan') {
+    if (gate.mode === 'plan') {
       // Analysis/planning only — do not grant write capability.
       args.push('--plan');
     } else {
-      for (const t of ACT_ALLOW_TOOLS) args.push(`--allow-tool=${t}`);
+      const tools = gate.unrestricted ? UNRESTRICTED_ALLOW_TOOLS : ACT_ALLOW_TOOLS;
+      for (const t of tools) args.push(`--allow-tool=${t}`);
     }
 
     // Defense-in-depth: tell Copilot which env-var NAMES to redact from its own

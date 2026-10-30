@@ -24,12 +24,20 @@ function consumeLines(lines) {
 }
 
 describe('buildAgyArgv', () => {
-  it('builds the base headless argv', () => {
+  it('builds the base headless argv within agy\'s own permission rules', () => {
     assert.deepEqual(buildAgyArgv({ prompt: 'hi' }), [
+      '-p', 'hi',
+      '--output-format', 'stream-json',
+    ]);
+  });
+
+  it('skips permissions only for an agent allowed unrestricted on this computer', () => {
+    assert.deepEqual(buildAgyArgv({ prompt: 'hi', unrestricted: true }), [
       '-p', 'hi',
       '--dangerously-skip-permissions',
       '--output-format', 'stream-json',
     ]);
+    assert.ok(!buildAgyArgv({ prompt: 'hi', unrestricted: 'yes' }).includes('--dangerously-skip-permissions'));
   });
 
   it('appends model and conversation resume', () => {
