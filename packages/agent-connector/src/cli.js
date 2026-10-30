@@ -7,6 +7,7 @@ require('./win-console').installWindowsHideDefault();
 const { AgentConnector, Daemon } = require('./index');
 const { hasCredentialMetadata, formatAuthGuidance } = require('./auth-guidance');
 const { AUTH_MODE_KEY, CLI_LOGIN, isCliLogin } = require('./env');
+const { validateKey: validateEnvKey, isSecretKey: isSecretEnvKey } = require('./env-policy');
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -816,30 +817,97 @@ async function cmdWorkspace(connector, flags, positional) {
   }
 }
 
+/**
+ * A value for `agn env <type> --set-stdin KEY`: everything on stdin (one
+ * trailing newline dropped, as `echo` or a here-doc adds it), or typed at a
+ * prompt that does not echo it. Either way the key stays out of argv (which
+ * `ps` shows every user) and out of shell history.
+ */
+async function readEnvValueFromStdin(key) {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) {
+    const chunks = [];
+    for await (const chunk of stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    return Buffer.concat(chunks).toString('utf-8').replace(/\r?\n$/, '');
+  }
+  return new Promise((resolve, reject) => {
+    let value = '';
+    process.stderr.write(`Value for ${key} (input hidden): `);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf-8');
+    const finish = (err) => {
+      stdin.removeListener('data', onData);
+      try { stdin.setRawMode(false); } catch {}
+      stdin.pause();
+      process.stderr.write('\n');
+      if (err) reject(err); else resolve(value);
+    };
+    const onData = (text) => {
+      for (const ch of text) {
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') return finish();
+        if (ch === '\u0003') return finish(new Error('Cancelled'));
+        if (ch === '\u007f' || ch === '\b') { value = value.slice(0, -1); continue; }
+        value += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
 async function cmdEnv(connector, flags, positional) {
   const type = positional[0];
-  if (!type) { print('Usage: agn env <type> [--set KEY=VALUE]'); return; }
+  if (!type) { print('Usage: agn env <type> [--set KEY=VALUE | --set-stdin KEY]'); return; }
 
+  const stdinKey = flags['set-stdin'];
   const setVal = flags.set;
-  if (setVal) {
-    const eq = setVal.indexOf('=');
-    if (eq < 1) { print('Usage: --set KEY=VALUE'); return; }
-    const key = setVal.slice(0, eq);
-    const val = setVal.slice(eq + 1);
-    connector.saveAgentEnv(type, { [key]: val });
+  if (stdinKey !== undefined || setVal) {
+    let key;
+    let val;
+    if (stdinKey !== undefined) {
+      if (typeof stdinKey !== 'string' || !stdinKey) { print('Usage: --set-stdin KEY'); process.exitCode = 1; return; }
+      key = stdinKey;
+      // Refuse a bad name before asking for the value.
+      try { validateEnvKey(key); } catch (e) { print(`Error: ${e.message}`); process.exitCode = 1; return; }
+      try {
+        val = await readEnvValueFromStdin(key);
+      } catch (e) {
+        print(`Error: ${e.message}`);
+        process.exitCode = 1;
+        return;
+      }
+      // An empty stdin is a mistake, not a removal (that is `--set KEY=`).
+      if (!val.trim()) { print(`Error: no value for ${key} on stdin`); process.exitCode = 1; return; }
+    } else {
+      const eq = typeof setVal === 'string' ? setVal.indexOf('=') : -1;
+      if (eq < 1) { print('Usage: --set KEY=VALUE'); process.exitCode = 1; return; }
+      key = setVal.slice(0, eq);
+      val = setVal.slice(eq + 1);
+    }
+    try {
+      connector.saveAgentEnv(type, { [key]: val });
+    } catch (e) {
+      // EnvValidationError names the key and the reason, never the value.
+      const why = typeof e.code === 'string' && /^E[A-Z]+$/.test(e.code) ? ` (${e.code})` : '';
+      print(`Error: ${e.code === 'ENV_INVALID' ? e.message : `could not save ${key} for ${type}${why}`}`);
+      process.exitCode = 1;
+      return;
+    }
     try { connector.sendDaemonCommand('reload'); } catch {}
     print(`Saved ${key} for ${type}`);
     return;
   }
 
-  // Show current env
+  // Show current env. Secrets are masked whether or not the registry marks
+  // the field as a password.
   const env = connector.getAgentEnv(type);
   const fields = connector.getEnvFields(type);
+  const shown = (name, val) => ((val && isSecretEnvKey(name)) ? '***' : val);
 
   if (fields.length > 0) {
     for (const field of fields) {
       const val = env[field.name];
-      const display = field.password && val ? '***' : (val || '(not set)');
+      const display = (field.password || isSecretEnvKey(field.name)) && val ? '***' : (val || '(not set)');
       print(`  ${field.name}: ${display}  ${field.required ? '(required)' : ''}`);
     }
     return;
@@ -865,7 +933,7 @@ async function cmdEnv(connector, flags, positional) {
     print(`No env vars configured for ${type}`);
   } else {
     for (const [k, v] of entries) {
-      print(`  ${k}: ${v}`);
+      print(`  ${k}: ${shown(k, v)}`);
     }
   }
 }
@@ -1175,6 +1243,7 @@ Commands:
   connect <agent> <token>     Connect agent to workspace (or --workspace <slug> for a paired one)
   disconnect <agent>          Disconnect agent from workspace
   env <type> [--set K=V]      View/set env vars for agent type
+             [--set-stdin K]  Set K from stdin, kept out of argv and shell history
   skills [agent] [action]     Manage agent skills (enable/disable)
   tool-mode [agent] [mode]    View/set tool mode (mcp or skills)
   autostart [--disable]       Enable/disable auto-start on login
