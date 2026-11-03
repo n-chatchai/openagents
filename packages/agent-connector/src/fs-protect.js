@@ -157,8 +157,9 @@ function renameWithRetry(from, to, s) {
       fs.renameSync(from, to);
       return true;
     } catch (err) {
-      // Windows refuses to replace a file another process holds open.
-      const busy = s.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(err.code);
+      // Windows refuses to replace a file another process holds open; any
+      // platform can refuse the rename itself while the file stays writable.
+      const busy = ['EPERM', 'EACCES', 'EBUSY'].includes(err.code);
       if (!busy) throw err;
       if (attempt >= 5) return false;
       sleepMs(20 * (attempt + 1));

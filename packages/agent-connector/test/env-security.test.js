@@ -393,14 +393,28 @@ describe('file protection', { skip: IS_WINDOWS && 'POSIX modes' }, () => {
     assert.equal(mode(cfg.configFile), 0o600);
   });
 
-  it('rewrites daemon.yaml in place, so the daemon\'s fs.watch keeps firing', () => {
+  it('replaces daemon.yaml by rename, and the daemon\'s watch still sees every save', async () => {
+    const { Daemon } = require('../src/daemon');
     const cfg = new Config(tmpDir);
     cfg.addAgent({ name: 'a', type: 'codex' });
-    const ino = fs.statSync(cfg.configFile).ino;
-    cfg.updateAgentEnv('a', { LLM_MODEL: 'gpt-x' });
-    cfg.updateAgentEnv('a', { LLM_MODEL: 'gpt-y' });
-    assert.equal(fs.statSync(cfg.configFile).ino, ino);
-    assert.equal(cfg.getAgent('a').env.LLM_MODEL, 'gpt-y');
+    let reloads = 0;
+    const daemon = { config: cfg, _reload: () => { reloads++; } };
+    Daemon.prototype._watchConfig.call(daemon);
+    const settle = () => new Promise((r) => setTimeout(r, 1400));
+    try {
+      const ino = fs.statSync(cfg.configFile).ino;
+      cfg.updateAgentEnv('a', { LLM_MODEL: 'gpt-x' });
+      await settle();
+      assert.equal(reloads, 1);
+      cfg.updateAgentEnv('a', { LLM_MODEL: 'gpt-y' });
+      await settle();
+      assert.equal(reloads, 2, 'a watch on the old inode would have gone quiet');
+      assert.notEqual(fs.statSync(cfg.configFile).ino, ino);
+      assert.equal(mode(cfg.configFile), 0o600);
+      assert.equal(cfg.getAgent('a').env.LLM_MODEL, 'gpt-y');
+    } finally {
+      daemon._configWatcher.close();
+    }
   });
 });
 
@@ -445,7 +459,8 @@ describe('Windows ACL (platform and icacls mocked)', () => {
     const cfg = new Config(tmpDir);
     cfg._fsOptions = winOpts();
     cfg.addNetwork({ id: 'w1', slug: 'w1', token: SECRET });
-    assert.ok(calls.some((c) => c.args[0] === cfg.configFile && c.args.includes('CORP\\alice:F')));
+    assert.ok(calls.some((c) => path.dirname(c.args[0]) === tmpDir
+      && path.basename(c.args[0]).startsWith('.daemon.yaml.') && c.args.includes('CORP\\alice:F')));
     assertNoSecretInArgv();
   });
 

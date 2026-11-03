@@ -11,7 +11,8 @@ const { spawn } = require('./wsl');
 const os = require('os');
 const { WorkspaceClient } = require('./workspace-client');
 const { listEndpointModels } = require('./model-list');
-const { supportsCliModels } = require('./cli-models');
+const { supportsCliModels, cliModelsWithKey } = require('./cli-models');
+const { agnLoginCommand, loginCommandOf } = require('./agent-login');
 const {
   AUTH_MODE_KEY, CLI_LOGIN, MODEL_MODE_KEY, MODEL_DEFAULT, credentialKeys, isCliLogin, modelKeys, stripForCliLogin, typeEnvFor,
 } = require('./env');
@@ -180,6 +181,7 @@ class Daemon {
     this._cliModelsStartupTimer = null;
     this._cliModelsInterval = null;
     this._reloadInFlight = null;  // serialize concurrent _reload() calls
+    this._runtimeRepairs = new Map(); // agent type → in-flight reinstall of its supported version
   }
 
   // ── Agent smoke tests (probes) ─────────────────────────────────────────
@@ -303,6 +305,8 @@ class Daemon {
    */
   _onCliSignIn(a) {
     if (!supportsCliModels(a.type)) return false;
+    // A Qoder token IS the account: the CLI lists the same models either way.
+    if (cliModelsWithKey(a.type)) return true;
     const endpoint = this._agentEndpoint(a);
     return !endpoint.baseUrl && !endpoint.apiKey;
   }
@@ -456,12 +460,21 @@ class Daemon {
    * its sign-in's models carries that list, for the add form's model picker.
    * Null until the CLI has answered, and from devices too old to ask, where
    * the form keeps the catalog's list.
+   *
+   * A type with a sign-in of its own also carries `loginCommand`, the command
+   * to run on this device (`agn login codex`). Its presence is how the
+   * workspace knows this device has `agn login`; for an older device it shows
+   * the CLI's own login command instead.
    */
   _heartbeatRuntimes() {
     return (this._runtimes || []).map((rt) => {
-      if (!rt || !rt.installed || !supportsCliModels(rt.type)) return rt;
+      if (!rt) return rt;
+      // Whatever `agn login` can sign in, which is wider than _hasCliSignIn:
+      // OpenCode signs in without the registry marking it a sign-in agent.
+      const out = this._agnLoginFor(rt.type) ? { ...rt, loginCommand: agnLoginCommand(rt.type) } : rt;
+      if (!out.installed || !supportsCliModels(rt.type)) return out;
       const listed = this._cliModels[this._cliModelsKey(this._signInAgent(rt.type))];
-      return { ...rt, cliModels: (listed && listed.models) || null };
+      return { ...out, cliModels: (listed && listed.models) || null };
     });
   }
 
@@ -715,6 +728,24 @@ class Daemon {
     if (isCliLogin(a.env)) return CLI_LOGIN;
     if (apiKey) return 'api_key';
     return this._hasCliSignIn(a.type) ? CLI_LOGIN : null;
+  }
+
+  /**
+   * Whether `agn login <type>` has a sign-in to run for this type. Remembered
+   * per type: the heartbeat asks for every runtime every 10s, and each
+   * getEntry() re-reads and parses the bundled registry (~25ms for all types).
+   */
+  _agnLoginFor(type) {
+    if (!this._agnLoginTypes) this._agnLoginTypes = new Map();
+    if (this._agnLoginTypes.has(type)) return this._agnLoginTypes.get(type);
+    let has = false;
+    try {
+      has = !!loginCommandOf(this.registry.getEntry(type));
+    } catch {
+      return false; // not remembered: a registry that failed to load can recover
+    }
+    this._agnLoginTypes.set(type, has);
+    return has;
   }
 
   /** Whether this type's CLI has a sign-in of its own (`codex login`, …). */
@@ -2045,6 +2076,47 @@ class Daemon {
     this._writeStatus();
   }
 
+  /**
+   * Put a runtime the adapter can run in place of one it refused, then ask the
+   * adapter again. Used for a pinned agent found on the wrong version (DeepSeek
+   * Harness, whose adapter accepts exactly one preview): the registry's install
+   * command already names the supported version and installs it into the
+   * managed prefix, which the adapter prefers. Doing it here instead of
+   * reporting the mismatch is what keeps a stale install — an old global copy,
+   * or one the launcher placed before the pin moved — from surfacing as an
+   * error the user has to fix by hand.
+   *
+   * One install per agent type at a time, shared by every agent of that type
+   * starting together. Returns the new preflight result, or null when the
+   * install failed and the original reason should stand.
+   */
+  async _repairRuntime(name, agentType, adapter, info, pf) {
+    this._log(`${name} preflight: ${pf.message} — installing the supported version`, 'warn');
+    info.state = 'starting';
+    info.lastError = null;
+    info.errorReason = null;
+    this._writeStatus();
+
+    let job = this._runtimeRepairs.get(agentType);
+    if (!job) {
+      const { Installer } = require('./installer');
+      const installer = new Installer(this.registry, this.config.configDir);
+      job = installer.installStreaming(agentType, () => {})
+        .then(() => true, (e) => {
+          this._log(`${agentType} reinstall failed: ${redactDiagnostic(String(e && e.message || e)).slice(0, 500)}`, 'error');
+          return false;
+        })
+        .finally(() => this._runtimeRepairs.delete(agentType));
+      this._runtimeRepairs.set(agentType, job);
+    }
+    if (!(await job)) return null;
+
+    if (typeof adapter.forgetRuntime === 'function') adapter.forgetRuntime();
+    const next = adapter.preflight();
+    if (next && next.ok !== false) this._log(`${name}: supported ${agentType} runtime installed`);
+    return next;
+  }
+
   async _adapterLoop(name, agentCfg, info, network) {
     const { createAdapter } = require('./adapters');
     const { skillsToDisabledModules } = require('./skill-catalog');
@@ -2096,8 +2168,12 @@ class Daemon {
     // no point spinning a join/poll loop that can never run the CLI. Adapters
     // that don't override preflight() always pass.
     try {
-      const pf =
+      let pf =
         typeof adapter.preflight === 'function' ? adapter.preflight() : null;
+      if (pf && pf.ok === false && pf.repairable) {
+        pf = (await this._repairRuntime(name, agentType, adapter, info, pf)) || pf;
+        if (this._shuttingDown || this._stoppedAgents.has(name)) return;
+      }
       if (pf && pf.ok === false) {
         info.state = 'error';
         info.errorReason = pf.reason || 'runtime_missing';
@@ -2361,7 +2437,12 @@ class Daemon {
   _watchConfig() {
     try {
       let debounce = null;
-      this._configWatcher = fs.watch(this.config.configFile, () => {
+      // The directory, not the file: daemon.yaml is replaced by rename
+      // (config.js save), and a watch on the file's inode goes quiet after
+      // the first one.
+      const name = path.basename(this.config.configFile);
+      this._configWatcher = fs.watch(path.dirname(this.config.configFile), (_event, filename) => {
+        if (filename && String(filename) !== name) return;
         if (debounce) clearTimeout(debounce);
         debounce = setTimeout(() => this._reload(), 1000);
       });

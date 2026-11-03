@@ -23,17 +23,17 @@
   "install": {
     "binary": "dsh",
     "npm_package": "@deepseek-ai/dsh",
-    "npm_version": "0.2.1-rc.2",
-    "npm_integrity": "sha512-tvY+yhfKRifthbqPe/OK0AYxM5ZkvqfYq/jMYgJcEUxiRRL1Vwra3Ti5TB6AXgSWQdiPHYh/Vp6SJa9yHwMNuw==",
+    "npm_version": "0.2.1-rc.5",
+    "npm_integrity": "sha512-WkyJZv4zl9sCAxSzRctGm58m0rilGqwR6pniBiLOz5CPDfHfDuAUicg0AAazXI7oj/Cph6/cjNTncA/rpLTXpw==",
     "requires": [
       "nodejs"
     ],
-    "supported_version": "0.2.1-rc.2",
+    "supported_version": "0.2.1-rc.5",
     "verify": "dsh -V >/dev/null 2>&1",
     "verify_win": "dsh -V >nul 2>nul",
-    "macos": "npm install -g @deepseek-ai/dsh@0.2.1-rc.2",
-    "linux": "npm install -g @deepseek-ai/dsh@0.2.1-rc.2",
-    "windows": "npm install -g @deepseek-ai/dsh@0.2.1-rc.2"
+    "macos": "npm install -g @deepseek-ai/dsh@0.2.1-rc.5",
+    "linux": "npm install -g @deepseek-ai/dsh@0.2.1-rc.5",
+    "windows": "npm install -g @deepseek-ai/dsh@0.2.1-rc.5"
   },
   "uninstall": {
     "macos": "npm uninstall -g @deepseek-ai/dsh",
@@ -65,8 +65,7 @@
     {
       "name": "DEEPSEEK_BASE_URL",
       "description": "Optional gateway/proxy base URL. Leave blank for the public DeepSeek API. A URL ending in a version segment (e.g. https://relay.example.com/v1, or OpenAgents credits) is used as an OpenAI-compatible chat-completions endpoint; any other URL must speak the Anthropic Messages API (e.g. https://api.deepseek.com/anthropic).",
-      "required": false,
-      "placeholder": "https://api.deepseek.com/anthropic"
+      "required": false
     },
     {
       "name": "DEEPSEEK_MODEL",

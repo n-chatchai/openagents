@@ -19,7 +19,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError, TimeoutError as PoolTimeoutError
 
 from app.config import config
-from app.routers import web_projects, reactions, agent_services, account, agent_profile, app_version, approvals, auth, door_auth, briefs, browser, campaign, pilot, cloud_agents, devices, events, feedback, fetch, files, grants, grokbot, groups, integrations, invites, issues, knowledge, model_access, network, nodes, notifications, onboarding, read_state, routines, search, shares, sharing, tasks, thread_access, timers, todos, watches, workflows, workspaces
+# Registers the commit hooks that invalidate cached permission results; it must
+# load before any request can write permission rows.
+import app.services.permission_cache  # noqa: E402,F401
+from app.routers import web_projects, reactions, agent_services, account, agent_profile, app_version, approvals, auth, door_auth, briefs, browser, campaign, pilot, cloud_agents, devices, events, feedback, fetch, files, grants, grokbot, groups, integrations, invites, issues, knowledge, model_access, network, nodes, notifications, onboarding, read_state, registry, routines, search, shares, sharing, tasks, thread_access, timers, todos, watches, workflows, workspaces
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -149,6 +152,7 @@ async def _fire_due_in_thread():
     from app.models import EventRecord, RoutineRecord, TimerRecord, Workspace
     from app.pipeline_factory import pipeline
     from app.routers.routines import _compute_next_fires_at
+    from app.services.routine_backoff import backoff_wait_ms, consecutive_failed_runs
     from openagents.core.onm_events import Event
     from openagents.core.onm_mods import PipelineContext
 
@@ -316,6 +320,20 @@ async def _fire_due_in_thread():
                     # Previous run still working — skip (schedule already advanced).
                     continue
 
+                # The agent keeps failing (usage limit, broken CLI): fire less
+                # often until a run succeeds, instead of posting the same
+                # error on every tick. See services/routine_backoff.py.
+                failures, last_fire_ms = consecutive_failed_runs(
+                    db, workspace.id, channel_name, agent_name,
+                )
+                wait_ms = backoff_wait_ms(failures)
+                if wait_ms and last_fire_ms and now_ms - last_fire_ms < wait_ms:
+                    logger.info(
+                        "Routine %s backing off: %d failed runs in a row, next try in %ds",
+                        routine_id, failures, (wait_ms - (now_ms - last_fire_ms)) // 1000,
+                    )
+                    continue
+
             ctx = PipelineContext(
                 network_id=str(workspace.id),
                 agent_address=created_by,
@@ -422,6 +440,17 @@ async def lifespan(app: FastAPI):
             logger.info("SQLite: auto-created tables")
     except Exception as e:
         logger.error("LIFESPAN: database import failed: %s", e)
+
+    # Sync the curated Skill catalog once at boot, never from anonymous GET
+    # requests. The bootstrap takes a PostgreSQL advisory transaction lock, so
+    # rolling deploys and multi-worker startup cannot race on unique slugs.
+    try:
+        from app.skill_registry import bootstrap_builtin_registry
+        await asyncio.to_thread(bootstrap_builtin_registry)
+    except Exception as e:
+        # Keep the rest of Workspace available if a deployment starts before
+        # migration 087 is applied; Registry endpoints will simply be empty.
+        logger.error("LIFESPAN: skill registry bootstrap failed: %s", e)
 
     background_tasks = []
     # Additional HTTP replicas can share the database/cache without adding
@@ -592,6 +621,10 @@ class AgentIdentityMiddleware:
 
 app.add_middleware(AgentIdentityMiddleware)
 
+from app.request_auth import RequestAuthMiddleware
+
+app.add_middleware(RequestAuthMiddleware)
+
 
 # Log Pydantic validation failures with the offending body so we can
 # debug client/server schema drift from CloudWatch instead of guessing
@@ -652,6 +685,7 @@ app.include_router(nodes.devices_router)  # /v1/devices/* alias — must stay af
 app.include_router(notifications.router)
 app.include_router(onboarding.router)
 app.include_router(read_state.router)
+app.include_router(registry.router)
 app.include_router(routines.router)
 app.include_router(search.router)
 app.include_router(shares.router)

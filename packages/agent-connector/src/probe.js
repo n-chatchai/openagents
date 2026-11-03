@@ -34,7 +34,7 @@ const os = require('os');
 const { spawn } = require('./wsl');
 const { getEnhancedEnv } = require('./paths');
 const { shouldUseShellForBinary, REASON } = require('./adapters/health-status');
-const { decodeConsoleOutput, BENIGN_CLI_OUTPUT, stripCliNoise } = require('./adapters/utils');
+const { decodeConsoleOutput, BENIGN_CLI_OUTPUT, stripCliNoise, redactSecrets } = require('./adapters/utils');
 const { formatAuthGuidance } = require('./auth-guidance');
 const { isCliLogin, stripForCliLogin, typeEnvFor } = require('./env');
 const { configuredModel } = require('./agent-model');
@@ -90,10 +90,14 @@ function installCommandFor(entry) {
 /** Redact anything that looks like a secret before output leaves the device. */
 function scrub(text) {
   if (!text) return '';
-  return String(text)
+  const masked = String(text)
     .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-****')
     .replace(/(api[-_ ]?key["':\s=]+)[A-Za-z0-9_-]{8,}/gi, '$1****')
     .replace(/Bearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer ****');
+  // Then everything the adapters strip from quoted CLI text: a Codex probe
+  // that failed after printing a token-shaped blob showed that blob as its
+  // reason, on the device card in the workspace.
+  return redactSecrets(masked);
 }
 
 function tail(text, cap) {
@@ -355,8 +359,11 @@ function shellQuoted(binary, shell) {
  * with the timeout named first.
  */
 function failureMessage(res, code, timeoutMs) {
+  // A line that is one long run of base64/base64url characters is an encoded
+  // blob (a token, encrypted reasoning), never a sentence that says why the
+  // CLI failed. JSON and URLs have characters outside that set and stay.
   const lines = (s) => String(s || '').split(/\r?\n/).map((l) => l.trim())
-    .filter((l) => l && !BENIGN_OUTPUT.test(l));
+    .filter((l) => l && !BENIGN_OUTPUT.test(l) && !/^[A-Za-z0-9+/=._-]{24,}$/.test(l));
   const all = [...lines(res.stderr), ...lines(res.stdout)];
   const telling = all.find((l) => classifyOutputText(l.toLowerCase()) === code);
   const detail = tail(telling || lines(res.stderr).join('\n') || lines(res.stdout).join('\n'), OUTPUT_CAP);
@@ -538,6 +545,20 @@ async function probeAgentType(connector, type, opts = {}) {
         reply: tail(reply, REPLY_CAP),
       });
     }
+    // The model answered and the CLI then failed to exit — Claude Code held
+    // open by a hook or an MCP server reads "Timed out after 120s: Hi! What
+    // can I help you with?". Sign-in, endpoint and model all just worked, and
+    // chat runs the CLI as a long-lived process where exiting never matters.
+    // Only for output that reads as an answer, never as a retry or an error.
+    const looksLikeAnswer = reply && !classifyOutputText(output.toLowerCase())
+      && !/\b(error|errors|failed|failure|retrying|exception)\b/i.test(reply);
+    if (res.timedOut && !res.spawnError && looksLikeAnswer) {
+      return done({
+        ok: true, method: 'cli', code: CODE.OK,
+        message: `Responded (the CLI did not exit within ${Math.round(timeoutMs / 1000)}s)`,
+        reply: tail(reply, REPLY_CAP),
+      });
+    }
     let code = res.code === 0 && !res.timedOut && !res.spawnError
       ? CODE.EMPTY_RESPONSE
       : classifyFailure(output, res);
@@ -573,7 +594,50 @@ async function probeAgentType(connector, type, opts = {}) {
 
   // ── Live tier 2: direct LLM API call for API-key agents (e.g. OpenClaw) ──
   if (canCallDirect || (entry.install && entry.install.api_only && reachable)) {
-    const res = await callLLM(agentEnv, model, baseUrl, protocol);
+    let apiEnv = agentEnv;
+    let apiModel = model;
+    let apiBaseUrl = baseUrl;
+    if (type === 'mimo-code' && agentEnv.LLM_API_KEY) {
+      // The runtime owns MiMo's defaults and provider/model normalization.
+      // Generic API defaults would send a MiMo key/model to OpenAI instead.
+      const { resolveMimoRoute, parseMimoModelList, pickMimoModel } = require('./adapters/mimo-code-runtime');
+      let route = resolveMimoRoute(agentEnv);
+      if (!route.model && route.providerId === 'xiaomi' && health.binary) {
+        const listEnv = { ...env };
+        delete listEnv.LLM_API_KEY;
+        delete listEnv.XIAOMI_API_KEY;
+        const shell = shouldUseShellForBinary(health.binary);
+        const command = shell ? '"' + health.binary + '"' : health.binary;
+        const listed = await runCommand(command, ['models', 'xiaomi'], {
+          env: {
+            ...listEnv,
+            MIMOCODE_AUTH_CONTENT: '{}',
+            MIMOCODE_CONFIG_CONTENT: JSON.stringify({ enabled_providers: ['xiaomi'], disabled_providers: [] }),
+            MIMOCODE_DISABLE_AUTOUPDATE: '1',
+          },
+          timeoutMs,
+          shell,
+        });
+        if (!listed.timedOut && !listed.spawnError && listed.code === 0) {
+          route = resolveMimoRoute(agentEnv, null, {
+            fallbackModel: pickMimoModel(parseMimoModelList(listed.stdout)),
+          });
+        }
+      }
+      if (!route.model) {
+        return done({
+          ok: false, method: 'none', code: CODE.BAD_MODEL,
+          message: 'No model is configured and no default model could be resolved. Select a model and test again.',
+          guidance: buildGuidance(CODE.BAD_MODEL, entry, agentEnv),
+        });
+      }
+      // Match the runtime's credential choice, even if unrelated provider
+      // variables were saved alongside this agent's LLM_* configuration.
+      apiEnv = { LLM_API_KEY: route.apiKey, LLM_BASE_URL: route.baseURL, LLM_MODEL: route.model };
+      apiModel = route.model;
+      apiBaseUrl = route.baseURL;
+    }
+    const res = await callLLM(apiEnv, apiModel, apiBaseUrl, protocol);
     if (res && res.success) {
       return done({
         ok: true, method: 'llm_api', code: CODE.OK,
@@ -603,4 +667,4 @@ async function probeAgentType(connector, type, opts = {}) {
   });
 }
 
-module.exports = { probeAgentType, classifyFailure, buildGuidance, authFlavor, installCommandFor, scrub, CODE, DEFAULT_TIMEOUT_MS };
+module.exports = { probeAgentType, classifyFailure, buildGuidance, authFlavor, installCommandFor, scrub, failureMessage, CODE, DEFAULT_TIMEOUT_MS };

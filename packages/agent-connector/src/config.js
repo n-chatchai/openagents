@@ -102,6 +102,14 @@ class Config {
 
   // -- Write --
 
+  /**
+   * Replace the file in one step. A plain writeFileSync truncates first, and
+   * the daemon and its `agn` children read this file all the time: a probe
+   * started right after a create read it empty and reported the new agent as
+   * "Unknown agent type '<name>'", and a read-modify-write in that window
+   * saves the empty list back. Windows can refuse the rename while a reader
+   * holds the file open, so that case retries and then writes in place.
+   */
   save(config) {
     for (const agent of (config && config.agents) || []) {
       if (agent && agent.env !== undefined) {
@@ -110,9 +118,11 @@ class Config {
     }
     const text = serializeYaml(config);
     fs.mkdirSync(this.configDir, { recursive: true });
-    // In place rather than temp + rename: the daemon watches this path with
-    // fs.watch, which follows the inode and goes quiet after a rename.
-    fsProtect.writePrivateFile(this.configFile, text, { ...this._fsOptions, atomic: false });
+    // Private (0600) and in one step: a temp file renamed over daemon.yaml, so
+    // readers never see it half written (fs-protect falls back to an in-place
+    // rewrite where Windows refuses the rename). The daemon watches the
+    // directory, not this inode, so a rename does not deafen it.
+    fsProtect.writePrivateFile(this.configFile, text, this._fsOptions);
   }
 
   addAgent({ name, type, role, path: agentPath, env }) {

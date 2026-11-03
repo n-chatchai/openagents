@@ -107,6 +107,10 @@ export interface NodeRuntime {
    * can run. Null or absent: the CLI cannot be asked, has not answered yet,
    * or the launcher is too old to ask. */
   cliModels?: AgentCatalogModel[] | null;
+  /** The command that signs this type's CLI in on the device (`agn login
+   * codex`). Absent from launchers too old to have `agn login`, and for types
+   * with no sign-in of their own. */
+  loginCommand?: string | null;
   probe?: NodeProbe | null;
 }
 
@@ -225,6 +229,71 @@ export interface WorkspaceCustomSkill {
   contentType?: string;
   packageType: 'md' | 'zip';
   createdAt?: string;
+  workspaceSkillId?: string;
+  version?: string;
+  versionId?: string;
+  registrySkillId?: string;
+  forkedFromVersionId?: string;
+  unavailable?: boolean;
+  /** Public listing state of this skill's registry counterpart, if published. */
+  publicVisibility?: 'public' | 'unlisted';
+}
+
+/** A ranked row on a rolling leaderboard — a public skill plus its window score. */
+export interface RegistryLeaderboardEntry extends RegistrySkill {
+  rank: number;
+  windowInstalls: number;
+  windowForks: number;
+  score: number;
+}
+
+/** One immutable version of a workspace-private skill. */
+export interface WorkspaceSkillVersion {
+  versionId: string;
+  version: string;
+  versionSeq: number;
+  packageType: 'md' | 'zip';
+  changelog: string;
+  fileId: string;
+  createdBy?: string;
+  createdAt?: string;
+}
+
+export interface RegistrySkillVersion {
+  id: string;
+  version: string;
+  versionSeq: number;
+  status: 'published' | 'yanked';
+  sourceMode: 'mirrored' | 'upstream_pointer';
+  sourceRepo?: string | null;
+  sourcePath?: string | null;
+  contentSha256?: string | null;
+  packageType: 'md' | 'zip';
+  license: string;
+  attribution: Record<string, unknown>;
+  capabilities: Record<string, unknown>;
+  scanResult: Record<string, unknown>;
+  changelog?: string;
+  publishedAt?: string | null;
+}
+
+export interface RegistrySkill {
+  id: string;
+  slug: string;
+  namespace: string;
+  namespaceName: string;
+  name: string;
+  summary: string;
+  description: string;
+  category: string;
+  tags: string[];
+  visibility: 'public' | 'unlisted';
+  status: 'active';
+  forkedFromVersionId?: string | null;
+  installCount: number;
+  latestVersion?: RegistrySkillVersion | null;
+  versions?: RegistrySkillVersion[];
+  createdAt?: string | null;
 }
 
 export interface WorkspaceSession {
@@ -1482,6 +1551,9 @@ export interface IssueComment {
   kind: 'comment' | 'status' | 'result' | 'activity' | 'approval' | 'due_date';
   approval?: ApprovalRequest;
   source_event_id: string | null;
+  file_ids?: string[];
+  /** Readable images and videos posted with the comment. */
+  attachments?: { file_id: string; filename: string; content_type: string; size: number }[];
   created_at: string;
 }
 export interface IssueReply { id: string; author: string; content: string }

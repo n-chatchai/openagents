@@ -25,6 +25,7 @@ const { formatAttachmentsForPrompt, SESSION_DEFAULT_RE, generateSessionTitle, st
 const { buildClaudeSystemPrompt, buildClaudeSkillMd, buildPinnedSections, workspaceSkillName } = require('./workspace-prompt');
 const { pinnedFingerprint, sampleRecap } = require('./decision-log');
 const { defaultAgentWorkdir, whichBinary, whereBinary } = require('../paths');
+const { isPostinstallStub } = require('../postinstall-stub');
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -206,6 +207,13 @@ class ClaudeAdapter extends BaseAdapter {
    *    for envs saved by an older launcher or coming from anywhere else. Only
    *    for a NON-official base — api.anthropic.com wants x-api-key.
    *
+   * 3. Turn MCP tool search off behind a relay (ENABLE_TOOL_SEARCH=false).
+   *    Claude Code 2.1.304 made it the default behind a custom base URL, and
+   *    the deferred-tool content blocks it sends are rejected by relays whose
+   *    schema predates them (422 "unknown variant `tool_definition`, expected
+   *    `tool_reference`"). Newer CLIs retry without it, but only after the
+   *    rejected request, on every turn. A value the user set is left alone.
+   *
    * @param {Record<string, string>} baseEnv
    * @returns {Record<string, string>}
    */
@@ -227,15 +235,17 @@ class ClaudeAdapter extends BaseAdapter {
     }
 
     const base = (env.ANTHROPIC_BASE_URL || '').trim();
+    if (!base) return env;
+    let official = false;
+    try {
+      const host = new URL(base).hostname.toLowerCase();
+      official = host === 'anthropic.com' || host.endsWith('.anthropic.com');
+    } catch { official = false; }
+    if (official) return env;
+
     const key = (env.ANTHROPIC_API_KEY || '').trim();
-    if (key && base && !(env.ANTHROPIC_AUTH_TOKEN || '').trim()) {
-      let official = false;
-      try {
-        const host = new URL(base).hostname.toLowerCase();
-        official = host === 'anthropic.com' || host.endsWith('.anthropic.com');
-      } catch { official = false; }
-      if (!official) env.ANTHROPIC_AUTH_TOKEN = key;
-    }
+    if (key && !(env.ANTHROPIC_AUTH_TOKEN || '').trim()) env.ANTHROPIC_AUTH_TOKEN = key;
+    if (!(env.ENABLE_TOOL_SEARCH || '').trim()) env.ENABLE_TOOL_SEARCH = 'false';
     return env;
   }
 
@@ -615,6 +625,7 @@ class ClaudeAdapter extends BaseAdapter {
     if (!claudeBin) {
       throw new Error('claude CLI not found. Install with: curl -fsSL https://claude.ai/install.sh | bash');
     }
+    if (isPostinstallStub(claudeBin)) throw new Error(ClaudeAdapter.INSTALL_INCOMPLETE);
     // plan | execute, and whether this computer lets the agent run without
     // Claude Code's permission checks — read from policy.json, never from
     // anything the workspace sent.
@@ -1394,7 +1405,10 @@ class ClaudeAdapter extends BaseAdapter {
       return null;
     }
     try {
-      const remaining = await this.getRemainingTodos(msgChannel);
+      // Pending includes work waiting for a human or an earlier step.
+      // Only explicitly active work is eligible for automatic continuation.
+      const remaining = (await this.getRemainingTodos(msgChannel))
+        .filter((todo) => todo.status === 'in_progress');
       if (remaining.length === 0) return null;
       const items = remaining.map((t) => `- ${t.content}`).join('\n');
       return {
@@ -1726,7 +1740,14 @@ class ClaudeAdapter extends BaseAdapter {
         break;
       } catch (e) {
         this._log(`Error handling message: ${e.message}`);
-        await this.sendError(msgChannel, `Error processing message: ${this._redact(e.message)}`);
+        // EFTYPE: Windows refused to start the file as a program — in practice
+        // the claude-code package's placeholder claude.exe, left behind when
+        // its install script was skipped. The bare errno named nothing a user
+        // could act on.
+        const reason = (e && e.code === 'EFTYPE') || /\bEFTYPE\b/.test(String(e && e.message))
+          ? ClaudeAdapter.INSTALL_INCOMPLETE
+          : `Error processing message: ${this._redact(e.message)}`;
+        await this.sendError(msgChannel, reason);
         break;
       }
     }
@@ -1736,6 +1757,19 @@ class ClaudeAdapter extends BaseAdapter {
     }
   }
 }
+
+/**
+ * @anthropic-ai/claude-code ships a placeholder where its native binary goes
+ * and swaps the real one in from a postinstall script. With that script
+ * skipped (`ignore-scripts=true` in an npmrc, pnpm, bun) the placeholder is
+ * what runs: shell text on macOS/Linux, and on Windows a `claude.exe` the OS
+ * will not start (spawn EFTYPE).
+ */
+ClaudeAdapter.INSTALL_INCOMPLETE = 'Claude Code is installed, but its setup never finished: the '
+  + '@anthropic-ai/claude-code package\'s postinstall script did not run (npm `ignore-scripts`, or a '
+  + 'pnpm/bun install), so the `claude` command is only a placeholder. Reinstall Claude Code from the '
+  + 'launcher — or, for a copy you installed yourself, run '
+  + '`npm install -g @anthropic-ai/claude-code --ignore-scripts=false` — then retry.';
 
 module.exports = ClaudeAdapter;
 module.exports.claudeSafeExecuteArgs = claudeSafeExecuteArgs;

@@ -555,6 +555,35 @@ describe('Daemon', () => {
     assert.equal(roster[0].baseUrlHost, 'gw.example.org');
   });
 
+  it('_heartbeatRuntimes tells the workspace to sign in with agn login', () => {
+    const daemon = new Daemon(new Config(tmpDir), new EnvManager(tmpDir), new Registry(tmpDir));
+    daemon._runtimes = [
+      { type: 'codex', installed: true, ready: false },
+      { type: 'openclaw', installed: true, ready: false },
+      null,
+      { type: 'opencode', installed: true, ready: false },
+    ];
+    const [codex, openclaw, gap, opencode] = daemon._heartbeatRuntimes();
+    assert.equal(codex.loginCommand, 'agn login codex');
+    // Signs in (ChatGPT, GitHub Copilot) though the registry gives it no login command.
+    assert.equal(opencode.loginCommand, 'agn login opencode');
+    // No sign-in of its own: only a key works, so there is no command to show.
+    assert.equal('loginCommand' in openclaw, false);
+    assert.equal(gap, null);
+  });
+
+  it('_heartbeatRuntimes looks each type up once, not on every heartbeat', () => {
+    const daemon = new Daemon(new Config(tmpDir), new EnvManager(tmpDir), new Registry(tmpDir));
+    const lookups = [];
+    const getEntry = daemon.registry.getEntry.bind(daemon.registry);
+    daemon.registry.getEntry = (type) => { lookups.push(type); return getEntry(type); };
+    daemon._runtimes = [{ type: 'codex', installed: true, ready: false }, { type: 'openclaw', installed: true, ready: false }];
+    for (let i = 0; i < 3; i++) daemon._heartbeatRuntimes();
+    assert.deepEqual(lookups.filter((t) => t === 'codex').length, 1);
+    assert.deepEqual(lookups.filter((t) => t === 'openclaw').length, 1);
+    assert.equal(daemon._heartbeatRuntimes()[0].loginCommand, 'agn login codex');
+  });
+
   const ACCOUNT_MODELS = [
     { id: 'gpt-6-astra', label: 'GPT-6-Astra' },
     { id: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
@@ -601,6 +630,16 @@ describe('Daemon', () => {
     env.save('codex', { LLM_API_KEY: 'sk-type-level-123456' });
     const daemon = new Daemon(config, env, new Registry(tmpDir));
     seedCliModels(daemon, 'coder');
+    const roster = withProcessEnv(NO_CREDENTIALS, () => daemon._buildRoster({ workspace_slug: 'ws1' }));
+    assert.deepEqual(roster[0].cliModels, ACCOUNT_MODELS);
+  });
+
+  it('_buildRoster lists for a Qoder agent on a token: the token is the account', () => {
+    const config = new Config(tmpDir);
+    config.addAgent({ name: 'qd', type: 'qoder', env: { LLM_API_KEY: 'pat-qoder-123456' } });
+    config.setAgentNetwork('qd', 'ws1');
+    const daemon = new Daemon(config, new EnvManager(tmpDir), new Registry(tmpDir));
+    seedCliModels(daemon, 'qd');
     const roster = withProcessEnv(NO_CREDENTIALS, () => daemon._buildRoster({ workspace_slug: 'ws1' }));
     assert.deepEqual(roster[0].cliModels, ACCOUNT_MODELS);
   });
@@ -824,11 +863,11 @@ describe('Daemon', () => {
     ];
     daemon._cliModels[daemon._cliModelsKey(daemon._signInAgent('codex'))] = listedNow();
     assert.deepEqual(daemon._heartbeatRuntimes(), [
-      { type: 'codex', installed: true, ready: true, cliModels: ACCOUNT_MODELS },
+      { type: 'codex', installed: true, ready: true, loginCommand: 'agn login codex', cliModels: ACCOUNT_MODELS },
       // Not answered yet: the form keeps the catalog list.
-      { type: 'claude', installed: true, ready: false, cliModels: null },
-      { type: 'gemini', installed: true, ready: true },
-      { type: 'cursor', installed: false, ready: false },
+      { type: 'claude', installed: true, ready: false, loginCommand: 'agn login claude', cliModels: null },
+      { type: 'gemini', installed: true, ready: true, loginCommand: 'agn login gemini' },
+      { type: 'cursor', installed: false, ready: false, loginCommand: 'agn login cursor' },
     ]);
     // The detection snapshot itself is left as it was.
     assert.equal(daemon._runtimes[0].cliModels, undefined);
@@ -842,7 +881,7 @@ describe('Daemon', () => {
       let sent = null;
       daemon._nodeClients.set('n1', { nodeHeartbeat: async (id, token, body) => { sent = body; return {}; } });
       await daemon._nodeHeartbeat();
-      assert.deepEqual(sent.runtimes, [{ type: 'codex', installed: true, ready: true, cliModels: ACCOUNT_MODELS }]);
+      assert.deepEqual(sent.runtimes, [{ type: 'codex', installed: true, ready: true, loginCommand: 'agn login codex', cliModels: ACCOUNT_MODELS }]);
     });
   });
 
@@ -1869,5 +1908,69 @@ describe('Daemon pid resolution (dual-source)', () => {
     fs.writeFileSync(path.join(tmpDir, 'daemon.pid'), String(deadPid), 'utf-8');
     assert.equal(Daemon.readDaemonPid(tmpDir), null);
     assert.ok(!fs.existsSync(path.join(tmpDir, 'daemon.pid')), 'stale pid file should be cleaned');
+  });
+});
+
+describe('Daemon._repairRuntime', () => {
+  const { Installer } = require('../src/installer');
+  let realInstall;
+  beforeEach(() => { realInstall = Installer.prototype.installStreaming; });
+  afterEach(() => { Installer.prototype.installStreaming = realInstall; });
+
+  function makeDaemon() {
+    const daemon = new Daemon(new Config(tmpDir), new EnvManager(tmpDir), new Registry(tmpDir));
+    daemon._writeStatus = () => {};
+    daemon._log = () => {};
+    return daemon;
+  }
+
+  /** An adapter that refuses its runtime until the reinstall has run. */
+  function staleAdapter(state) {
+    return {
+      forgotten: 0,
+      forgetRuntime() { this.forgotten += 1; },
+      preflight() {
+        return state.installed
+          ? { ok: true }
+          : { ok: false, reason: 'version_incompatible', message: 'dsh 0.1.0-rc.6 is not supported', repairable: true };
+      },
+    };
+  }
+
+  it('installs the supported version once for agents starting together, then preflights again', async () => {
+    const state = { installed: false };
+    let installs = 0;
+    Installer.prototype.installStreaming = async function (type) {
+      installs += 1;
+      assert.equal(type, 'deepseek');
+      await new Promise((r) => setTimeout(r, 20));
+      state.installed = true;
+      return { success: true };
+    };
+    const daemon = makeDaemon();
+    const a = staleAdapter(state);
+    const b = staleAdapter(state);
+    const infoA = { state: 'error', lastError: 'old', errorReason: 'version_incompatible' };
+    const pf = { ok: false, repairable: true, message: 'stale' };
+    const [ra, rb] = await Promise.all([
+      daemon._repairRuntime('a', 'deepseek', a, infoA, pf),
+      daemon._repairRuntime('b', 'deepseek', b, { state: 'starting' }, pf),
+    ]);
+    assert.equal(installs, 1);
+    assert.deepEqual(ra, { ok: true });
+    assert.deepEqual(rb, { ok: true });
+    assert.equal(a.forgotten, 1);
+    assert.equal(infoA.lastError, null);
+    assert.equal(daemon._runtimeRepairs.size, 0);
+  });
+
+  it('keeps the original reason when the install fails', async () => {
+    Installer.prototype.installStreaming = async () => { throw new Error('Install failed with exit code 1'); };
+    const daemon = makeDaemon();
+    const adapter = staleAdapter({ installed: false });
+    const result = await daemon._repairRuntime('a', 'deepseek', adapter, { state: 'starting' }, { ok: false });
+    assert.equal(result, null);
+    assert.equal(adapter.forgotten, 0);
+    assert.equal(daemon._runtimeRepairs.size, 0);
   });
 });

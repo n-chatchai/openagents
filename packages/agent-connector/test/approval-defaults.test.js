@@ -417,12 +417,16 @@ describe('refusal for runtimes that cannot run safely unattended', () => {
     ['mini-swe-agent', true, true],
     ['kimi', true, true],
     ['codearts', true, true],
+    ['mimo-code', true, true],
     ['aider', true, false],
     ['codebuddy', true, false],
     ['commandcode', true, false],
     ['goose', true, false],
     ['openworker', true, false],
     ['pi', true, false],
+    ['qoder', true, false],
+    ['qoder-cn', true, false],
+    ['qwen-code', true, false],
   ];
 
   for (const [type, execRefused, planRefused] of REFUSING) {
@@ -468,6 +472,17 @@ describe('refusal for runtimes that cannot run safely unattended', () => {
     c._runCline = async () => { throw new Error('must not run'); };
     await c._handleMessage({ content: 'hi', sessionId: 'general' });
     assert.match(c._sent.error[0], /^Cline can only run unattended .* agn policy unrestricted add clio$/);
+
+    for (const [type, name, label] of [['qoder', 'quinn', 'Qoder CLI'], ['qwen-code', 'qwenna', 'Qwen Code']]) {
+      const q = make(type, name);
+      q._findQoderBinary = q._findQwenBinary = () => '/usr/local/bin/cli';
+      q._checkVersion = () => ({ supported: true, version: '9.9.9' });
+      q._runQoder = q._runQwen = async () => { throw new Error('must not run'); };
+      await q._handleMessage({ content: 'hi', sessionId: 'general' });
+      assert.equal(q._sent.error.length, 1);
+      assert.ok(q._sent.error[0].startsWith(`${label} can only run an execute turn unattended`), q._sent.error[0]);
+      assert.match(q._sent.error[0], new RegExp(`agn policy unrestricted add ${name}$`));
+    }
   });
 
   it('plan turns still build their runtime\'s read-only command', () => {

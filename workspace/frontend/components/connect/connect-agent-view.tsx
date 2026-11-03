@@ -17,6 +17,8 @@ import { AgentSharingButton } from '@/components/sharing/agent-sharing-button';
 import { AgentSetup, CatalogStateNotice, type AgentDraft, type CatalogState } from '@/components/agents/agent-setup';
 import { DesktopComputerStep } from './desktop-computer-step';
 import { GrokBotSetup, pendingGrokSetup } from './grokbot-setup';
+import { OnboardingPairingPanel } from './onboarding-pairing-panel';
+import { OnboardingConnectionHero } from './onboarding-connection-hero';
 import { withAgentDisplayNames } from '@/lib/node-agent-labels';
 import { useLocalNodeId } from './use-local-node-id';
 import { capture } from '@/lib/analytics';
@@ -44,6 +46,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ExpandableError } from './expandable-error';
+import { desktopDownloads } from '@/lib/desktop-downloads';
 
 // The welcome film is ~2k lines of scene choreography only first-run users
 // ever see — load it on demand so the connect view's bundle stays lean.
@@ -76,6 +79,10 @@ const AGENT_BRANDS: Record<string, { bg: string; text: string }> = {
   openworker: { bg: 'bg-blue-600',   text: 'text-white' },
   codebuddy: { bg: 'bg-indigo-600',  text: 'text-white' },
   codearts:  { bg: 'bg-red-600',     text: 'text-white' },
+  'mimo-code': { bg: 'bg-orange-500', text: 'text-white' },
+  qoder:     { bg: 'bg-emerald-500', text: 'text-white' },
+  'qoder-cn': { bg: 'bg-emerald-500', text: 'text-white' },
+  'qwen-code': { bg: 'bg-violet-700', text: 'text-white' },
 };
 
 const PROVIDER_BRANDS: Record<string, { bg: string; text: string; accent: string }> = {
@@ -681,11 +688,7 @@ function PairingPanel({
           )}
           <div className={cn('text-xs font-medium text-muted-foreground', isMobile && 'hidden')}>{t('connect.nodeInstallDesktop')}</div>
           <div className={cn('grid grid-cols-3 gap-2', isMobile && 'hidden')}>
-            {([
-              { os: t('connect.nodeMacSilicon'), href: 'https://openagents.org/api/download/launcher/mac' },
-              { os: t('connect.nodeMacIntel'), href: 'https://openagents.org/api/download/launcher/mac-intel' },
-              { os: 'Windows', href: 'https://openagents.org/api/download/launcher/windows' },
-            ]).map((d) => (
+            {desktopDownloads(t).map((d) => (
               <a
                 key={d.os}
                 href={d.href}
@@ -2670,26 +2673,13 @@ function RemoteNodeOnboardingStep({ onBack, footer, requireNewNode = false }: { 
   return (
     <div className="h-full flex flex-col">
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto w-full px-6 py-10 space-y-6">
-          {onBack && (
-            <button
-              onClick={onBack}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ChevronRight className="size-3.5 rotate-180" />{t('connect.nodeBack')}
-            </button>
-          )}
+        <OnboardingConnectionHero workspaceName={workspace?.name || t('nav.workspaceFallback')} onBack={onBack} />
 
-          <div className="text-center">
-            <div className="size-14 mx-auto rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md">
-              <Server className="size-7 text-white" />
-            </div>
-            <h1 className="text-xl font-semibold tracking-tight mt-4">{t('onboarding.nodeStepTitle')}</h1>
-            <p className="text-sm text-muted-foreground mt-1.5 max-w-md mx-auto leading-relaxed">{t('onboarding.nodeStepBody')}</p>
-          </div>
+        <div id="onboarding-device-setup" className="mx-auto w-full max-w-2xl scroll-mt-8 space-y-6 px-4 py-10 sm:px-6 sm:py-14">
+            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Laptop className="size-4" />{t('onboarding.deviceStepLabel')}</p>
 
           {pairing ? (
-            <PairingPanel pairing={pairing} onDismiss={onBack ?? (() => {})} />
+            <OnboardingPairingPanel pairing={pairing} onDismiss={onBack} />
           ) : errored ? (
             <div className="rounded-xl border border-dashed py-10 text-center text-sm text-muted-foreground">
               {t('connect.nodePairingFailed')}
