@@ -83,7 +83,8 @@ export interface NodeAgent {
 /** Last smoke-test result the daemon reported for an agent type: one tiny
  * end-to-end "hi" prompt, with classified guidance when it failed. */
 export interface NodeProbe {
-  ok: boolean;
+  /** null: the sign-in could not be checked ahead of a real run (not a failure). */
+  ok: boolean | null;
   at: string;
   code?: string | null;
   method?: string | null;
@@ -897,6 +898,30 @@ export interface GrokBotSetup {
   testProblem?: string | null;
 }
 
+/** A provider that hosts agent runtimes for the workspace (Acenta). */
+export interface HostedAgentProvider {
+  name: string;
+  label: string;
+  /** False until the server is configured to reach the provider. */
+  available: boolean;
+  harness: string;
+  url: string;
+}
+
+/** An agent whose runtime a provider hosts; it joins like any other agent. */
+export interface HostedAgent {
+  agentName: string;
+  displayName: string;
+  provider: string;
+  status: 'launching' | 'setup' | 'active' | 'terminating';
+  /** Acenta launch page (sign-in and payment) while status is "setup". */
+  setupUrl: string | null;
+  /** From the agent's own heartbeats. */
+  presence: 'online' | 'offline';
+  ownerEmail: string;
+  createdAt: string | null;
+}
+
 export interface CloudAgentConfig {
   agentName: string;
   provider: string;
@@ -1539,6 +1564,8 @@ export interface WorkspaceIssue {
   created_at: string;
   updated_at: string;
   comment_count?: number;
+  /** The viewer opened this issue or is a workspace admin. */
+  can_delete?: boolean;
 }
 export interface IssueComment {
   reply_channel_name?: string | null;
@@ -1552,7 +1579,7 @@ export interface IssueComment {
   approval?: ApprovalRequest;
   source_event_id: string | null;
   file_ids?: string[];
-  /** Readable images and videos posted with the comment. */
+  /** Readable files posted with the comment. */
   attachments?: { file_id: string; filename: string; content_type: string; size: number }[];
   created_at: string;
 }

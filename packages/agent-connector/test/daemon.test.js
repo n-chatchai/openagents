@@ -389,6 +389,21 @@ describe('Daemon', () => {
     assert.equal(config.getAgent('hermes').env.LLM_API_KEY, 'sk-h-123456');
   });
 
+  it('create_agent keeps a Hermes endpoint on its agent: a second one does not replace the first one\'s', async () => {
+    // Each keyed Hermes agent runs on a provider of its own, so one saved for
+    // the type would move every other Hermes agent onto it.
+    const config = new Config(tmpDir);
+    const env = new EnvManager(tmpDir);
+    const daemon = new Daemon(config, env, new Registry(tmpDir));
+    await createFromWorkspace(config, daemon, { name: 'h1', type: 'hermes', config: { LLM_API_KEY: 'sk-one-123456', LLM_BASE_URL: 'https://one.example/v1' } });
+    await createFromWorkspace(config, daemon, { name: 'h2', type: 'hermes', config: { LLM_API_KEY: 'sk-two-123456', LLM_BASE_URL: 'https://two.example/v1' } });
+    assert.deepEqual(env.load('hermes'), {});
+    withProcessEnv(NO_CREDENTIALS, () => {
+      assert.equal(daemon._buildAgentEnv(config.getAgent('h1')).LLM_BASE_URL, 'https://one.example/v1');
+      assert.equal(daemon._buildAgentEnv(config.getAgent('h2')).LLM_BASE_URL, 'https://two.example/v1');
+    });
+  });
+
   it('a sign-in sent by the workspace takes an agent off its key, endpoint and the key\'s model', () => {
     const config = new Config(tmpDir);
     const daemon = new Daemon(config, new EnvManager(tmpDir), new Registry(tmpDir));
@@ -1331,7 +1346,7 @@ describe('Daemon', () => {
     assert.deepEqual(config.getAgent('codex-key').env, own);
   });
 
-  // CodeArts and Hermes alike keep what the workspace sends on the agent.
+  // CodeArts and Hermes keep their credentials on the agent.
   for (const [type, ownEnv, sent, keyVar, modelVar] of [
     ['codearts', { CODEARTS_CLI_AK: 'old-ak', CODEARTS_CLI_SK: 'old-sk', CODEARTS_MODEL: 'own-model' }, { CODEARTS_CLI_AK: 'new-ak', CODEARTS_CLI_SK: 'new-sk' }, 'CODEARTS_CLI_AK', 'CODEARTS_MODEL'],
     ['hermes', { LLM_API_KEY: 'sk-old-123456', LLM_MODEL: 'own-model' }, { LLM_API_KEY: 'sk-new-123456' }, 'LLM_API_KEY', 'LLM_MODEL'],
@@ -1911,6 +1926,25 @@ describe('Daemon pid resolution (dual-source)', () => {
   });
 });
 
+describe('Daemon._probeAgent — the child reads daemon.yaml mid-save', () => {
+  it('asks once more when the child finds no agent this daemon has', async () => {
+    const config = new Config(tmpDir);
+    config.addAgent({ name: 'luna', type: 'codex' });
+    const daemon = new Daemon(config, new EnvManager(tmpDir), new Registry(tmpDir));
+    daemon._saveProbes = () => {};
+    const answers = [
+      { type: 'luna', ok: false, code: 'unknown_type', message: "No agent named 'luna' on this device" },
+      { type: 'codex', ok: true, code: 'ok', message: 'Responded' },
+    ];
+    let runs = 0;
+    daemon._runAgn = async () => ({ code: 0, stdout: JSON.stringify(answers[runs++]), stderr: '' });
+    const result = await daemon._probeAgent('luna');
+    assert.equal(runs, 2);
+    assert.equal(result.code, 'ok');
+    assert.equal(result.agent, 'luna');
+  });
+});
+
 describe('Daemon._repairRuntime', () => {
   const { Installer } = require('../src/installer');
   let realInstall;
@@ -1964,6 +1998,30 @@ describe('Daemon._repairRuntime', () => {
     assert.equal(daemon._runtimeRepairs.size, 0);
   });
 
+  it('tests again the agents whose connection test said the version was wrong', async () => {
+    const state = { installed: false };
+    Installer.prototype.installStreaming = async () => { state.installed = true; return { success: true }; };
+    const config = new Config(tmpDir);
+    config.addAgent({ name: 'ds1', type: 'deepseek' });
+    config.addAgent({ name: 'ds2', type: 'deepseek' });
+    config.addAgent({ name: 'cx', type: 'codex' });
+    const daemon = makeDaemon();
+    daemon.config = config;
+    daemon._probes = {
+      ds1: { code: 'version_incompatible' },
+      ds2: { code: 'ok' },
+      cx: { code: 'version_incompatible' },
+    };
+    const probed = [];
+    daemon._probeAgent = async (name) => { probed.push(name); };
+    let beats = 0;
+    daemon._nodeHeartbeat = () => { beats += 1; };
+    await daemon._repairRuntime('ds1', 'deepseek', staleAdapter(state), { state: 'starting' }, { ok: false });
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(probed, ['ds1']);
+    assert.equal(beats, 1);
+  });
+
   it('keeps the original reason when the install fails', async () => {
     Installer.prototype.installStreaming = async () => { throw new Error('Install failed with exit code 1'); };
     const daemon = makeDaemon();
@@ -1972,5 +2030,48 @@ describe('Daemon._repairRuntime', () => {
     assert.equal(result, null);
     assert.equal(adapter.forgotten, 0);
     assert.equal(daemon._runtimeRepairs.size, 0);
+  });
+});
+
+describe('Daemon — probe sweep for agents whose setup is unfinished', () => {
+  const hoursAgo = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
+
+  function setup(probes) {
+    const config = new Config(tmpDir);
+    for (const name of Object.keys(probes)) config.addAgent({ name, type: name.split('-')[0] });
+    const daemon = new Daemon(config, new EnvManager(tmpDir), new Registry(tmpDir));
+    daemon._probes = probes;
+    const probed = [];
+    daemon._probeAgent = async (name) => { probed.push(name); return null; };
+    daemon._nodeHeartbeat = () => {};
+    return { daemon, probed };
+  }
+
+  it('re-runs a finished setup hourly but an unfinished one only daily', async () => {
+    const { daemon, probed } = setup({
+      'claude-broken': { code: 'invalid_api_key', at: hoursAgo(2) },
+      'claude-nologin': { code: 'not_logged_in', at: hoursAgo(2) },
+      'openclaw-nokey': { code: 'not_ready', at: hoursAgo(25) },
+    });
+    await daemon._probeConfiguredAgents(3600 * 1000);
+    assert.deepEqual(probed, ['claude-broken', 'openclaw-nokey']);
+  });
+
+  it('re-runs an unfinished agent as soon as its type is detected signed in', async () => {
+    const { daemon, probed } = setup({
+      'claude-nologin': { code: 'not_logged_in', at: hoursAgo(1) },
+      'claude-fine': { code: 'ok', at: hoursAgo(1) },
+      'codex-nologin': { code: 'not_logged_in', at: hoursAgo(1) },
+    });
+    daemon._runtimes = [
+      { type: 'claude', installed: true, ready: true },
+      { type: 'codex', installed: true, ready: false },
+    ];
+    daemon._probeNewlyReady(new Map([
+      ['claude', { type: 'claude', installed: true, ready: false }],
+      ['codex', { type: 'codex', installed: true, ready: false }],
+    ]));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(probed, ['claude-nologin']);
   });
 });

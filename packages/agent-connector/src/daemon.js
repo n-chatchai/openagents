@@ -37,6 +37,12 @@ const CLI_MODELS_RETRY_MS = 9 * 60 * 1000;
 // stopped. A few rather than one per type: each child loads the whole core.
 const RUNTIME_DETECT_GROUPS = 4;
 const RUNTIME_DETECT_TIMEOUT_MS = 90 * 1000;
+// Probe results that mean the setup was never finished (no key, no sign-in,
+// not installed). Time alone does not change them, and re-running them every
+// hour re-reported the same failure all day; they are swept daily, and again
+// as soon as detection sees the type installed or signed in.
+const SETUP_INCOMPLETE = new Set(['not_ready', 'not_logged_in', 'missing_api_key', 'not_installed', 'install_failed']);
+const SETUP_INCOMPLETE_MAX_AGE_MS = 24 * 3600 * 1000;
 
 /**
  * Mask an API key for display (same shape the workspace backend uses for
@@ -227,9 +233,19 @@ class Daemon {
     try {
       // By agent name, not type: the probe runs on this agent's own env, so a
       // signed-in agent is tested on its sign-in, not the type's saved key.
-      const r = await this._runAgn(['probe', name, '--json']);
       let parsed = null;
-      try { parsed = JSON.parse(r.stdout.trim()); } catch {}
+      let r;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        r = await this._runAgn(['probe', name, '--json']);
+        parsed = null;
+        try { parsed = JSON.parse(r.stdout.trim()); } catch {}
+        // The child found no agent of that name while this daemon has one: it
+        // read daemon.yaml mid-save (Windows). Ask once more instead of
+        // keeping "No agent named '<name>' on this device" for an hour.
+        const unseen = parsed && parsed.code === 'unknown_type' && this.config.getAgent(name);
+        if (!unseen || attempt > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
       if (!parsed || typeof parsed !== 'object') {
         // The probe process itself died before it could answer — a fault on
         // this device's OpenAgents install, not in the agent.
@@ -255,6 +271,47 @@ class Daemon {
     } finally {
       this._probeInFlight.delete(name);
     }
+  }
+
+  /**
+   * A sign-in done in a terminal, or an install, changes no agent config, so
+   * nothing re-probes on its own and the daily sweep is far off. Re-probe the
+   * unfinished agents of a type as soon as detection sees it become installed
+   * or signed in.
+   */
+  _probeNewlyReady(previous) {
+    const became = new Set((this._runtimes || []).filter((rt) => {
+      const before = previous.get(rt.type);
+      return before && ((rt.installed && !before.installed) || (rt.ready && !before.ready));
+    }).map((rt) => rt.type));
+    if (!became.size) return;
+    const due = this.config.getAgents().filter((a) => became.has(a.type)
+      && this._probes[a.name] && SETUP_INCOMPLETE.has(this._probes[a.name].code));
+    if (!due.length) return;
+    (async () => {
+      for (const a of due) {
+        try { await this._probeAgent(a.name); } catch {}
+      }
+      this._nodeHeartbeat();
+    })();
+  }
+
+  /**
+   * The connection test of an agent whose runtime was the wrong version ran
+   * before the repair (or at creation, while it was under way) and said
+   * "<version> is not supported"; nothing tested it again until the hourly
+   * sweep, so the device card kept that error for an agent that now worked.
+   */
+  _reprobeAfterRepair(agentType) {
+    const due = this.config.getAgents().filter((a) => (a.type || 'openclaw') === agentType
+      && this._probes[a.name] && this._probes[a.name].code === 'version_incompatible');
+    if (!due.length) return;
+    (async () => {
+      for (const a of due) {
+        try { await this._probeAgent(a.name); } catch {}
+      }
+      this._nodeHeartbeat();
+    })();
   }
 
   /** Report a runtime install that failed while creating `name`, as its probe result. */
@@ -285,7 +342,8 @@ class Daemon {
     for (const a of this.config.getAgents()) {
       const last = this._probes[a.name];
       const age = last && last.at ? Date.now() - Date.parse(last.at) : Infinity;
-      if (age < maxAgeMs) continue;
+      const limit = last && SETUP_INCOMPLETE.has(last.code) ? Math.max(maxAgeMs, SETUP_INCOMPLETE_MAX_AGE_MS) : maxAgeMs;
+      if (age < limit) continue;
       try { await this._probeAgent(a.name); } catch {}
     }
     this._nodeHeartbeat();
@@ -1006,6 +1064,7 @@ class Daemon {
     const order = types.length ? types : [...found.keys()];
     this._runtimes = order.map((type) => found.get(type) || previous.get(type)).filter(Boolean);
     this._cliModelsAfterDetection(previous);
+    this._probeNewlyReady(previous);
   }
 
   /**
@@ -2113,7 +2172,10 @@ class Daemon {
 
     if (typeof adapter.forgetRuntime === 'function') adapter.forgetRuntime();
     const next = adapter.preflight();
-    if (next && next.ok !== false) this._log(`${name}: supported ${agentType} runtime installed`);
+    if (next && next.ok !== false) {
+      this._log(`${name}: supported ${agentType} runtime installed`);
+      this._reprobeAfterRepair(agentType);
+    }
     return next;
   }
 

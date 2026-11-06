@@ -27,6 +27,16 @@ describe('testLLMConnection', () => {
           res.end(JSON.stringify({ model, content: [{ type: 'text', text: 'Hello there, nice to meet' }] }));
           return;
         }
+        if (model === 'thinking-model') {
+          // What OpenAI answers when a reasoning model spends the whole
+          // token budget thinking.
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: {
+            message: 'Could not finish the message because max_tokens or model output limit was reached. Please try again with higher max_tokens.',
+            type: 'invalid_request_error',
+          } }));
+          return;
+        }
         if (!SERVED.includes(model)) {
           res.statusCode = 400;
           res.end(JSON.stringify({ detail: `Model '${model}' is not available. This gateway only allows: ${SERVED.join(', ')}` }));
@@ -81,5 +91,64 @@ describe('testLLMConnection', () => {
     assert.equal(res.success, false);
     assert.match(res.error, /Model 'retired-model' is not available/);
     assert.deepEqual(sent.slice(before), ['retired-model']);
+  });
+
+  // Field report 2026-10-29: a working agent on a reasoning model failed its
+  // smoke test with this 400. The key and the model were both accepted.
+  it('passes a model that ran out of the small token budget while thinking', async () => {
+    const res = await testLLMConnection(env(), { model: 'thinking-model' });
+    assert.equal(res.success, true);
+    assert.equal(res.model, 'thinking-model');
+  });
+});
+
+// A relay that drops the first connection and answers the next one.
+describe('testLLMConnection — a dropped connection', () => {
+  let server;
+  let base;
+  let hits = 0;
+
+  before(async () => {
+    server = http.createServer((req, res) => {
+      hits++;
+      if (hits === 1) { req.socket.destroy(); return; }
+      req.resume();
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ model: 'm', choices: [{ message: { content: 'Hello there, nice to meet' } }] }));
+      });
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    base = `http://127.0.0.1:${server.address().port}/v1`;
+  });
+  after(() => new Promise((r) => server.close(r)));
+
+  it('is tried once more before the test fails', async () => {
+    const res = await testLLMConnection({ OPENAI_API_KEY: 'sk-test-123456', OPENAI_BASE_URL: base }, { model: 'm' });
+    assert.equal(res.success, true, res.error);
+    assert.equal(hits, 2);
+  });
+});
+
+describe('testLLMConnection — every address of the host refused', () => {
+  it('says why instead of failing on the missing body', async () => {
+    // localhost resolves to ::1 and 127.0.0.1; Node 20+ tries both and raises
+    // an AggregateError whose own message is empty.
+    const r = await testLLMConnection({ OPENAI_API_KEY: 'x', OPENAI_BASE_URL: 'http://localhost:1/v1' }, { model: 'm' });
+    assert.equal(r.success, false);
+    assert.match(r.error, /ECONNREFUSED/);
+    assert.doesNotMatch(r.error, /reading 'slice'/);
+  });
+});
+
+describe('networkErrorText', () => {
+  const { networkErrorText } = require('../src/adapters/utils');
+  it('reads the reasons of an AggregateError whose message is empty', () => {
+    const e = new AggregateError([new Error('connect ECONNREFUSED ::1:443'), new Error('connect ECONNREFUSED 127.0.0.1:443')], '');
+    assert.equal(networkErrorText(e), 'connect ECONNREFUSED ::1:443; connect ECONNREFUSED 127.0.0.1:443');
+  });
+  it('falls back to the code, then a fixed text', () => {
+    assert.equal(networkErrorText(Object.assign(new Error(''), { code: 'ETIMEDOUT' })), 'ETIMEDOUT');
+    assert.equal(networkErrorText(null), 'unknown network error');
   });
 });

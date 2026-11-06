@@ -23,6 +23,7 @@ import {
   Send,
   Reply,
   ChevronDown,
+  Trash2,
 } from 'lucide-react';
 import { DetailHeader } from '@/components/layout/app-header';
 import { useWorkspace } from '@/lib/workspace-context';
@@ -62,19 +63,33 @@ import {
   statuses,
   statusKeys,
   selectClass,
+  useConfirmIssueDelete,
+  useIssueTime,
 } from './issue-ui';
+
+function EmbeddedHeader({ title, children }: { title: React.ReactNode; children?: React.ReactNode; titleInHeader?: boolean }) {
+  return <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-5">
+    <div className="min-w-0">{title}</div>
+    {children}
+  </div>;
+}
 
 export function IssueDiscussion({
   id,
   onBack,
   onChanged,
+  embedded = false,
 }: {
+  embedded?: boolean;
   id: string;
   onBack: () => void;
   onChanged: () => void;
 }) {
+  const Header = embedded ? EmbeddedHeader : DetailHeader;
   const t = useT();
+  const confirmDelete = useConfirmIssueDelete();
   const { timeAgo } = useFormatters();
+  const issueTime = useIssueTime();
   const { currentUser, sessions, refreshAgents, workspace, agents, unreadSignals, markChannelSignalsRead } = useWorkspace();
   const signalChannel = issueSignalChannel(id);
   const hasUnreadMention = !!unreadSignals?.[signalChannel];
@@ -167,6 +182,28 @@ export function IssueDiscussion({
     }
   }
 
+  async function removeIssue() {
+    if (busyRef.current || !issue) return;
+    const ok = await confirmDelete(issue.title);
+    if (!ok || busyRef.current) return;
+    busyRef.current = true;
+    // Drop any refresh in flight: it would report the issue as missing.
+    ++version.current;
+    setBusy(true);
+    setError('');
+    try {
+      await workspaceApi.deleteIssue(id);
+      busyRef.current = false;
+      if (mounted.current) onBack();
+    } catch (e) {
+      busyRef.current = false;
+      if (mounted.current) {
+        setError(errorMessage(e));
+        setBusy(false);
+      }
+    }
+  }
+
   async function submitAction(e: React.FormEvent) {
     e.preventDefault();
     await mutate(
@@ -242,7 +279,7 @@ export function IssueDiscussion({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <DetailHeader
+      <Header
         titleInHeader
         title={
           <div className="flex min-w-0 items-center gap-2 text-xs">
@@ -261,7 +298,7 @@ export function IssueDiscussion({
         }
       >
         <Button
-          className="lg:hidden"
+          className={cn(!embedded && 'lg:hidden')}
           variant="ghost"
           size="sm"
           aria-expanded={detailsOpen}
@@ -270,7 +307,7 @@ export function IssueDiscussion({
           <PanelRight />
           {t('issues.details')}
         </Button>
-      </DetailHeader>
+      </Header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {(error || loadError) && (
           <div className="mx-auto max-w-6xl px-5 pt-5 sm:px-8">
@@ -291,8 +328,8 @@ export function IssueDiscussion({
             </div>
           )
         ) : (
-          <div className="mx-auto grid min-h-full max-w-[1200px] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_264px]">
-            <main className="min-w-0 px-5 pb-12 pt-7 sm:px-9 sm:pt-9 lg:px-10">
+          <div className={cn('mx-auto grid min-h-full max-w-[1200px] grid-cols-1', !embedded && 'lg:grid-cols-[minmax(0,1fr)_264px]')}>
+            <main className={cn('min-w-0 px-5 pb-12 pt-7', !embedded && 'sm:px-9 sm:pt-9 lg:px-10')}>
               <header className="mb-8">
                 <div className="mb-3 flex items-center gap-2">
                   <StatusBadge status={issue.status} />
@@ -316,8 +353,8 @@ export function IssueDiscussion({
                   <span aria-hidden className="text-muted-foreground/40">
                     ·
                   </span>
-                  <time dateTime={issue.created_at}>
-                    {timeAgo(issue.created_at)}
+                  <time dateTime={issue.created_at} title={issueTime.exact(issue.created_at)}>
+                    {issueTime.label(issue.created_at)}
                   </time>
                 </div>
                 {/* Under the title, where the eye already is — tucked in the
@@ -356,6 +393,18 @@ export function IssueDiscussion({
                     <Pencil className="size-4" />
                     {t('common.edit')}
                   </Button>
+                  {issue.can_delete && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 text-destructive hover:text-destructive"
+                      disabled={busy}
+                      onClick={removeIssue}
+                    >
+                      <Trash2 className="size-4" />
+                      {t('common.delete')}
+                    </Button>
+                  )}
                 </div>
               </header>
               {/* Issue text is typed in a plain textarea, where Enter means a new
@@ -559,7 +608,7 @@ export function IssueDiscussion({
                       placeholder={t('issues.commentPlaceholder')}
                     />
                     <div className="px-3 pb-2">
-                      <AttachmentPicker key={pickerKey} media value={commentFiles} onChange={setCommentFiles}
+                      <AttachmentPicker key={pickerKey} compact value={commentFiles} onChange={setCommentFiles}
                         disabled={busy} onUploadingChange={setCommentUploading} />
                     </div>
                     <div className="flex items-center justify-between gap-3 px-3 pb-3">
@@ -585,7 +634,8 @@ export function IssueDiscussion({
             </main>
             <aside
               className={cn(
-                'order-first border-b border-border/60 bg-muted/10 px-5 py-7 sm:px-8 lg:order-last lg:block lg:border-b-0 lg:border-l lg:px-6 lg:py-9',
+                'order-first border-b border-border/60 bg-muted/10 px-5 py-7',
+                !embedded && 'sm:px-8 lg:order-last lg:block lg:border-b-0 lg:border-l lg:px-6 lg:py-9',
                 !detailsOpen && 'hidden',
               )}
               aria-label={t('issues.details')}

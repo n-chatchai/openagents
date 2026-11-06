@@ -12,6 +12,8 @@ import type {
   CloudAgentConfig,
   GrokBotSetup,
   CloudAgentProvider,
+  HostedAgent,
+  HostedAgentProvider,
   DMConversation,
   EventPollResponse,
   KanbanTask,
@@ -1690,6 +1692,35 @@ class WorkspaceApi {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Hosted agents (Acenta)
+  // ---------------------------------------------------------------------------
+
+  async getHostedProviders(): Promise<HostedAgentProvider[]> {
+    const res = await this.request<{ providers: HostedAgentProvider[] }>('/v1/hosted-agents/providers', { signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS) });
+    return res.providers;
+  }
+
+  async listHostedAgents(): Promise<HostedAgent[]> {
+    const res = await this.request<{ hosted_agents: HostedAgent[] }>(
+      `/v1/hosted-agents?network=${this.requireWorkspace()}`
+    );
+    return res.hosted_agents;
+  }
+
+  async launchHostedAgent(displayName: string): Promise<HostedAgent> {
+    return this.request<HostedAgent>('/v1/hosted-agents', {
+      method: 'POST',
+      body: JSON.stringify({ network: this.requireWorkspace(), display_name: displayName, provider: 'acenta' }),
+    });
+  }
+
+  async removeHostedAgent(agentName: string): Promise<void> {
+    await this.request<unknown>(`/v1/hosted-agents/${encodeURIComponent(agentName)}?network=${this.requireWorkspace()}`, {
+      method: 'DELETE',
+    });
+  }
+
   /** Mint a one-time Google OAuth consent URL. Authenticated via headers so
    * the workspace token never appears in a URL (logs, browser history). */
   async getGoogleOAuthUrl(agentName: string, model: string): Promise<{ url: string }> {
@@ -1962,6 +1993,10 @@ class WorkspaceApi {
 
   async commentOnIssue(id: string, input: { knowledge_ids?: string[]; file_ids?: string[]; content?: string; source_event_id?: string; reply_to_event_id?: string; source: string; source_name?: string }): Promise<IssueComment> {
     return this.request(this.issuePath(`/${encodeURIComponent(id)}/comments`), { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  async deleteIssue(id: string): Promise<void> {
+    await this.request(this.issuePath(`/${encodeURIComponent(id)}`), { method: 'DELETE' });
   }
 
   async linkIssueThread(id: string, channelName: string): Promise<void> {

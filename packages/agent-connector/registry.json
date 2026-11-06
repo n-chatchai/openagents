@@ -29,6 +29,11 @@
         "nodejs",
         "git"
       ],
+      "requires_on": {
+        "git": [
+          "windows"
+        ]
+      },
       "macos": "npm install -g @anthropic-ai/claude-code",
       "linux": "npm install -g @anthropic-ai/claude-code",
       "windows": "npm install -g @anthropic-ai/claude-code"
@@ -1349,6 +1354,9 @@
         "-p",
         "hi"
       ],
+      "env": {
+        "GEMINI_CLI_TRUST_WORKSPACE": "true"
+      },
       "timeout_s": 120
     },
     "env_config": [],
@@ -2180,8 +2188,8 @@
   },
   {
     "name": "codebuddy",
-    "label": "CodeBuddy Code (WorkBuddy)",
-    "description": "Tencent's CodeBuddy Code CLI — the same engine the WorkBuddy desktop app runs, driven headlessly",
+    "label": "WorkBuddy (CodeBuddy)",
+    "description": "Tencent WorkBuddy's agent engine (the CodeBuddy Code CLI), driven headlessly — same account and credits as the WorkBuddy desktop app; its built-in office plugins are not included",
     "homepage": "https://www.codebuddy.ai",
     "tags": [
       "workbuddy",
@@ -2194,7 +2202,7 @@
     "order": 999,
     "catalog": true,
     "vendor": "Tencent",
-    "tagline": "The terminal agent behind Tencent's WorkBuddy desktop app — same engine, same account, driven headlessly. Installed with npm.",
+    "tagline": "The engine behind Tencent's WorkBuddy desktop app — same account and credits, driven headlessly. Installed with npm.",
     "logo": {
       "key": "codebuddy"
     },
@@ -2764,5 +2772,100 @@
     },
     "vendor": "Alibaba Qwen",
     "tagline": "Qwen's terminal coding agent, on your Model Studio or Coding Plan key."
+  },
+  {
+    "name": "kiro",
+    "label": "Kiro",
+    "description": "Kiro's terminal coding agent (kiro-cli), driven over the Agent Client Protocol",
+    "homepage": "https://kiro.dev/cli/",
+    "tags": [
+      "coding",
+      "cli",
+      "acp",
+      "headless"
+    ],
+    "featured": false,
+    "order": 999,
+    "builtin": true,
+    "logo": {
+      "key": "kiro"
+    },
+    "support": {
+      "install": true,
+      "workspace": true,
+      "collaboration": true
+    },
+    "install": {
+      "binary": "kiro-cli",
+      "verify": "kiro-cli --version",
+      "verify_win": "kiro-cli --version",
+      "macos": "curl -fsSL https://cli.kiro.dev/install | bash",
+      "linux": "curl -fsSL https://cli.kiro.dev/install | bash",
+      "windows": "irm https://cli.kiro.dev/install.ps1 | iex"
+    },
+    "uninstall": null,
+    "adapter": {
+      "module": "openagents.adapters.kiro",
+      "class": "KiroAdapter"
+    },
+    "launch": null,
+    "check_ready": {
+      "min_version": "2.37.0",
+      "env_vars": [
+        "KIRO_API_KEY"
+      ],
+      "status_args": [
+        "whoami"
+      ],
+      "logged_in_pattern": "Logged in with",
+      "logged_out_pattern": "Not logged in",
+      "login_command": "kiro-cli login",
+      "not_ready_message": "Not signed in. Run: kiro-cli login (or set KIRO_API_KEY for headless machines)"
+    },
+    "env_config": [
+      {
+        "name": "KIRO_AGENT",
+        "description": "Kiro agent profile to run (a .kiro/agents/<name>.json in the working directory or ~/.kiro/agents). The profile carries this agent's own prompt, tools and MCP servers. Leave empty for Kiro's default agent.",
+        "required": false,
+        "placeholder": "my-agent"
+      },
+      {
+        "name": "KIRO_MODEL",
+        "description": "Model id, e.g. claude-sonnet-4.6 (see `kiro-cli chat --list-models`). Leave empty for Kiro's default (auto).",
+        "required": false,
+        "placeholder": "auto"
+      },
+      {
+        "name": "KIRO_API_KEY",
+        "description": "Optional. Kiro API key for machines where `kiro-cli login` is not possible; a signed-in CLI needs none.",
+        "required": false,
+        "password": true
+      }
+    ],
+    "models": [
+      {
+        "id": "auto",
+        "label": "Auto",
+        "category": "chat"
+      },
+      {
+        "id": "claude-sonnet-4.6",
+        "label": "Claude Sonnet 4.6",
+        "category": "chat"
+      },
+      {
+        "id": "claude-opus-4.6",
+        "label": "Claude Opus 4.6",
+        "category": "chat"
+      },
+      {
+        "id": "claude-haiku-4.5",
+        "label": "Claude Haiku 4.5",
+        "category": "chat"
+      }
+    ],
+    "workspace_model": true,
+    "vendor": "Amazon",
+    "tagline": "Kiro's agent in your workspace, with its own agent profile, tools and MCP servers."
   }
 ]

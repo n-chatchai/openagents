@@ -17,6 +17,9 @@
   --popover-foreground: oklch(0.209 0.006 179);
   --primary: oklch(0.465 0.039 179.3);
   --primary-foreground: oklch(0.985 0.005 170);
+  /* Upstream's blue brand actions take Erawan's primary. */
+  --brand: oklch(0.465 0.039 179.3);
+  --brand-foreground: oklch(0.985 0.005 170);
   --secondary: oklch(0.958 0.006 175);
   --secondary-foreground: oklch(0.26 0.012 178.5);
   --muted: oklch(0.962 0.005 175);
@@ -74,6 +77,8 @@
   --popover-foreground: oklch(0.952 0.008 168.7);
   --primary: oklch(0.787 0.061 178.6);
   --primary-foreground: oklch(0.166 0.004 164.5);
+  --brand: oklch(0.787 0.061 178.6);
+  --brand-foreground: oklch(0.166 0.004 164.5);
   --secondary: oklch(0.260 0.012 178.5);
   --secondary-foreground: oklch(0.952 0.008 168.7);
   --muted: oklch(0.248 0.010 178);
@@ -133,6 +138,8 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-destructive: var(--destructive);

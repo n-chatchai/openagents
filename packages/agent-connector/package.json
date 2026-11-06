@@ -1,6 +1,6 @@
 {
   "name": "@openagents-org/agent-launcher",
-  "version": "0.2.214-erawan.1",
+  "version": "0.2.218-erawan.1",
   "description": "OpenAgents Launcher — install, configure, and run AI coding agents from your terminal",
   "main": "src/index.js",
   "bin": {

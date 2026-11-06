@@ -422,6 +422,7 @@ describe('refusal for runtimes that cannot run safely unattended', () => {
     ['codebuddy', true, false],
     ['commandcode', true, false],
     ['goose', true, false],
+    ['kiro', true, false],
     ['openworker', true, false],
     ['pi', true, false],
     ['qoder', true, false],
@@ -483,6 +484,14 @@ describe('refusal for runtimes that cannot run safely unattended', () => {
       assert.ok(q._sent.error[0].startsWith(`${label} can only run an execute turn unattended`), q._sent.error[0]);
       assert.match(q._sent.error[0], new RegExp(`agn policy unrestricted add ${name}$`));
     }
+
+    const k = make('kiro', 'kira');
+    k._findKiroBinary = () => '/usr/local/bin/kiro-cli';
+    k._checkVersion = () => ({ supported: true, version: '9.9.9' });
+    k._runTurn = async () => { throw new Error('must not run'); };
+    await k._handleMessage({ content: 'hi', sessionId: 'general' });
+    assert.equal(k._sent.error.length, 1);
+    assert.match(k._sent.error[0], /^Kiro CLI can only run an execute turn unattended .* agn policy unrestricted add kira$/);
   });
 
   it('plan turns still build their runtime\'s read-only command', () => {

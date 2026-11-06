@@ -43,6 +43,11 @@ const OPENCODE_PINNED_VERSION = '1.17.11';
 // Supported floor — below this we block the run with `unsupported_version`.
 // The 1.17.x line is the stream-json shape this adapter targets.
 const OPENCODE_MIN_VERSION = '1.17.0';
+// First major this adapter cannot drive. OpenCode 2 (`@opencode/cli`, its
+// Homebrew formula and curl installer) is a new command line: `run` has no
+// `--dir`, so every message died with "Unrecognized flag: --dir" while the
+// preflight, seeing only "newer than tested", let it through.
+const OPENCODE_UNSUPPORTED_MAJOR = 2;
 // Highest version whose JSON behavior is treated as verified. Newer is allowed
 // but flagged 'degraded' (the run still proceeds; any failure is classified).
 const OPENCODE_TESTED_MAX_VERSION = '1.17.11';
@@ -70,7 +75,7 @@ const FAILURE_MESSAGES = {
   cli_not_found: `OpenCode CLI not found. Install it (\`npm install -g opencode-ai@${OPENCODE_PINNED_VERSION}\`) and try again.`,
   cli_not_executable: 'OpenCode CLI was found but could not be started. Reinstall it, then retry.',
   install_incomplete: `OpenCode is installed, but its setup never finished: the opencode-ai package's postinstall script did not run (npm \`ignore-scripts\`, or a pnpm/bun install), so the \`opencode\` command is only a placeholder. Reinstall OpenCode from the launcher — or, for a copy you installed yourself, run \`npm install -g opencode-ai@${OPENCODE_PINNED_VERSION} --ignore-scripts=false\` — then retry.`,
-  unsupported_version: `This OpenCode CLI version is not supported (requires >= ${OPENCODE_MIN_VERSION}). Reinstall \`opencode-ai@${OPENCODE_PINNED_VERSION}\` and retry.`,
+  unsupported_version: `This OpenCode CLI version is not supported: OpenAgents runs the opencode-ai 1.x CLI (${OPENCODE_MIN_VERSION} or newer), and OpenCode 2.x changed its command line. Reinstall OpenCode from the launcher, or run \`npm install -g opencode-ai@${OPENCODE_PINNED_VERSION}\`, and retry.`,
   model_missing: "No model is configured for OpenCode. Set a model (LLM_MODEL, e.g. `gpt-4o`) in this agent's configuration, then retry.",
   credential_missing: 'OpenCode has no API key or sign-in configured. Add an API key (LLM_API_KEY) or run `opencode auth login`, then retry.',
   auth_failed: "OpenCode's provider rejected the credentials (authentication failed). Check the API key or sign-in and retry.",
@@ -158,7 +163,10 @@ class OpenCodeAdapter extends BaseAdapter {
     // Preflight guarantees a resolvable model; pin it explicitly — without it
     // opencode hangs waiting for interactive provider/model selection.
     const gate = posture || this._approvalGate();
-    const args = ['run', '--format', 'json'];
+    // --thinking adds the model's reasoning to the JSON stream as `reasoning`
+    // events, shown live as thinking (like Claude and Codex). Available since
+    // the minimum supported 1.17.0.
+    const args = ['run', '--format', 'json', '--thinking'];
     // `--dangerously-skip-permissions` (alias of `--auto`: "auto-approve
     // permissions that are not explicitly denied") only for an execute turn of
     // an agent this computer allowed to run unrestricted (policy.json).
@@ -542,6 +550,7 @@ class OpenCodeAdapter extends BaseAdapter {
     const eventType = String(event.type || '').toLowerCase();
     if (['step_start', 'step-start', 'step_finish', 'step-finish', 'tool_use', 'tool'].includes(eventType)) return null;
     if (OpenCodeAdapter._isToolEvent(event)) return null;
+    if (OpenCodeAdapter._isReasoningEvent(event)) return null;
     if (eventType.includes('error')) return null;
 
     const part = event.part;
@@ -612,6 +621,13 @@ class OpenCodeAdapter extends BaseAdapter {
   }
 
   async _handleStreamEvent(event, msgChannel, responseState = null) {
+    // Reasoning is a live thinking trace only: it never counts toward the reply.
+    const reasoning = OpenCodeAdapter._reasoningFromEvent(event);
+    if (reasoning !== null) {
+      if (reasoning.trim()) await this.sendThinking(msgChannel, reasoning.trim());
+      return;
+    }
+
     const status = OpenCodeAdapter._toolStatusFromEvent(event);
     if (status) {
       // A tool call resets `finalText` (the "text since the last tool"), so the
@@ -1114,8 +1130,21 @@ class OpenCodeAdapter extends BaseAdapter {
    * unusable cwd) and lets anything ambiguous through to a real run.
    */
   _preflight() {
-    const binary = this._opencodeBinary || this._findOpencodeBinary();
-    if (binary) this._opencodeBinary = binary;
+    // The path found at start-up is kept, but not past the file it names: a
+    // reinstall or an antivirus quarantine took it away, and every message
+    // after that failed "CLI not found" until the agent restarted, even with
+    // a working copy installed by then.
+    let binary = this._opencodeBinary;
+    if (binary && !fs.existsSync(binary)) {
+      const found = this._findOpencodeBinary();
+      if (found !== binary) {
+        this._log(`${binary} is gone; ${found ? `using ${found}` : 'no other copy found'}`);
+        this._versionProbe = null;
+      }
+      binary = found;
+    }
+    binary = binary || this._findOpencodeBinary();
+    this._opencodeBinary = binary || null;
     if (!binary) return { ok: false, category: 'cli_not_found' };
 
     // Before every other check: the placeholder a skipped postinstall leaves
@@ -1139,7 +1168,7 @@ class OpenCodeAdapter extends BaseAdapter {
         ok: false,
         category: 'unsupported_version',
         detail: `detected ${probe.version || 'unknown'}`,
-        diagnostic: `detected ${probe.version}, requires >= ${OPENCODE_MIN_VERSION}`,
+        diagnostic: `detected ${probe.version}, requires >= ${OPENCODE_MIN_VERSION} and < ${OPENCODE_UNSUPPORTED_MAJOR}.0.0`,
       };
     }
     // 'unknown' (unparseable) and 'degraded' (newer than tested) still run.
@@ -1301,6 +1330,24 @@ class OpenCodeAdapter extends BaseAdapter {
   // ------------------------------------------------------------------
 
   /** True when an event is a tool call, across opencode's version-varying shapes. */
+  /** A `--thinking` reasoning event (`{type:"reasoning", part:{type:"reasoning", text}}`). */
+  static _isReasoningEvent(event) {
+    if (!event || typeof event !== 'object') return false;
+    if (String(event.type || '').toLowerCase() === 'reasoning') return true;
+    const part = event.part;
+    return !!(part && typeof part === 'object' && String(part.type || '').toLowerCase() === 'reasoning');
+  }
+
+  /** Reasoning text from a reasoning event ('' when empty), or null for any other event. */
+  static _reasoningFromEvent(event) {
+    if (!OpenCodeAdapter._isReasoningEvent(event)) return null;
+    const part = (event.part && typeof event.part === 'object') ? event.part : event;
+    const text = part.text || part.content || '';
+    // Summaries of several reasoning steps arrive glued together
+    // ("**Checking A****Testing B**"); give each heading its own paragraph.
+    return typeof text === 'string' ? text.replace(/\*\*\*\*(?=\S)/g, '**\n\n**') : '';
+  }
+
   static _isToolEvent(event) {
     if (!event || typeof event !== 'object') return false;
     const t = String(event.type || '').toLowerCase();
@@ -1378,6 +1425,13 @@ class OpenCodeAdapter extends BaseAdapter {
     let category;
     if (isPostinstallStubOutput(hay)) {
       category = 'install_incomplete';
+    } else if (has(/(?:unrecognized|unknown) (?:flag|option|argument)s?:?\s*['"`]?--?[a-z]/)) {
+      // The CLI refused a flag this adapter always passes, so it is not a
+      // build we support (one whose version string we could not read gets
+      // through the preflight). It printed its usage too, and that came out
+      // as "produced output this version could not parse", which said nothing
+      // about reinstalling.
+      category = 'unsupported_version';
     } else if (has(/\b(401|403)\b/) || has(/unauthor|invalid api key|invalid_api_key|authentication|auth(entication)? failed|forbidden|invalid token|no api key|missing api key|permission denied/)) {
       category = 'auth_failed';
     } else if (has(/\b429\b/) || has(/rate.?limit|too many requests|quota|overloaded/)) {
@@ -1415,11 +1469,12 @@ class OpenCodeAdapter extends BaseAdapter {
     return 'empty_response';
   }
 
-  /** 'ok' | 'degraded' (newer than tested) | 'unsupported' (too old) | 'unknown'. */
+  /** 'ok' | 'degraded' (newer than tested) | 'unsupported' (too old, or 2.x) | 'unknown'. */
   static _classifyVersion(version) {
     // Non-semver (or unreadable) → 'unknown': allow the run, never block on it.
     if (!version || !/^\d+\.\d+/.test(String(version))) return 'unknown';
     if (OpenCodeAdapter._cmpVer(version, OPENCODE_MIN_VERSION) < 0) return 'unsupported';
+    if (Number(String(version).split('.')[0]) >= OPENCODE_UNSUPPORTED_MAJOR) return 'unsupported';
     if (OPENCODE_TESTED_MAX_VERSION && OpenCodeAdapter._cmpVer(version, OPENCODE_TESTED_MAX_VERSION) > 0) return 'degraded';
     return 'ok';
   }
