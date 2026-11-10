@@ -28,6 +28,8 @@ const { whereBinary } = require('../paths');
 const { formatAttachmentsForPrompt, SESSION_DEFAULT_RE, generateSessionTitle } = require('./utils');
 const { buildClaudeSystemPrompt } = require('./workspace-prompt');
 const {
+  agyPromptFitsArgv,
+  agyStdinMessage,
   buildAgyArgv,
   parseAgyEvent,
   AgyRunState,
@@ -177,14 +179,17 @@ class AntigravityAdapter extends BaseAdapter {
 
     // Plan/execute and the local opt-in (policy.json), never workspace data.
     const gate = this._approvalGate();
+    // Too long for a command line: send it over stdin instead.
+    const viaStdin = !agyPromptFitsArgv(fullPrompt);
     const args = buildAgyArgv({
       prompt: fullPrompt,
       model,
       conversationId: this._channelConversations[channelName],
       skipResume,
+      viaStdin,
       unrestricted: gate.mode === 'execute' && gate.unrestricted,
     });
-    return { cmd: [agyBin, ...args] };
+    return { cmd: [agyBin, ...args], stdinPrompt: viaStdin ? fullPrompt : null };
   }
 
   async _handleMessage(msg) {
@@ -228,6 +233,7 @@ class AntigravityAdapter extends BaseAdapter {
     await this.sendStatus(msgChannel, 'thinking...');
 
     let cmd;
+    let stdinPrompt = null;
     const cleanEnv = { ...(this.agentEnv || process.env) };
 
     let _shouldRetry = false;
@@ -235,6 +241,7 @@ class AntigravityAdapter extends BaseAdapter {
       try {
         const built = this._buildAgyCmd(content, msgChannel, { skipResume: attempt > 0 });
         cmd = built.cmd;
+        stdinPrompt = built.stdinPrompt;
       } catch (e) {
         await this.sendError(msgChannel, e.message);
         return;
@@ -245,13 +252,21 @@ class AntigravityAdapter extends BaseAdapter {
 
       try {
         const proc = spawn(cmd[0], cmd.slice(1), {
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: [stdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe'],
           env: cleanEnv,
           cwd: this.workingDir,
           detached: !IS_WINDOWS,
           windowsHide: true,
         });
         this._channelProcesses[msgChannel] = proc;
+        // One turn, then EOF. Streaming input is a multi-turn mode; should
+        // agy keep running after its result anyway, the run is over then and
+        // it is stopped (see processLine), which is not a failure.
+        let stoppedAfterResult = false;
+        if (stdinPrompt && proc.stdin) {
+          proc.stdin.on('error', () => {});
+          proc.stdin.end(agyStdinMessage(stdinPrompt));
+        }
 
         const run = new AgyRunState();
         let stderrBuf = '';
@@ -304,11 +319,19 @@ class AntigravityAdapter extends BaseAdapter {
                 try { await this.sendStatus(msgChannel, `${action.name} › ${action.preview}`); } catch {}
               }
               // 'result' is read from `run` after exit.
+              if (action.type === 'result' && stdinPrompt) {
+                setTimeout(() => {
+                  if (proc.exitCode !== null || proc.signalCode !== null) return;
+                  stoppedAfterResult = true;
+                  this._stopProcess(proc).catch(() => {});
+                }, 5000).unref();
+              }
             }
           };
 
-          proc.on('exit', async (code) => {
+          proc.on('exit', async (exitCode) => {
             if (timeoutTimer) clearInterval(timeoutTimer);
+            const code = stoppedAfterResult ? 0 : exitCode;
 
             try { await _pendingLines; } catch {}
 

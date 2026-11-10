@@ -4,8 +4,8 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { X, Copy, Check, ExternalLink, Loader2, Terminal, Cloud, Trash2, MessageSquare, Image as ImageIcon, Volume2, Key, ChevronRight, Server, Laptop, Monitor, RefreshCw, RotateCcw, Plus, HardDrive, Pencil, Folder, CornerLeftUp, Download, Sparkles, Search, ArrowRight, CheckCircle2, Zap, AlertTriangle } from 'lucide-react';
 import { useLayout } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
-import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useTokenPayModels } from '@/hooks/use-tokenpay-models';
 import { useRetryingLoad } from '@/hooks/use-retrying-load';
 import { useT, useFormatters } from '@/lib/i18n';
@@ -295,14 +295,32 @@ export function ConnectAgentView({
 
   // When a node appears that wasn't there when the code was generated, the pair
   // succeeded → dismiss the panel; the new node is already in the list.
+  const [pairedNodeId, setPairedNodeId] = useState<string | null>(null);
+  const finishPairing = useCallback((nodeId: string | null) => {
+    setPairing(null);
+    setPairedNodeId(nodeId);
+    toast.success(t('connect.nodeConnectedToast'));
+    capture('node_connected', { source: 'workspace_ui' });
+  }, [t]);
   useEffect(() => {
     if (!pairing) return;
-    if (nodes.some((n) => !pairingBaselineRef.current.has(n.nodeId))) {
-      setPairing(null);
-      toast.success(t('connect.nodeConnectedToast'));
-      capture('node_connected', { source: 'workspace_ui' });
-    }
-  }, [nodes, pairing, t]);
+    const fresh = nodes.find((n) => !pairingBaselineRef.current.has(n.nodeId));
+    if (fresh) finishPairing(fresh.nodeId);
+  }, [nodes, pairing, finishPairing]);
+  // A device that was already paired keeps its node id, so also ask whether
+  // the code itself was used (an agent joining from a machine already
+  // connected here, the common case for `agn join`).
+  useEffect(() => {
+    if (!pairing || activeTab !== 'node') return;
+    let cancelled = false;
+    const id = setInterval(async () => {
+      try {
+        const status = await workspaceApi.getPairingCodeStatus(pairing.code);
+        if (!cancelled && status.redeemed) { finishPairing(status.nodeId); loadNodes(false); }
+      } catch { /* the node list keeps watching */ }
+    }, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [pairing, activeTab, finishPairing, loadNodes]);
 
   const handleGeneratePairingCode = async () => {
     setPairingLoading(true);
@@ -405,6 +423,8 @@ export function ConnectAgentView({
             autoAddAgent={autoAddAgent || autoPairedRef.current}
             preferredNodeId={preferredNodeId}
             onFirstAgentCreated={requestFirstThread}
+            pairedNodeId={pairedNodeId}
+            onAgentJoined={(name) => { requestFirstThread(name); openView('threads'); }}
             loading={nodesLoading}
             loaded={nodesLoaded}
             loadFailed={nodesError}
@@ -1269,6 +1289,8 @@ function NodesTab({
   autoAddAgent = false,
   preferredNodeId,
   onFirstAgentCreated,
+  pairedNodeId,
+  onAgentJoined,
   loading,
   loaded,
   loadFailed = false,
@@ -1285,6 +1307,10 @@ function NodesTab({
   autoAddAgent?: boolean;
   preferredNodeId?: string;
   onFirstAgentCreated?: (agentName: string) => void;
+  /** The device a pairing code from this view was just redeemed by. */
+  pairedNodeId?: string | null;
+  /** That device brought an agent along (`agn join`): go talk to it. */
+  onAgentJoined?: (agentName: string) => void;
   loading: boolean;
   /** A node load has finished at least once. */
   loaded: boolean;
@@ -1402,11 +1428,24 @@ function NodesTab({
   const autoAddedRef = useRef(false);
   useEffect(() => {
     if (!autoAddAgent || autoAddedRef.current) return;
+    if (pairedNodeId) {
+      // The device just paired here. Wait for its first heartbeat, which lists
+      // the agents it runs: one connected by `agn join` from inside Claude
+      // Code or Codex brings its agent along, so open a thread with that
+      // agent instead of the gallery.
+      const paired = nodes.find((n) => n.nodeId === pairedNodeId && n.status === 'online');
+      if (!paired) return;
+      autoAddedRef.current = true;
+      const joined = (paired.agents || [])[0];
+      if (joined) (onAgentJoined ?? onFirstAgentCreated)?.(joined.name);
+      else setAddingNodeId(paired.nodeId);
+      return;
+    }
     const target = preferredNodeId
       ? nodes.find((n) => n.nodeId === preferredNodeId && n.status === 'online')
       : nodes.find((n) => (n.agents || []).length === 0) || nodes[0];
     if (target) { autoAddedRef.current = true; setAddingNodeId(target.nodeId); }
-  }, [autoAddAgent, nodes, preferredNodeId]);
+  }, [autoAddAgent, nodes, preferredNodeId, pairedNodeId, onFirstAgentCreated, onAgentJoined]);
 
   // The sidebar's "+" beside Agents: open a device's gallery, this computer
   // first. Waits for the node list; with no device yet the list itself (and
@@ -1592,7 +1631,9 @@ function NodesTab({
 
       {/* Pairing code panel, or the connect button */}
       {pairing ? (
-        <PairingPanel pairing={pairing} onDismiss={onDismissPairing} />
+        DOOR_LOGIN
+          ? <PairingPanel pairing={pairing} onDismiss={onDismissPairing} />
+          : <OnboardingPairingPanel pairing={pairing} onDismiss={onDismissPairing} onRegenerate={onGenerate} regenerating={pairingLoading} stepLabel={t('connect.connectAnotherDevice')} />
       ) : loadFailed && nodes.length === 0 ? null : nodes.length === 0 ? (
         <Button onClick={onGenerate} disabled={pairingLoading} className="w-full h-12 text-sm" variant="primary" size="lg">
           {pairingLoading ? (

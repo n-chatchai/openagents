@@ -16,7 +16,30 @@
 const { redactSecrets } = require('./utils');
 
 /**
+ * Longest prompt passed as `-p <prompt>`. Past it the prompt goes over stdin
+ * (agyStdinMessage). Windows caps a whole command line at 32,767 characters
+ * and Node fails the spawn itself with ENAMETOOLONG — the system prompt plus a
+ * large pinned glossary got there with a one-word message. Linux caps a single
+ * argument at 128 KiB. Both limits are left headroom for quoting and the rest
+ * of the argv.
+ */
+function agyPromptFitsArgv(prompt, platform = process.platform) {
+  const limit = platform === 'win32' ? 24000 : 100000;
+  return String(prompt || '').length <= limit;
+}
+
+/**
+ * The stdin line for a prompt sent with `--input-format stream-json` — the
+ * only stdin input headless agy accepts (plain-text stdin is not read, and a
+ * `-p` prompt is dropped in this mode). antigravity.google/docs/cli/headless
+ */
+function agyStdinMessage(prompt) {
+  return `${JSON.stringify({ event: 'user', message: { content: String(prompt || '') } })}\n`;
+}
+
+/**
  * Build the argv tail (everything after the binary) for one headless run.
+ * `viaStdin` leaves the prompt out: the caller writes agyStdinMessage(prompt).
  *
  * Headless agy soft-denies any tool that would need a confirmation and names
  * the allow-rule that would permit it (its changelog: "the CLI now soft-denies
@@ -27,8 +50,8 @@ const { redactSecrets } = require('./utils');
  * unrestricted (policy.json) — never in plan mode, and never from anything a
  * workspace sends. Flags verified in the installed agy binary.
  */
-function buildAgyArgv({ prompt, model, conversationId, skipResume = false, unrestricted = false } = {}) {
-  const args = ['-p', prompt || ''];
+function buildAgyArgv({ prompt, model, conversationId, skipResume = false, viaStdin = false, unrestricted = false } = {}) {
+  const args = viaStdin ? ['--input-format', 'stream-json'] : ['-p', prompt || ''];
   if (unrestricted === true) args.push('--dangerously-skip-permissions');
   args.push('--output-format', 'stream-json');
   if (model) args.push('--model', model);
@@ -302,6 +325,8 @@ function agyBinaryCandidates({ home, isWindows, localAppData } = {}) {
 }
 
 module.exports = {
+  agyPromptFitsArgv,
+  agyStdinMessage,
   buildAgyArgv,
   parseAgyEvent,
   toolPreview,
