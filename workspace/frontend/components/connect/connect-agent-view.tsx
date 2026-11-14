@@ -83,7 +83,7 @@ export function ConnectAgentView({
   onDismiss?: () => void;
 } = {}) {
   const t = useT();
-  const { openView, connectSetupRequest } = useLayout();
+  const { openView, connectSetupRequest, cloudAgentsPending, consumeCloudAgents } = useLayout();
   const { workspace, token, refreshWorkspace, agents, requestFirstThread } = useWorkspace();
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   const { idToken: oaIdToken } = useOpenAgentsAuth();
@@ -95,7 +95,7 @@ export function ConnectAgentView({
   const [selectedTab, setSelectedTab] = useState<'local' | 'cloud' | 'node'>(
     DOOR_LOGIN && !autoPair && !autoAddAgent && !preferredNodeId ? 'cloud' : initialTab,
   );
-  const activeTab = isDesktop || selectedTab === 'local' ? 'node' : selectedTab;
+  const activeTab = selectedTab === 'local' ? 'node' : selectedTab;
   const appliedSetupRequest = useRef(connectSetupRequest);
   useEffect(() => {
     if (connectSetupRequest && connectSetupRequest !== appliedSetupRequest.current) {
@@ -103,6 +103,11 @@ export function ConnectAgentView({
       setSelectedTab('node');
     }
   }, [connectSetupRequest]);
+  useEffect(() => {
+    if (!cloudAgentsPending) return;
+    setSelectedTab('cloud');
+    consumeCloudAgents?.();
+  }, [cloudAgentsPending, consumeCloudAgents]);
 
   // Onboarding checkpoint: the user reached the agent-setup surface. One event
   // per tab so the funnel can split node vs cloud vs local paths.
@@ -372,14 +377,15 @@ export function ConnectAgentView({
         </div>
       )}
 
-      {/* The desktop app focuses on agents running on connected devices. */}
-      {!isDesktop && <ConnectionTabs activeTab={activeTab} onSelect={setSelectedTab} />}
+      {/* The desktop app shows both tabs too: most people arrive through it, and
+          Cloud Agents is the only place they can find hosted agents. */}
+      <ConnectionTabs activeTab={activeTab} onSelect={setSelectedTab} />
 
       {/* Credits-campaign incentive — Local Agents tab only: the milestone is
           about launcher/CLI agents, so it would only confuse on the Cloud
           Agents and Manual Connection tabs. */}
       {activeTab === 'node' && !DOOR_LOGIN && (
-        <div className={cn('px-6 shrink-0', isDesktop && 'pt-4')}>
+        <div className="px-6 shrink-0">
           <div className="mx-auto w-full max-w-2xl">
             <CampaignConnectHint idToken={oaIdToken} />
           </div>
@@ -430,6 +436,7 @@ export function ConnectAgentView({
             loadFailed={nodesError}
             pairing={pairing}
             pairingLoading={pairingLoading}
+            pairingError={pairingError}
             onGenerate={handleGeneratePairingCode}
             onDismissPairing={handleDismissPairing}
             onRefresh={() => loadNodes(true)}
@@ -1296,6 +1303,7 @@ function NodesTab({
   loadFailed = false,
   pairing,
   pairingLoading,
+  pairingError,
   onGenerate,
   onDismissPairing,
   onRefresh,
@@ -1317,6 +1325,7 @@ function NodesTab({
   loadFailed?: boolean;
   pairing: PairingCode | null;
   pairingLoading: boolean;
+  pairingError: boolean;
   onGenerate: () => void;
   onDismissPairing: () => void;
   onRefresh: () => void;
@@ -1329,6 +1338,12 @@ function NodesTab({
   // going straight to a pairing code meant for a different machine.
   const canConnectHere = !!host?.getComputerStatus && !!workspace;
   const [choosing, setChoosing] = useState(false);
+  const [showDeviceSetup, setShowDeviceSetup] = useState(false);
+  const previousPairing = useRef(pairing);
+  useEffect(() => {
+    if (previousPairing.current && !pairing) setShowDeviceSetup(false);
+    previousPairing.current = pairing;
+  }, [pairing]);
   const [joinedNodeId, setJoinedNodeId] = useState<string | null>(null);
   const localNodeId = useLocalNodeId(workspace?.workspaceId, joinedNodeId ?? nodes.length);
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
@@ -1547,6 +1562,45 @@ function NodesTab({
     );
   }
 
+  // Connecting another device is its own screen. Keep the existing device
+  // roster out of the way while the pairing code is waiting to be redeemed.
+  if (showDeviceSetup || pairing) {
+    return (
+      <div className="mx-auto w-full max-w-2xl space-y-5 p-6">
+        <button
+          type="button"
+          disabled={pairingLoading}
+          onClick={() => { setShowDeviceSetup(false); onDismissPairing(); }}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+        >
+          <ChevronRight className="size-4 rotate-180" />{t('connect.nodeBack')}
+        </button>
+        {pairing ? (
+          DOOR_LOGIN ? (
+            <PairingPanel pairing={pairing} onDismiss={() => { setShowDeviceSetup(false); onDismissPairing(); }} />
+          ) : (
+            <OnboardingPairingPanel
+              pairing={pairing}
+              onDismiss={() => { setShowDeviceSetup(false); onDismissPairing(); }}
+              onRegenerate={onGenerate}
+              regenerating={pairingLoading}
+              stepLabel={t('connect.connectAnotherDevice')}
+            />
+          )
+        ) : pairingError ? (
+          <div role="alert" className="rounded-lg border border-dashed p-8 text-center">
+            <p className="text-sm text-muted-foreground">{t('connect.nodePairingFailed')}</p>
+            <Button variant="outline" className="mt-4" onClick={onGenerate}>{t('common.retry')}</Button>
+          </div>
+        ) : (
+          <div role="status" className="flex items-center justify-center py-14 text-muted-foreground">
+            <Loader2 className="mr-2 size-5 animate-spin" />{t('connect.nodeGenerating')}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const listReady = !(loading && nodes.length === 0) && !(loadFailed && nodes.length === 0);
   if (canConnectHere && listReady && !pairing && (nodes.length === 0 || choosing)) {
     return (
@@ -1579,13 +1633,20 @@ function NodesTab({
           <h3 className="text-lg font-semibold tracking-tight">{t('connect.nodeHeading')}</h3>
           <p className="text-xs text-muted-foreground mt-0.5">{t('connect.nodeSubtitle')}</p>
         </div>
-        <button
-          onClick={onRefresh}
-          className="shrink-0 size-9 flex items-center justify-center rounded-lg border text-muted-foreground hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-          title={t('connect.nodeRefresh')}
-        >
-          <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {nodes.length > 0 && (
+            <Button variant="outline" onClick={canConnectHere ? () => setChoosing(true) : () => { setShowDeviceSetup(true); onGenerate(); }}>
+              <Plus className="mr-1.5 size-4" />{t('connect.nodeConnectAnother')}
+            </Button>
+          )}
+          <button
+            onClick={onRefresh}
+            className="size-9 flex items-center justify-center rounded-lg border text-muted-foreground hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+            title={t('connect.nodeRefresh')}
+          >
+            <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
+          </button>
+        </div>
       </div>
 
       {/* Node list / empty state */}
@@ -1629,12 +1690,8 @@ function NodesTab({
         </div>
       )}
 
-      {/* Pairing code panel, or the connect button */}
-      {pairing ? (
-        DOOR_LOGIN
-          ? <PairingPanel pairing={pairing} onDismiss={onDismissPairing} />
-          : <OnboardingPairingPanel pairing={pairing} onDismiss={onDismissPairing} onRegenerate={onGenerate} regenerating={pairingLoading} stepLabel={t('connect.connectAnotherDevice')} />
-      ) : loadFailed && nodes.length === 0 ? null : nodes.length === 0 ? (
+      {/* A new workspace can start pairing without a device roster. */}
+      {loadFailed && nodes.length === 0 ? null : nodes.length === 0 ? (
         <Button onClick={onGenerate} disabled={pairingLoading} className="w-full h-12 text-sm" variant="primary" size="lg">
           {pairingLoading ? (
             <><Loader2 className="size-4 animate-spin mr-2" />{t('connect.nodeGenerating')}</>
@@ -1642,16 +1699,7 @@ function NodesTab({
             <><Plus className="size-4 mr-2" />{t('connect.nodeConnect')}</>
           )}
         </Button>
-      ) : (
-        <button
-          onClick={canConnectHere ? () => setChoosing(true) : onGenerate}
-          disabled={pairingLoading}
-          className="w-full flex items-center justify-center gap-2 rounded-xl border border-dashed py-3.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-primary/40 hover:bg-primary/[0.03] transition-colors disabled:opacity-50"
-        >
-          {pairingLoading ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
-          {pairingLoading ? t('connect.nodeGenerating') : t(canConnectHere ? 'connect.nodeConnect' : 'connect.nodeConnectAnother')}
-        </button>
-      )}
+      ) : null}
     </div>
   );
 }

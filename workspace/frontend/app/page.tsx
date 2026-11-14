@@ -20,6 +20,7 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useCreateWorkspace } from '@/hooks/use-create-workspace';
 import { useFormatters, useT, type MessageKey } from '@/lib/i18n';
 import { DesktopWorkspaceHome } from '@/components/workspaces-home/desktop-workspace-home';
+import { landingTarget, markAutoEntered, orderWorkspaces, rememberWorkspaceTokens } from '@/lib/first-workspace';
 
 /** A catalogue key, translated at render time, or a raw message from an Error. */
 type ErrorMessage = { key: MessageKey } | { text: string };
@@ -768,6 +769,7 @@ function MembershipHome({
         // stays up with no error and no retry.
         const list = await listAccountWorkspaces(idToken, AbortSignal.timeout(LIST_TIMEOUT_MS));
         if (seq !== loadSeqRef.current) return;
+        rememberWorkspaceTokens(list, idToken);
         setWorkspaces(list);
         // Funnel checkpoint: the signed-in user reached their workspace list
         // (which includes the auto-provisioned first workspace). Once per
@@ -823,18 +825,14 @@ function MembershipHome({
     createFlow.reset();
   };
 
-  // A lone owned workspace = the one we auto-provisioned at sign-up.
-  const firstWorkspace =
-    !loading && workspaces.length === 1 && workspaces[0].role === 'owner' ? workspaces[0] : null;
-
   // Single-workspace users go STRAIGHT IN — no picker, no "this is your first
   // workspace" card. A list with one option is pure friction (especially on a
-  // phone). Once per browser session, so deliberately navigating back to the
-  // home page still shows the list (rename/delete/create live here).
-  const willAutoEnter =
-    !!firstWorkspace &&
-    typeof window !== 'undefined' &&
-    sessionStorage.getItem('oa_auto_entered_first_ws') !== '1';
+  // phone). So do users invited to one workspace whose own is still the empty
+  // one we created. See lib/first-workspace for the rules; the workspace then
+  // says why it opened.
+  const target = loading ? null : landingTarget(workspaces);
+  const firstWorkspace = target?.workspace ?? null;
+  const willAutoEnter = target !== null;
   const autoEnteredRef = useRef(false);
   // Re-renders once the redirect is out, so willAutoEnter (now false) stops
   // holding the skeleton. In the desktop app the push opens the workspace in
@@ -844,8 +842,8 @@ function MembershipHome({
   useEffect(() => {
     if (!willAutoEnter || !firstWorkspace || autoEnteredRef.current) return;
     autoEnteredRef.current = true;
-    sessionStorage.setItem('oa_auto_entered_first_ws', '1');
-    capture('first_workspace_auto_entered', { workspace_id: firstWorkspace.slug });
+    markAutoEntered(target!);
+    capture('first_workspace_auto_entered', { workspace_id: firstWorkspace.slug, reason: target!.reason });
     router.push(`/${firstWorkspace.slug}`);
     if (desktopHost()) {
       setAutoEnterSent(true);
@@ -1018,7 +1016,7 @@ function MembershipHome({
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {!showCreate && <CreateTile onClick={openCreate} />}
-            {workspaces.map((ws) => (
+            {orderWorkspaces(workspaces).map((ws) => (
               <WorkspaceTile key={ws.workspaceId} workspace={ws} />
             ))}
           </div>

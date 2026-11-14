@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Bot, Check, Copy, Laptop, Loader2, RefreshCw, Terminal } from 'lucide-react';
 import { AgentJoinInstruction } from '@/components/connect/agent-join-instruction';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
-import { useIsMobile } from '@/hooks/use-mobile';
+import { useIsMobileDevice } from '@/hooks/use-mobile-device';
 import { desktopDownloads } from '@/lib/desktop-downloads';
 import { useT } from '@/lib/i18n';
 import type { PairingCode } from '@/lib/types';
@@ -36,7 +36,7 @@ export function OnboardingPairingPanel({ pairing, onDismiss, onRegenerate, regen
   stepLabel?: string;
 }) {
   const t = useT();
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobileDevice();
   const [method, setMethod] = useState<'desktop' | 'terminal' | 'agent'>(methodRequest?.method ?? 'terminal');
   const appliedMethodRequest = useRef(methodRequest);
   useEffect(() => {
@@ -84,7 +84,7 @@ export function OnboardingPairingPanel({ pairing, onDismiss, onRegenerate, regen
                 className={cn('relative flex items-start gap-3 rounded-xl border px-3 py-3 text-left transition-colors sm:px-4', active ? 'border-[#2f6bff]/60 bg-[#2f6bff]/[0.04]' : 'border-border hover:border-[#2f6bff]/35 hover:bg-muted/30')}>
                 <Icon className={cn('mt-0.5 hidden size-5 shrink-0 sm:block', active ? 'text-[#2f6bff]' : 'text-muted-foreground')} />
                 <span className="min-w-0 flex-1">
-                  <span className={cn('block pr-3 text-sm font-semibold', active && 'text-[#2f6bff]')}>{t(label)}</span>
+                  <span className={cn('block whitespace-nowrap text-sm font-semibold', active && 'text-[#2f6bff]')}>{t(label)}</span>
                   <span className="mt-1 block text-xs leading-5 text-muted-foreground">{t(hint)}</span>
                   <span className="mt-1.5 flex items-center gap-2.5">
                     {platforms.map((platform) => (

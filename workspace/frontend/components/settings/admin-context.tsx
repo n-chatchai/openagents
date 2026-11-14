@@ -2,6 +2,7 @@
 
 import { createContext, useContext } from 'react';
 import type { Workspace, WorkspaceMe, WorkspaceRole } from '@/lib/types';
+import { DOOR_LOGIN } from '@/lib/door';
 
 /**
  * Context for the /{workspaceId}/settings/* admin dashboard.
@@ -35,7 +36,11 @@ export function canAdminister(me: WorkspaceMe | null): boolean {
 }
 
 export function canAccessSettingsSection(me: WorkspaceMe | null, section: string): boolean {
-  return !!me && (['profile', 'preferences', 'api-credits'].includes(section) || canAdminister(me));
+  // Behind a door the agent hub's /mcp and /oauth are not reachable from
+  // ChatGPT or Claude, and its public address defaults to openagents.org:
+  // the page would hand a person's key to someone else's server.
+  if (DOOR_LOGIN && section === 'connected-apps') return false;
+  return !!me && (['profile', 'connected-apps', 'preferences', 'api-credits'].includes(section) || canAdminister(me));
 }
 
 export const AdminSettingsContext = createContext<AdminSettingsValue | null>(null);

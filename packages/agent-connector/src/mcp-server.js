@@ -12,6 +12,7 @@
  * The workspace token is read from the OA_WORKSPACE_TOKEN env var.
  */
 
+const fs = require('fs');
 const readline = require('readline');
 const { execSync, spawn: spawnChild } = require('child_process');
 const net = require('net');
@@ -526,6 +527,20 @@ function buildToolDefs(disabledModules) {
       },
     },
     {
+      name: 'workspace_request_public_link',
+      description: 'Ask a person to publish a public "anyone with the link" page for a workspace file (image, video, HTML page, web project, table, document…) or knowledge entry. Use ONLY when the user asked to share something publicly or with people outside the workspace. You cannot create the link yourself: this files a request in the thread, and a person who can manage the artifact approves or rejects it. The link shows a snapshot of the artifact as it is now — later edits are not visible until someone shares it again. Optionally set an expiry (default: never). Once approved, the link arrives as a message in this thread @mentioning you; until then, do not claim a link exists.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['file', 'knowledge'], description: 'file = a workspace file or web project; knowledge = a knowledge base entry' },
+          id: { type: 'string', description: 'The file id or knowledge entry id' },
+          reason: { type: 'string', description: 'Why it should be public, shown to the approver (e.g. "The user asked to send this report to a client")' },
+          expires_at: { type: 'string', description: 'Optional ISO 8601 date/time after which the link stops working, e.g. "2026-12-31T00:00:00Z". Omit for no expiry.' },
+        },
+        required: ['kind', 'id'],
+      },
+    },
+    {
       name: 'workspace_check_approval',
       description: 'Check the status of an approval request you made earlier (by id). Use after workspace_request_approval returned "pending".',
       inputSchema: {
@@ -645,16 +660,33 @@ function isTextMime(mime) {
 // ── MCP Server ──────────────────────────────────────────────────────────────
 
 class McpServer {
-  constructor({ wsClient, workspaceId, channelName, agentName, token, disabledModules, requesterEmail = process.env.OPENAGENTS_REQUESTER_EMAIL || null }) {
+  constructor({ wsClient, workspaceId, channelName, agentName, token, disabledModules, requesterEmail = process.env.OPENAGENTS_REQUESTER_EMAIL || null, contextFile = null }) {
     this.ws = wsClient;
     this.workspaceId = workspaceId;
-    this.channelName = channelName;
+    this._channelName = channelName;
     this.agentName = agentName;
     this.token = token;
-    this.requesterEmail = requesterEmail;
+    this._requesterEmail = requesterEmail;
+    // A long-lived agent (OpenCode's warm server) serves many channels with one
+    // tools server: the channel and requester of the current turn are read from
+    // this file, which the adapter writes before each turn.
+    this.contextFile = contextFile;
     this.disabledModules = disabledModules || new Set();
     this.tools = buildToolDefs(this.disabledModules);
   }
+
+  _turnContext() {
+    if (!this.contextFile) return {};
+    try { return JSON.parse(fs.readFileSync(this.contextFile, 'utf-8')) || {}; } catch { return {}; }
+  }
+
+  get channelName() { return this._turnContext().channel || this._channelName; }
+  set channelName(v) { this._channelName = v; }
+  get requesterEmail() {
+    const ctx = this._turnContext();
+    return Object.prototype.hasOwnProperty.call(ctx, 'requesterEmail') ? ctx.requesterEmail : this._requesterEmail;
+  }
+  set requesterEmail(v) { this._requesterEmail = v; }
 
   start() {
     const rl = readline.createInterface({ input: process.stdin, terminal: false });
@@ -1249,6 +1281,23 @@ class McpServer {
         return text(formatApproval(approval));
       }
 
+      case 'workspace_request_public_link': {
+        const approval = await this.ws.requestPublicShare(this.workspaceId, this.token, {
+          channel: this.channelName,
+          kind: args.kind || 'file',
+          id: args.id,
+          reason: args.reason,
+          expires_at: args.expires_at,
+          source: `openagents:${this.agentName}`,
+        });
+        return text(
+          `Public link request filed (approval id: ${approval.id}, status: ${approval.status || 'pending'}). ` +
+          'No link exists yet: a person who can manage the artifact must approve it in this thread. ' +
+          'Stop here and tell the user it is waiting for their approval; when approved, the link arrives ' +
+          'as a message @mentioning you. Check later with workspace_check_approval.'
+        );
+      }
+
       case 'workspace_check_approval': {
         const approval = await this.ws.getApproval(this.workspaceId, this.token, args.approval_id);
         return text(formatApproval(approval));
@@ -1341,6 +1390,7 @@ function runMcpServer(opts) {
     agentName: opts.agentName,
     token: opts.token,
     disabledModules: opts.disabledModules,
+    contextFile: opts.contextFile || null,
   });
   server.start();
 }

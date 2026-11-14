@@ -4,7 +4,8 @@ import type { ProjectPreview, ProjectUpload } from './web-projects';
 import type { ArtifactReference, ThreadArtifactSetting } from './thread-artifacts';
 import type {
   AgentCatalogDetail,
-  FilePublicLinkState,
+  PublicShareKind,
+  PublicShareState,
   AgentCatalogEntry,
   ApiResponse,
   BrowserPersistentContext,
@@ -16,6 +17,7 @@ import type {
   HostedAgent,
   HostedAgentProvider,
   AcentaAccount,
+  AcentaUsage,
   DMConversation,
   EventPollResponse,
   KanbanTask,
@@ -117,6 +119,20 @@ function mapCustomSkill(raw: Record<string, unknown>): WorkspaceCustomSkill {
     unavailable: Boolean(raw.unavailable),
     publicVisibility: (raw.public_visibility || raw.publicVisibility) as 'public' | 'unlisted' | undefined,
   };
+}
+
+/**
+ * The name in a Content-Disposition header: the UTF-8 `filename*` the files
+ * endpoint sends, else the plain `filename`. Null when the header is absent or
+ * — cross-origin, unexposed — unreadable.
+ */
+export function dispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const encoded = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded.trim()); } catch { /* fall back to the plain name */ }
+  }
+  return /filename\s*=\s*"([^"]*)"/i.exec(header)?.[1] || /filename\s*=\s*([^;]+)/i.exec(header)?.[1]?.trim() || null;
 }
 
 /** Map snake_case file response from backend to camelCase WorkspaceFile. */
@@ -780,6 +796,8 @@ class WorkspaceApi {
   /** Create a new channel (thread) by emitting a network.channel.create event. */
   async createChannel(opts: {
     title?: string;
+    /** The title was typed by the person, so first-message auto-titling must not replace it. */
+    titleManuallySet?: boolean;
     creatorId?: string;
     master?: string;
     participants?: string[];
@@ -799,6 +817,7 @@ class WorkspaceApi {
       payload: {
         ...(opts.creatorId && { sender_id: opts.creatorId }),
         ...(opts.title && { title: opts.title }),
+        ...(opts.title && opts.titleManuallySet && { title_manually_set: true }),
         ...(opts.master && { master: opts.master }),
         ...(opts.participants && { participants: opts.participants }),
         ...(opts.humanParticipants?.length && { human_participants: opts.humanParticipants }),
@@ -1084,13 +1103,18 @@ class WorkspaceApi {
     return response;
   }
 
-  /** Downloads must carry the viewer's bearer credentials, never a bare navigation. */
-  async downloadFile(fileId: string, filename: string): Promise<void> {
+  /**
+   * Save a file. Downloads must carry the viewer's bearer credentials, never a
+   * bare navigation. Without a known name, the server's Content-Disposition
+   * names it.
+   */
+  async downloadFile(fileId: string, filename?: string): Promise<void> {
     const response = await this.fetchFile(fileId);
+    const name = filename || dispositionFilename(response.headers.get('content-disposition'));
     const url = URL.createObjectURL(await response.blob());
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = filename.split('/').pop() || 'download';
+    anchor.download = name?.split('/').pop() || 'download';
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -1732,6 +1756,11 @@ class WorkspaceApi {
     return this.request<AcentaAccount>(`/v1/hosted-agents/acenta/agents?network=${this.requireWorkspace()}`);
   }
 
+  /** The signed-in user's Acenta balance, this month's spend and each agent's plan. */
+  async getMyAcentaUsage(): Promise<AcentaUsage> {
+    return this.request<AcentaUsage>(`/v1/hosted-agents/acenta/usage?network=${this.requireWorkspace()}`);
+  }
+
   /** Add one of the user's existing Acenta agents to this workspace. */
   async connectAcentaAgent(id: string): Promise<HostedAgent> {
     return this.request<HostedAgent>(`/v1/hosted-agents/acenta/agents/${encodeURIComponent(id)}/connect`, {
@@ -1982,11 +2011,12 @@ class WorkspaceApi {
     return `/v1/issues${suffix}?${new URLSearchParams({ network: this.workspaceId, ...params })}`;
   }
 
-  async listIssues(input: { activeOnly?: boolean; assignedToMe?: boolean; status?: IssueStatus; offset?: number; query?: string; board?: string } = {}): Promise<{ issues: WorkspaceIssue[]; next_offset: number | null }> {
+  async listIssues(input: { activeOnly?: boolean; assignedToMe?: boolean; assignee?: string; status?: IssueStatus; offset?: number; query?: string; board?: string } = {}): Promise<{ issues: WorkspaceIssue[]; next_offset: number | null }> {
     return this.request(this.issuePath('', {
       ...(input.board ? { board: input.board } : {}),
       ...(input.status ? { status: input.status } : {}),
       ...(input.assignedToMe ? { assigned_to_me: 'true' } : {}),
+      ...(input.assignee ? { assignee: input.assignee } : {}),
       ...(input.activeOnly ? { active_only: 'true' } : {}),
       ...(input.query ? { q: input.query } : {}),
       offset: String(input.offset ?? 0),
@@ -2909,23 +2939,25 @@ class WorkspaceApi {
     return mapFileResponse(raw);
   }
 
-  /** The file's "anyone with the link" view link. `token` only comes back
-   *  to people who can manage the file. */
-  async getFilePublicLink(fileId: string): Promise<FilePublicLinkState> {
-    const params = new URLSearchParams({ network: this.requireWorkspace() });
-    return this.request<FilePublicLinkState>(`/v1/files/${encodeURIComponent(fileId)}/public-link?${params}`);
+  /** The artifact's "anyone with the link" public link (a snapshot).
+   *  `token` and `url` only come back to people who can manage it. */
+  async getPublicShare(kind: PublicShareKind, id: string): Promise<PublicShareState> {
+    const params = new URLSearchParams({ network: this.requireWorkspace(), kind, id });
+    return this.request<PublicShareState>(`/v1/public-shares?${params}`);
   }
 
-  async createFilePublicLink(fileId: string): Promise<FilePublicLinkState> {
-    return this.request<FilePublicLinkState>(`/v1/files/${encodeURIComponent(fileId)}/public-link`, {
+  /** Create the link, or refresh the live one: same token, a new snapshot
+   *  of the artifact as it is now, and this expiry (null = never). */
+  async createPublicShare(kind: PublicShareKind, id: string, expiresAt: string | null): Promise<PublicShareState> {
+    return this.request<PublicShareState>('/v1/public-shares', {
       method: 'POST',
-      body: JSON.stringify({ network: this.requireWorkspace() }),
+      body: JSON.stringify({ network: this.requireWorkspace(), kind, id, expires_at: expiresAt }),
     });
   }
 
-  async revokeFilePublicLink(fileId: string): Promise<FilePublicLinkState> {
-    const params = new URLSearchParams({ network: this.requireWorkspace() });
-    return this.request<FilePublicLinkState>(`/v1/files/${encodeURIComponent(fileId)}/public-link?${params}`, { method: 'DELETE' });
+  async revokePublicShare(kind: PublicShareKind, id: string): Promise<PublicShareState> {
+    const params = new URLSearchParams({ network: this.requireWorkspace(), kind, id });
+    return this.request<PublicShareState>(`/v1/public-shares?${params}`, { method: 'DELETE' });
   }
 
   /** Save an edited markdown file in place. `baseSha256` is the hash of the

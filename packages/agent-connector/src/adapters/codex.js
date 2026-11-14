@@ -561,6 +561,18 @@ class CodexAdapter extends BaseAdapter {
             await this._sendRunFailure(msgChannel, result, { partial: true });
           }
           return;
+        } else if (threadId && attempt === 0 && CodexAdapter._threadTooLarge(result)) {
+          // The thread holds an item the API will no longer take, and codex
+          // sends the whole thread with every turn, so every later message in
+          // this channel failed the same way. Only a new thread runs again.
+          this._log(`Thread ${threadId} for ${msgChannel} exceeds an API limit; starting a new one`);
+          delete this._channelThreads[msgChannel];
+          this._saveSessions();
+          try {
+            await this.sendStatus(msgChannel, 'This Codex conversation grew past what the model API accepts, '
+              + 'so it continues in a new one. Earlier context in this thread is not carried over.');
+          } catch {}
+          continue;
         } else if (result.exitCode !== 0 && threadId && attempt === 0 && !result.turnStarted && !CodexAdapter._serviceRefused(result)) {
           // Stale thread — clear and retry fresh. Only when the turn never
           // started: a thread codex cannot resume fails at once with nothing
@@ -858,6 +870,19 @@ class CodexAdapter extends BaseAdapter {
   }
 
   /**
+   * True when the API refused the thread itself as too big. Seen as
+   * `[ArrayParam] [input[77].content] [array_above_max_length] Invalid
+   * 'input[77].content': array too long` on every message of one channel: an
+   * item in the history has more content parts than the API allows, and codex
+   * resends it each turn. The run's error, else what its stderr gives as the
+   * reason (_stderrReason), never a line of its log further up.
+   */
+  static _threadTooLarge({ errorMessage, stderr } = {}) {
+    const reason = String(errorMessage || '').trim() || CodexAdapter._stderrReason(stderr);
+    return /array_above_max_length|context_length_exceeded/i.test(reason);
+  }
+
+  /**
    * True when the model service turned the run away (rate limit, quota,
    * credentials, network) — nothing to do with the thread being resumed. Such
    * a run was read as a stale thread: the thread was dropped, losing the
@@ -995,6 +1020,21 @@ class CodexAdapter extends BaseAdapter {
         'and Codex has no setting to leave it out — so every run here will fail the same way. Point the agent ' +
         'at an endpoint that supports the full Responses API, or edit the agent and set Agent capabilities to ' +
         '"Chat only · Chat Completions API" (it then answers without running tools on this device).';
+    }
+    // The base URL answers, but has nothing at /responses: an endpoint that
+    // only serves Chat Completions (or a base URL missing its path prefix).
+    // Seen as `unexpected status 404 Not Found: 404 page not found, url:
+    // http://host:port/v1/responses` on every message, read as "Codex failed
+    // to complete this run" with no hint that the setting is the cause.
+    if (/\b404\b/.test(detail) && /\/responses\b/i.test(detail)) {
+      const m = /url:\s*(\S+)/i.exec(detail);
+      let host = '';
+      try { host = new URL(m ? m[1] : (customProvider && customProvider.baseUrl) || '').host; } catch {}
+      return `${detail}\n\nThe endpoint this agent is set to${host ? ` (${host})` : ''} has no Responses API ` +
+        '(/v1/responses), which the Codex CLI sends every request to — so every run here will fail the same way. ' +
+        'Check the base URL (it usually ends in /v1), or, if that service only offers Chat Completions, edit the ' +
+        'agent and set Agent capabilities to "Chat only · Chat Completions API" (it then answers without running ' +
+        'tools on this device).';
     }
     // A model the user's ChatGPT plan doesn't include for Codex. Seen in the
     // field with several model names picked in the workspace; every run

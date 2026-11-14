@@ -7,6 +7,7 @@ A workspace is an ONM network with workspace-specific mods loaded.
 
 import asyncio
 import logging
+import re
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ from app.config import config
 # Registers the commit hooks that invalidate cached permission results; it must
 # load before any request can write permission rows.
 import app.services.permission_cache  # noqa: E402,F401
-from app.routers import file_links, web_projects, reactions, agent_services, account, agent_profile, app_version, approvals, auth, door_auth, briefs, browser, campaign, pilot, cloud_agents, devices, hosted_agents, events, feedback, fetch, files, grants, grokbot, groups, integrations, invites, issues, knowledge, model_access, network, nodes, notifications, onboarding, read_state, registry, routines, search, shares, sharing, tasks, thread_access, timers, todos, watches, workflows, workspaces
+from app.routers import hub, mcp, oauth, public_shares, web_projects, reactions, agent_services, account, agent_profile, app_version, approvals, auth, door_auth, briefs, browser, campaign, pilot, cloud_agents, devices, hosted_agents, events, feedback, fetch, files, grants, grokbot, groups, integrations, invites, issues, knowledge, model_access, network, nodes, notifications, onboarding, read_state, registry, routines, search, shares, sharing, tasks, thread_access, timers, todos, watches, workflows, workspaces
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -511,6 +512,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # A download started before the file list has the file falls back to the
+    # name the files endpoint sends; cross-origin, the browser hides it unless
+    # it is exposed.
+    expose_headers=["Content-Disposition"],
 )
 
 # GZip — Compresses all responses above `minimum_size` bytes when the
@@ -626,6 +631,51 @@ from app.request_auth import RequestAuthMiddleware
 app.add_middleware(RequestAuthMiddleware)
 
 
+class ShareHostGuardMiddleware:
+    """On the share domain (SHARE_CONTENT_HOST) serve public links and health
+    checks, nothing else. That domain shows what strangers made; the rest of
+    the API must not answer there, or it would be a second address for
+    sign-in, tokens and everything else (app/routers/public_shares.py).
+
+    Its short addresses map onto the public share routes:
+      /<token>                -> the viewer page
+      /<token>/raw            -> the media the viewer embeds
+      /<token>/download       -> the snapshot as a download
+      /<token>/assets/<n>     -> an image a shared document embeds
+      /v1/public/shares/<token>/site/...  shared web pages, as they are
+    """
+
+    _ALLOWED = ("/health", "/ready")
+    _TOKEN = re.compile(r"^/([A-Za-z0-9_-]{16,64})(/raw|/download|/assets/\d+)?/?$")
+    _TARGET = {None: "view", "/raw": "raw", "/download": "content"}
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        host = config.SHARE_CONTENT_HOST
+        if scope["type"] == "http" and host:
+            raw = next((v.decode("latin-1") for k, v in scope.get("headers", []) if k.lower() == b"host"), "")
+            if raw.split(":")[0].lower() == host:
+                path = scope.get("path", "")
+                short = self._TOKEN.match(path)
+                if short:
+                    token, rest = short.group(1), short.group(2)
+                    target = rest[1:] if rest and rest.startswith("/assets/") else self._TARGET[rest]
+                    path = f"/v1/public/shares/{token}/{target}"
+                    scope = {**scope, "path": path, "raw_path": path.encode()}
+                elif not (path.startswith("/v1/public/shares/") and "/site/" in path) and path not in self._ALLOWED:
+                    await send({"type": "http.response.start", "status": 404,
+                                "headers": [(b"content-type", b"text/plain"), (b"referrer-policy", b"no-referrer")]})
+                    await send({"type": "http.response.body", "body": b"Not found"})
+                    return
+        await self.app(scope, receive, send)
+
+
+# Added last, so it runs first: nothing else answers on the share domain.
+app.add_middleware(ShareHostGuardMiddleware)
+
+
 # Log Pydantic validation failures with the offending body so we can
 # debug client/server schema drift from CloudWatch instead of guessing
 # from a bare 422. Triggered any time FastAPI rejects a request body
@@ -652,6 +702,9 @@ async def _log_validation_errors(request: Request, exc: RequestValidationError):
 
 # Routers
 app.include_router(reactions.router)
+app.include_router(hub.router)
+app.include_router(mcp.router)
+app.include_router(oauth.router)
 app.include_router(agent_services.router)
 app.include_router(account.router)
 app.include_router(app_version.router)
@@ -675,7 +728,7 @@ app.include_router(events.router)
 app.include_router(feedback.router)
 app.include_router(fetch.router)
 app.include_router(files.router)
-app.include_router(file_links.router)
+app.include_router(public_shares.router)
 app.include_router(web_projects.router)
 app.include_router(integrations.router)
 app.include_router(invites.router)

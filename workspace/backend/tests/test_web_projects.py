@@ -106,3 +106,45 @@ def test_generic_upload_cannot_bypass_bundle_validation(client,workspace,people,
         uploaded_by='human:mia@acme.test',owner='human:mia@acme.test',visibility='private')
     db.add(row);db.commit()
     assert preview(client,workspace,row.id).status_code==404
+
+
+def test_agent_publishes_into_its_dm(client, workspace, db):
+    # A DM has no Channel row; the agent may still publish where it is talking.
+    from app.models import EventRecord
+    db.add(EventRecord(id='dm-ask', network_id=workspace['id'], type='workspace.message.posted',
+        source='human:test@example.com', target='openagents:agent-alpha', payload={'content':'Make a page'}, timestamp=1))
+    db.commit()
+    tok = {'X-Workspace-Token': workspace['token']}
+    ok = client.post('/v1/web-projects', headers=tok, json=body(workspace, source='openagents:agent-alpha',
+        channel_name='dm:human:test@example.com', visibility='inherit'))
+    assert ok.status_code == 200, ok.text
+    row = db.get(FileRecord, ok.json()['data']['id'])
+    assert row.channel_name == 'dm:human:test@example.com,openagents:agent-alpha'
+    assert row.visibility is None
+    for source, channel in [('openagents:agent-alpha', 'dm:human:stranger@example.com'),
+                            ('openagents:other-agent', 'dm:human:test@example.com')]:
+        denied = client.post('/v1/web-projects', headers=tok, json=body(workspace, source=source, channel_name=channel, visibility='inherit'))
+        assert denied.status_code == 404, (source, channel, denied.text)
+
+
+def test_agent_publishes_into_default_channel(client, workspace, db):
+    # "general" has no thread row; it is accepted like a file upload there.
+    tok = {'X-Workspace-Token': workspace['token']}
+    ok = client.post('/v1/web-projects', headers=tok, json=body(workspace, source='openagents:agent-alpha',
+        channel_name='general', visibility='inherit'))
+    assert ok.status_code == 200, ok.text
+    assert db.get(FileRecord, ok.json()['data']['id']).channel_name == 'general'
+
+
+def test_preview_pages_get_in_memory_storage(client, workspace, people, db):
+    # Sandboxed pages cannot reach localStorage; the served page brings a stand-in first.
+    page = '<!doctype html><html><head><title>Game</title></head><body><script>localStorage.getItem("best")</script></body></html>'
+    data = body(workspace, channel_name=None, visibility='private')
+    data['files'] = [{'path': 'index.html', 'content_base64': base64.b64encode(page.encode()).decode()},
+                     {'path': 'app.js', 'content_base64': base64.b64encode(b'localStorage.x').decode()}]
+    pid = client.post('/v1/web-projects', headers=_bearer('mia', workspace), json=data).json()['data']['id']
+    url = preview(client, workspace, pid).json()['data']['preview_path']
+    html = client.get(url).text
+    assert html.startswith('<!doctype html><html><head><script>(function(){function M()')
+    assert html.index('<script>(function') < html.index('localStorage.getItem("best")')
+    assert client.get(url.rsplit('/', 1)[0] + '/app.js').text == 'localStorage.x'

@@ -173,7 +173,7 @@ async function refreshCachedSession(sessionId: string): Promise<void> {
 }
 
 export function ChatView() {
-  const { workspace, agents, loading: workspaceLoading, workspaceLoadError, currentUser, currentSessionId, setCurrentSessionId, sessions, updateLastMessage, setSessionActive, updateAgentMode, stopAllAgents, activeSessionIds, stoppingSessionIds, renameSession, setSessionOrchestration, consumeSkipFocus, createRoutine, routines, updateRoutine, knowledge } = useWorkspace();
+  const { workspace, agents, loading: workspaceLoading, workspaceLoadError, currentUser, currentSessionId, setCurrentSessionId, sessions, updateLastMessage, setSessionActive, markSessionUnarchived, updateAgentMode, stopAllAgents, activeSessionIds, stoppingSessionIds, renameSession, setSessionOrchestration, consumeSkipFocus, createRoutine, routines, updateRoutine, knowledge } = useWorkspace();
   const hasConnectedAgent = agents.some((agent) => !agent.builtin && agent.status === 'online');
   const needsConnection = !workspaceLoading && !workspaceLoadError && !hasConnectedAgent;
   const t = useT();
@@ -292,7 +292,7 @@ export function ChatView() {
     initialMessagesSessionRef.current = currentSessionId;
   }
 
-  const { messages, loading, forceRefresh, generation, loadOlder, hasOlder, loadingOlder } = useMessagePolling({
+  const { messages, loading, forceRefresh, loadOlder, hasOlder, loadingOlder } = useMessagePolling({
     sessionId: currentSessionId,
     initialMessages: initialMessagesRef.current,
   });
@@ -335,7 +335,8 @@ export function ChatView() {
   // prepended — which never scrolls.
   // Starts at null so a remount takes the same one-render delay as a switch.
   const [optimisticSessionId, setOptimisticSessionId] = useState<string | null>(null);
-  // scrollKey triggers scroll-to-bottom: incremented on user send + backfill completion
+  // Only sending a message explicitly forces a scroll. History refreshes
+  // follow the message list's existing scroll intent.
   const [scrollKey, setScrollKey] = useState(0);
   const [focusKey, setFocusKey] = useState(0);
   const [replyTargets, setReplyTargets] = useState<Record<string, WorkspaceMessage | undefined>>({});
@@ -352,10 +353,6 @@ export function ChatView() {
     setFocusKey((k) => k + 1);
   }), []);
 
-  // Scroll to bottom when backfill replaces messages (generation changes)
-  useEffect(() => {
-    if (generation > 0) setScrollKey((k) => k + 1);
-  }, [generation]);
 
   const sessionMessages = useMemo(
     () => currentSessionId ? messagesForSession(currentSessionId, messages) : [],
@@ -693,6 +690,7 @@ export function ChatView() {
           mentionedHumans.length > 0 ? mentionedHumans : undefined,
           replyingTo?.messageId,
         );
+        if (sent.metadata?.thread_unarchived) markSessionUnarchived(currentSessionId);
         // Still queued only if routing picked a busy agent; otherwise show it now.
         const routedTo: string[] = Array.isArray(sent.metadata?.target_agents) ? sent.metadata.target_agents : [];
         const queuedNow = maybeQueued && routedTo.some((name) => busyHere.has(name));
@@ -879,6 +877,10 @@ export function ChatView() {
             </button>
           )}
 
+          {!isDM && currentSessionId && threadPrivacyApplies(currentSessionId) && currentSession && (
+            <AddThreadParticipants key={`add-participants:${currentSessionId}`} channelName={currentSessionId} />
+          )}
+
           {/* All steps toggle */}
           {hasCollapsibleSteps && (
             <Button
@@ -892,10 +894,6 @@ export function ChatView() {
             >
               <ListTree aria-hidden="true" className="size-3.5" />
             </Button>
-          )}
-
-          {!isDM && currentSessionId && threadPrivacyApplies(currentSessionId) && currentSession && (
-            <AddThreadParticipants key={`add-participants:${currentSessionId}`} channelName={currentSessionId} />
           )}
 
           {!isDM && currentSessionId && threadPrivacyApplies(currentSessionId) && !currentSessionId.startsWith('routines:') && currentSession && (

@@ -9,6 +9,7 @@ import { desktopHost } from '@/lib/desktop-host';
 import { Activity, useEffect, useRef, useState } from 'react';
 import { useDesktopWorkspaceState } from './use-desktop-workspace-state';
 import { useSignalNotifications } from './use-signal-notifications';
+import { useLandingNote } from './use-landing-note';
 import { useDesktopThreadLinks } from './use-desktop-thread-links';
 
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
@@ -18,6 +19,7 @@ import { OnboardingSurfaceContext } from './onboarding-surface';
 import { MobileHeader } from './mobile-header';
 import { useLayout, RAIL_WIDTH_COLLAPSED, RAIL_WIDTH_EXPANDED } from './layout-context';
 import { isRecentAgent } from '@/lib/helpers';
+import { shouldOpenFirstRunOnboarding } from '@/lib/first-run-entry';
 import { ChatView } from '@/components/chat/chat-view';
 import { ThreadList } from '@/components/threads/thread-list';
 import { FileList } from '@/components/files/file-list';
@@ -40,6 +42,9 @@ import { dmCounterpart, myAddress } from '@/lib/dm';
 import { useT } from '@/lib/i18n';
 import { NewThreadDialogHost } from '@/components/threads/new-thread-dialog-host';
 import { WorkspaceLoadError } from './workspace-load-error';
+
+/** Narrowest the workspace shell lays out at — the desktop app's minimum window width. */
+export const WORKSPACE_MIN_WIDTH = 960;
 
 function WorkspaceLoadingScreen() {
   const t = useT();
@@ -79,6 +84,7 @@ export function Wrapper() {
   useDesktopWorkspaceState();
   useSignalNotifications();
   useDesktopThreadLinks();
+  useLandingNote();
   const {
     isMobile, viewMode, isAgentPanelOpen, isSidebarOpen, setSidebarOpen,
     hasListPanel, mobilePane, splitBrowser, showBrowserPreview, isRailExpanded,
@@ -92,7 +98,7 @@ export function Wrapper() {
     const q = hash.indexOf('?');
     if (q >= 0 && new URLSearchParams(hash.slice(q + 1)).has('agent')) openView('agents');
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const { workspaceLoadError, retryWorkspace, monitorMode, agents, loading, sessions, currentSessionId, currentUser, selectedFileId, selectedKnowledgeId } = useWorkspace();
+  const { workspace, workspaceLoadError, retryWorkspace, monitorMode, agents, loading, sessions, currentSessionId, currentUser, selectedFileId, selectedKnowledgeId } = useWorkspace();
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   // Resolve a stable identity before writing the URL; never expose DM participants.
   useEffect(() => {
@@ -149,6 +155,29 @@ export function Wrapper() {
   const userSessions = sessions.filter(
     (s) => !(s.master && agents.some((a) => a.builtin && a.agentName === s.master)),
   );
+  const firstRunEntryChecked = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading || workspaceLoadError || !workspace || !currentUser.id) return;
+    const key = `oa:firstRunEntry:${workspace.workspaceId}:${currentUser.id}`;
+    if (firstRunEntryChecked.current === key) return;
+    firstRunEntryChecked.current = key;
+    const path = window.location.pathname.split('/').filter(Boolean);
+    const inviteHash = window.location.hash.split('?')[1];
+    if (!shouldOpenFirstRunOnboarding({
+      needsFirstDevice: workspace.needsFirstDevice === true,
+      hasAgents,
+      hasUserSessions: userSessions.length > 0,
+      isDirectMessage: currentSessionId?.startsWith('dm:') === true,
+      isWorkspaceLanding: (path.length === 1 || (path.length === 3 && path[1] === 'threads')) &&
+        !(inviteHash && new URLSearchParams(inviteHash).has('agent')),
+      viewMode,
+    })) return;
+    try {
+      if (localStorage.getItem(key) === '1') return;
+      localStorage.setItem(key, '1');
+    } catch { /* Private browsing still gets setup once per mounted workspace. */ }
+    openView('connect');
+  }, [loading, workspaceLoadError, workspace, currentUser.id, hasAgents, userSessions.length, currentSessionId, viewMode, openView]);
   const showOnboarding =
     !onboardingDismissed && !hasAgents && userSessions.length === 0 && viewMode === 'connect' &&
     !currentSessionId?.startsWith('dm:');
@@ -167,6 +196,8 @@ export function Wrapper() {
   }
 
   // ── Mobile layout: single-pane with list/detail switching ──
+  // Only on a phone or tablet held narrow (see useIsMobile). A narrow desktop
+  // window keeps the desktop shell below.
   if (isMobile) {
     return (
       <OnboardingSurfaceContext.Provider value={{ active: showOnboarding, onDismiss: dismissOnboarding }}>
@@ -268,13 +299,20 @@ export function Wrapper() {
     railDragWidth ?? (isRailExpanded ? RAIL_WIDTH_EXPANDED : RAIL_WIDTH_COLLAPSED);
   const shellWidth = railWidth + (sidebarOpen ? 388 : 0);
 
+  // On a computer a narrow window stays the desktop shell: one narrower than
+  // the shell's minimum scrolls it sideways inside this frame rather than
+  // squeezing rail, list and detail out of shape (or switching to the phone
+  // layout); the frame keeps the height exact so no vertical page scroll
+  // appears with it.
   return (
     <OnboardingSurfaceContext.Provider value={{ active: showOnboarding, onDismiss: dismissOnboarding }}>
+    <div className="h-[calc(100vh-var(--oa-banner-h,0px))] w-full overflow-x-auto overflow-y-hidden">
     <SidebarProvider
       open={sidebarOpen}
       onOpenChange={setSidebarOpen}
-      className="h-[calc(100vh-var(--oa-banner-h,0px))] min-h-0 [&_.container-fluid]:px-5"
+      className="relative h-full min-h-0 [&_.container-fluid]:px-5"
       style={{
+        minWidth: WORKSPACE_MIN_WIDTH,
         '--sidebar-width': `${shellWidth}px`,
         '--sidebar-width-icon': `${railWidth}px`,
         '--header-height': '48px',
@@ -349,6 +387,7 @@ export function Wrapper() {
 
       <NewThreadDialogHost />
     </SidebarProvider>
+    </div>
     </OnboardingSurfaceContext.Provider>
   );
 }

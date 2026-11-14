@@ -537,6 +537,12 @@ describe('safe defaults of the other runtimes', () => {
     let args = p._buildArgs('hi', 'general');
     assert.ok(args.includes('--allow-tool=write') && !args.includes('--allow-tool=shell'));
     assert.ok(args.includes('--no-ask-user'));
+    // A prompt too long for argv goes over stdin under the same rules.
+    args = p._buildArgs('hi', 'general', { viaStdin: true });
+    assert.ok(!args.includes('-p') && !args.includes('--allow-tool=shell'));
+    p._mode = 'plan';
+    assert.ok(p._buildArgs('hi', 'general', { viaStdin: true }).includes('--plan'));
+    p._mode = 'execute';
     allow('cora');
     args = p._buildArgs('hi', 'general');
     assert.ok(args.includes('--allow-tool=shell'));

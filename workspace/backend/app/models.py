@@ -26,6 +26,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -131,6 +132,9 @@ class Workspace(Base):
     collaborators = relationship("WorkspaceCollaborator", back_populates="workspace", cascade="all, delete-orphan", lazy="selectin")
     memberships = relationship("WorkspaceMembership", back_populates="workspace", cascade="all, delete-orphan")
     nodes = relationship("Node", back_populates="workspace", cascade="all, delete-orphan")
+
+    # Sign-in looks up legacy-owned workspaces by lower(creator_email) (migration 095).
+    __table_args__ = (Index("idx_workspaces_creator_email_lower", func.lower(creator_email)),)
 
 
 class WorkspaceMember(Base):
@@ -392,8 +396,8 @@ class User(Base):
     firebase_uid = Column(Text, nullable=True)           # Google/Firebase `uid` claim
     apple_sub = Column(Text, nullable=True)              # Sign in with Apple `sub` claim
     display_name = Column(Text, nullable=True)
-    # User-set profile picture: an https:// URL or a small data:image/... URL
-    # (the frontend downscales uploads client-side before saving).
+    # Profile picture: a user-set photo or the verified provider's default.
+    # Uploaded images are downscaled client-side to a small data:image URL.
     avatar_url = Column(Text, nullable=True)
     # Has this account dismissed the first-run welcome? Per-account (not
     # per-device) so mobile onboarding shows exactly once across devices.
@@ -664,28 +668,45 @@ class FileRecord(Base):
     )
 
 
-class FileShareLink(Base):
-    """An "anyone with the link" view link for one file.
+class PublicShare(Base):
+    """An "anyone with the link" public link to a snapshot of one artifact.
 
-    Opening /share/file/<token> needs no sign-in and no workspace membership.
-    A file has at most one live link; revoking stamps revoked_at, and sharing
-    again mints a new token, so an old link never comes back to life.
+    Opening /share/artifact/<token> needs no sign-in and no workspace
+    membership. What it serves is a copy taken when the link was made (or last
+    refreshed), never the live artifact, so later edits — an agent rewriting
+    the file — do not reach the public until a person shares again.
+
+    ``resource_kind`` is "file" or "knowledge"; a web project is a file. An
+    artifact has at most one live link: refreshing keeps the token and
+    replaces the snapshot; revoking stamps revoked_at, and sharing again mints
+    a new token, so an old link never comes back to life. ``assets`` holds the
+    images a shared markdown document embeds, copied with it.
     """
-    __tablename__ = "file_share_links"
+    __tablename__ = "public_shares"
 
     id = Column(Text, primary_key=True, default=_uuid)
     workspace_id = Column(UUID(as_uuid=False), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
-    file_id = Column(Text, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
+    resource_kind = Column(Text, nullable=False)
+    resource_id = Column(Text, nullable=False)
     token = Column(Text, unique=True, nullable=False)
-    created_by = Column(Text, nullable=False)
+    created_by = Column(Text, nullable=False)          # "human:<email>"
+    approval_id = Column(Text, nullable=True)          # set when an agent asked and a person approved
+    title = Column(Text, nullable=False)
+    content_type = Column(Text, nullable=True)
+    size = Column(BigInteger, nullable=True)
+    storage_key = Column(Text, nullable=False)         # the snapshot, not the artifact's own object
+    assets = Column(JSONB, nullable=True)
+    entrypoint = Column(Text, nullable=True)          # the page an HTML file or web project opens on
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+    snapshot_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
     revoked_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        Index("idx_file_share_links_file", "file_id"),
-        # At most one live link per file, even when two creates race.
+        Index("idx_public_shares_resource", "resource_kind", "resource_id"),
+        # At most one live link per artifact, even when two creates race.
         Index(
-            "uq_file_share_links_live", "file_id", unique=True,
+            "uq_public_shares_live", "resource_kind", "resource_id", unique=True,
             postgresql_where=text("revoked_at IS NULL"),
             sqlite_where=text("revoked_at IS NULL"),
         ),
@@ -884,6 +905,9 @@ class Issue(Base):
 
     id = Column(Text, primary_key=True, default=_uuid)
     workspace_id = Column(UUID(as_uuid=False), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    # Per-workspace sequence (#1, #2, …) for short links; NULL only for rows
+    # written by an older app version during a rolling deploy.
+    number = Column(Integer, nullable=True)
     title = Column(Text, nullable=False)
     description = Column(Text, nullable=False, default="", server_default="")
     status = Column(Text, nullable=False, default="open", server_default="open")
@@ -900,6 +924,7 @@ class Issue(Base):
     __table_args__ = (
         Index("idx_issues_workspace_status", "workspace_id", "status"),
         Index("idx_issues_board", "board_id"),
+        Index("uq_issues_workspace_number", "workspace_id", "number", unique=True),
     )
 
 
@@ -1840,3 +1865,61 @@ class ProjectPreviewTicket(Base):
     storage_key = Column(Text, nullable=False)
     principal = Column(JSONB, nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class PersonalAccessToken(Base):
+    """A credential that lets another app act for one person on the agent hub.
+
+    `kind="api_key"` rows are keys a person creates and pastes into an app
+    (for example a personal assistant's instructions). `kind="oauth"` rows are
+    issued to an OAuth client (ChatGPT, Claude) at the end of the consent flow
+    and carry a refresh token. Either way only hashes are stored, and the
+    credential is accepted solely by the hub API and the MCP endpoint — never
+    by the rest of the workspace API.
+    """
+    __tablename__ = "personal_access_tokens"
+
+    id = Column(Text, primary_key=True, default=_uuid)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    kind = Column(Text, nullable=False, default="api_key", server_default="api_key")
+    name = Column(Text, nullable=False)
+    client_id = Column(Text, nullable=True)
+    token_hash = Column(Text, nullable=False, unique=True)
+    token_prefix = Column(Text, nullable=False)
+    refresh_hash = Column(Text, nullable=True, unique=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    refresh_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+
+    __table_args__ = (
+        Index("idx_personal_access_tokens_user", "user_id"),
+    )
+
+
+class OAuthClient(Base):
+    """A client registered through OAuth dynamic client registration (RFC 7591).
+
+    Public clients only: they prove possession with PKCE, so no secret is kept.
+    """
+    __tablename__ = "oauth_clients"
+
+    client_id = Column(Text, primary_key=True)
+    client_name = Column(Text, nullable=False)
+    redirect_uris = Column(JSONB, nullable=False, default=list, server_default=text("'[]'"))
+    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))
+
+
+class OAuthAuthorizationCode(Base):
+    """A single-use authorization code from the consent page (10-minute life)."""
+    __tablename__ = "oauth_authorization_codes"
+
+    code_hash = Column(Text, primary_key=True)
+    client_id = Column(Text, ForeignKey("oauth_clients.client_id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    redirect_uri = Column(Text, nullable=False)
+    code_challenge = Column(Text, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, server_default=text("NOW()"))

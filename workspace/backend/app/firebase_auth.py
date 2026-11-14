@@ -244,13 +244,15 @@ def exchange_custom_token(custom_token: str) -> Optional[dict]:
     return verify_firebase_claims(id_token)
 
 
-def mint_workspace_session(claims: dict, auth_time: Optional[int] = None) -> tuple:
+def mint_workspace_session(claims: dict, auth_time: Optional[int] = None, ttl_seconds: Optional[int] = None) -> tuple:
     """Mint a workspace session JWT for verified identity claims.
 
     `auth_time` is when the user actually signed in (epoch seconds). A fresh
     sign-in leaves it unset and it becomes now; a renewal carries the original
     forward, which is what lets renew_workspace_session cap a session's total
     life.
+    `ttl_seconds` overrides the configured lifetime (the agent hub mints
+    minutes-long sessions to call the workspace API on a person's behalf).
 
     Returns (token, expires_at_epoch_seconds). Raises RuntimeError when no
     WORKSPACE_SESSION_SECRET is configured — callers must check
@@ -261,7 +263,7 @@ def mint_workspace_session(claims: dict, auth_time: Optional[int] = None) -> tup
     import jwt
 
     now = int(time.time())
-    exp = now + max(1, config.WORKSPACE_SESSION_TTL_DAYS) * 86400
+    exp = now + (ttl_seconds if ttl_seconds else max(1, config.WORKSPACE_SESSION_TTL_DAYS) * 86400)
     payload = {
         "iss": _SESSION_ISSUER,
         "sub": claims.get("firebase_uid") or claims["email"],
@@ -398,13 +400,17 @@ def verify_firebase_claims(token: str) -> Optional[dict]:
     decoded = _verified_firebase_token(token)
     if decoded is None:
         return None
-    return {
+    claims = {
         "provider": "firebase",
         "email": decoded["email"],
         "firebase_uid": decoded.get("uid"),
         "display_name": decoded.get("name") or decoded.get("displayName"),
         "email_verified": _firebase_email_verified(decoded),
     }
+    picture = decoded.get("picture")
+    if isinstance(picture, str) and picture.startswith("https://") and len(picture) <= 5000:
+        claims["avatar_url"] = picture
+    return claims
 
 
 def _firebase_email_verified(decoded: dict) -> bool:

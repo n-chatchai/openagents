@@ -17,7 +17,7 @@ const {
   AUTH_MODE_KEY, CLI_LOGIN, MODEL_MODE_KEY, MODEL_DEFAULT, credentialKeys, isCliLogin, modelKeys, stripForCliLogin, typeEnvFor,
 } = require('./env');
 const { configuredModel } = require('./agent-model');
-const { getEnhancedEnv, whichBinary, IS_WINDOWS, defaultAgentWorkdir } = require('./paths');
+const { getEnhancedEnv, whichBinary, IS_WINDOWS, defaultAgentWorkdir, resolveAgentWorkdir } = require('./paths');
 const { hostFreeEnv } = require('./host-agent');
 const { LogWriter } = require('./log-writer');
 const { redactDiagnostic } = require('./adapters/health-status');
@@ -751,7 +751,7 @@ class Daemon {
           type: a.type || 'unknown',
           status: (proc && proc.state) || 'stopped',
           model: model || null,
-          workingDir: a.path || null,
+          workingDir: resolveAgentWorkdir(a.path),
           apiKeyMasked: apiKey ? maskApiKey(apiKey) : null,
           authMode: this._agentAuthMode(a, apiKey),
           baseUrlHost: endpointHost(this._configuredBaseUrl(a, typeEnv)),
@@ -2042,7 +2042,7 @@ class Daemon {
     }
 
     const env = this._buildAgentEnv(agentCfg);
-    const cwd = agentCfg.path || undefined;
+    const cwd = resolveAgentWorkdir(agentCfg.path) || undefined;
 
     while (!this._shuttingDown && !this._stoppedAgents.has(name)) {
       try {
@@ -2213,7 +2213,10 @@ class Daemon {
         // explicit `path`, adapters used to fall back to process.cwd(), which on
         // a packaged Windows launcher is C:\WINDOWS\system32 — so writing
         // .claude/skills there failed with EPERM. Root it under ~/.openagents.
-        workingDir: agentCfg.path || defaultAgentWorkdir(name),
+        // resolveAgentWorkdir: an agent saved with a relative path (older
+        // launchers stored the web form's text verbatim) runs from the home
+        // directory instead of failing on every write.
+        workingDir: resolveAgentWorkdir(agentCfg.path) || defaultAgentWorkdir(name),
         toolMode: agentCfg.tool_mode || 'skills',
         // The conversation `agn join` created this agent from (Claude Code).
         seedSession: agentCfg.seed_session || null,

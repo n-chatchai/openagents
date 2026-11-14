@@ -265,7 +265,7 @@ function buildModePrompt(mode) {
  *
  * In plan mode, only read-only operations are documented.
  */
-function buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channelName, disabledModules, mode = 'execute', isWindows = process.platform === 'win32', execTool = 'exec' }) {
+function buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channelName, disabledModules, mode = 'execute', isWindows = process.platform === 'win32', execTool = 'exec', publicShare = true }) {
   const disabled = disabledModules || new Set();
   const baseUrl = endpoint.replace(/\/+$/, '');
   const isPlan = mode === 'plan';
@@ -651,8 +651,19 @@ function buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channel
       'or `pending`. When pending, STOP and end your turn — do not perform the action. The decision ' +
       'arrives as a new message in this thread @mentioning you (✅ Approved / ❌ Rejected). ' +
       'You can also poll:\n' +
-      `\`${curl} -s -H "${h}" "${baseUrl}/v1/approvals/APPROVAL_ID?network=${workspaceId}"\`\n`
-
+      `\`${curl} -s -H "${h}" "${baseUrl}/v1/approvals/APPROVAL_ID?network=${workspaceId}"\`\n` +
+      (publicShare
+        ? '\n### Public share link (needs human approval)\n\n' +
+          'Only when the user asks to share a file or knowledge entry publicly (with people outside ' +
+          'the workspace). You cannot create the link yourself: this files a request, and a person who ' +
+          'can manage the artifact approves it in the thread. The link shows a snapshot of the artifact ' +
+          'as it is now. `expires_at` (ISO 8601) is optional; omit it for no expiry. `kind` is `file` or `knowledge`.\n\n' +
+          `\`${curl} -s -X POST -H "${h}" -H "Content-Type: application/json" ` +
+          `${baseUrl}/v1/public-shares/requests -d '{"network":"${workspaceId}","channel":"${channelName}",` +
+          `"kind":"file","id":"FILE_ID","reason":"The user asked to share this report","source":"openagents:${agentName}"}'\`\n\n` +
+          'The response is a pending approval. STOP and tell the user it awaits approval; do not claim ' +
+          'a link exists. When approved, the link arrives as a message in this thread @mentioning you.\n'
+        : '')
     );
   }
 
@@ -745,6 +756,7 @@ function buildClaudeMcpToolBlock() {
     'Use workspace_update_routine to change an existing routine — its schedule, task or paused state — instead of cancelling and recreating it.\n' +
     'Use workspace_send_notification to send a notification to the workspace inbox when you complete a task or have important results.\n' +
     'Use workspace_request_approval BEFORE deploying, spending money, emailing customers, deleting data, or any irreversible action; it blocks until a person decides. If it returns PENDING, stop and end your turn — the decision arrives as a message in the thread.\n' +
+    'Use workspace_request_public_link only when the user asks to share a file or knowledge entry publicly; a person must approve it, and the link arrives in the thread.\n' +
     'Use workspace_write_knowledge to create or update shared knowledge base entries that persist across conversations.\n' +
     'Use workspace_read_knowledge to read knowledge entries by ID or slug (from @knowledge:slug mentions).\n'
   );
@@ -938,6 +950,10 @@ function buildOpenclawSystemPrompt({ agentName, workspaceId, channelName, endpoi
   parts.push(...buildPinnedSections({ toolMode: 'skills', mode, glossary }));
   parts.push(buildApiSkillsPrompt({
     endpoint, workspaceId, token, agentName, channelName, disabledModules, mode,
+    // Copilot passes this prompt on its command line, and on Windows it sits
+    // just under the length that fits (promptFitsArgv); the SKILL.md files,
+    // read from disk, carry the public-link section instead.
+    publicShare: false,
   }));
   parts.push(buildGuardrails());
   return parts.join('\n');
@@ -978,15 +994,24 @@ function buildOpenclawSkillMd({ endpoint, workspaceId, token, agentName, channel
  * `glossary` opts in to knowledge pinning exactly as in
  * buildOpenclawSystemPrompt.
  */
-function buildOpenCodeSystemPrompt({ agentName, workspaceId, channelName, endpoint, token, mode = 'execute', disabledModules, browserEnabled = false, glossary = null, isWindows = process.platform === 'win32', model = null }) {
-  const identity = buildWorkspaceIdentity(agentName, workspaceId, channelName, mode, 'skills', model);
+function buildOpenCodeSystemPrompt({ agentName, workspaceId, channelName, endpoint, token, mode = 'execute', disabledModules, browserEnabled = false, glossary = null, isWindows = process.platform === 'win32', model = null, workspaceMcp = false }) {
+  // With the workspace MCP server wired in (see OpenCodeAdapter._spawnEnv) the
+  // agent gets real workspace_* tools, as Claude does; the curl skill stays on
+  // disk as a fallback. Without it, curl through OpenCode's shell tool, `bash`.
+  const toolMode = workspaceMcp ? 'mcp' : 'skills';
+  const skillName = workspaceSkillName(agentName);
+  const identity = buildWorkspaceIdentity(agentName, workspaceId, channelName, mode, toolMode, model);
   const directive = buildBrowserDirective(browserEnabled);
-  const collab = buildCollaborationPrompt('skills', workspaceSkillName(agentName));
+  const collab = buildCollaborationPrompt(toolMode, skillName);
   const modePrompt = buildModePrompt(mode) + buildWindowsShellHint(isWindows);
-  const pinned = buildPinnedSections({ toolMode: 'skills', mode, glossary })
+  const pinned = buildPinnedSections({ toolMode, mode, glossary })
     .map((s) => '\n' + s).join('');
-  const api = buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channelName, disabledModules, mode });
-  return identity + directive + '\n' + collab + '\n' + modePrompt + pinned + '\n' + api + '\n' + buildGuardrails();
+  const tools = workspaceMcp
+    ? buildClaudeMcpToolBlock() +
+      'Use workspace_publish_project to share HTML pages or reports, workspace_write_file for other files, and the workspace_browser_* tools for the shared browser.\n' +
+      `If a workspace tool is missing or fails, the ${skillName} skill documents the same operations as bash + curl.\n`
+    : buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channelName, disabledModules, mode, execTool: 'bash' });
+  return identity + directive + '\n' + collab + '\n' + modePrompt + pinned + '\n' + tools + '\n' + buildGuardrails();
 }
 
 /**
@@ -1005,7 +1030,7 @@ function buildPiSystemPrompt({ agentName, workspaceId, channelName, endpoint, to
   const directive = buildBrowserDirective(browserEnabled);
   const collab = buildCollaborationPrompt('skills', workspaceSkillName(agentName));
   const modePrompt = buildModePrompt(mode);
-  const api = buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channelName, disabledModules, mode });
+  const api = buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channelName, disabledModules, mode, execTool: 'bash' });
   return identity + directive + '\n' + collab + '\n' + modePrompt + '\n' + api + '\n' + buildGuardrails();
 }
 
@@ -1149,6 +1174,7 @@ function buildOpenCodeSkillMd({ endpoint, workspaceId, token, agentName, channel
     channelName: channelName || 'general',
     disabledModules,
     mode: 'execute',
+    execTool: 'bash',
   });
 
   const frontmatter =

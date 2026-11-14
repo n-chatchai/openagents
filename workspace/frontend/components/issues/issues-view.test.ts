@@ -14,13 +14,13 @@ const mocks = vi.hoisted(() => ({
     workspace: { workspaceId: 'workspace-1' },
     currentUser: { id: 'alice-id', name: 'Alice' },
     agents: [] as unknown[],
-    sessions: [],
+    sessions: [] as { sessionId: string; title: string; status: string }[],
     activeSessionIds: new Set<string>(),
     completedSessionIds: new Set<string>(),
     tasks: [] as KanbanTask[],
     workflows: [], knowledge: [] as {id: string; title: string; description: string}[], files: [],
     createTask: vi.fn(), runTask: vi.fn(), updateTask: vi.fn(), stopTask: vi.fn(), deleteTask: vi.fn(),
-    refreshTasks: vi.fn(), refreshAgents: vi.fn(),
+    refreshTasks: vi.fn(), refreshAgents: vi.fn(), setCurrentSessionId: vi.fn(),
   },
   api: {
     getTeam: vi.fn(),
@@ -47,6 +47,7 @@ vi.mock('sonner', () => ({ toast: mocks.toast }));
 vi.mock('@/lib/workspace-context', () => ({ useWorkspace: () => mocks.ws }));
 vi.mock('@/hooks/use-me', () => ({ useMe: () => ({ email: 'alice-id' }) }));
 vi.mock('@/lib/api', () => ({ workspaceApi: mocks.api }));
+vi.mock('@/hooks/use-polling', () => ({ useMessagePolling: () => ({ messages: [] }) }));
 vi.mock('@/components/layout/layout-context', () => ({
   useLayout: () => mocks.layout,
 }));
@@ -149,8 +150,14 @@ async function openIssue() {
 }
 
 beforeEach(() => {
+  const stored = new Map<string, string>();
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value),
+  } });
   mocks.layout.pendingIssueId = null;
   mocks.ws.tasks = [];
+  mocks.ws.sessions = [];
   mocks.ws.activeSessionIds = new Set();
   mocks.ws.completedSessionIds = new Set();
   mocks.ws.knowledge = [];
@@ -161,6 +168,7 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/workspace-1?token=private-token');
   mocks.ws.agents = [];
   mocks.api.getTeam.mockResolvedValue([]);
+  mocks.api.listIssueBoards.mockResolvedValue([{ id: 'team', name: 'Team issues', default: true, active_count: 0, can_manage: false }]);
   mocks.api.listIssueLabels.mockResolvedValue([]);
   mocks.api.discover.mockResolvedValue({ agents: [] });
   mocks.api.addIssueParticipants.mockResolvedValue(undefined);
@@ -196,8 +204,28 @@ describe('shared issues', () => {
     expect(mocks.api.listIssues).toHaveBeenCalledWith(expect.objectContaining({ board: 'team' }));
   });
 
+  it('filters the list by a person, an agent, or nobody', async () => {
+    mocks.ws.agents = [{ agentName: 'scout', displayName: 'Scout', builtin: false }];
+    mocks.api.getTeam.mockResolvedValue([{ email: 'Ben@acme.test', displayName: 'Ben' }]);
+    await act(async () => root.render(createElement(IssuesView)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const choose = async (name: string) => {
+      const trigger = [...host.querySelectorAll('button')].find((b) => /assignee/i.test(b.getAttribute('aria-label') || ''))!;
+      await click(trigger);
+      const option = [...document.querySelectorAll('[cmdk-item]')].find((el) => el.textContent?.trim() === name) as HTMLElement;
+      await click(option);
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      return mocks.api.listIssues.mock.calls.at(-1)![0];
+    };
+    expect(mocks.api.listIssues.mock.calls.at(-1)![0].assignee).toBeUndefined();
+    expect((await choose('Scout')).assignee).toBe('openagents:scout');
+    expect((await choose('Ben')).assignee).toBe('human:ben@acme.test');
+    expect((await choose('Unassigned')).assignee).toBe('none');
+    expect((await choose('Anyone')).assignee).toBeUndefined();
+  });
+
   it('loads the selected board when switching boards', async () => {
-    mocks.api.listIssueBoards.mockResolvedValueOnce([
+    mocks.api.listIssueBoards.mockResolvedValue([
       { id: 'team', name: 'Team issues', default: true, active_count: 1, can_manage: false },
       { id: 'b-dev', name: 'Development', default: false, active_count: 0, can_manage: true },
     ]);
@@ -208,6 +236,65 @@ describe('shared issues', () => {
     await act(async () => { dev.click(); await vi.advanceTimersByTimeAsync(250); });
     expect(mocks.api.listIssues).toHaveBeenLastCalledWith(expect.objectContaining({ board: 'b-dev' }));
     expect(dev.getAttribute('aria-selected')).toBe('true');
+    expect(new URL(window.location.href).searchParams.get('board')).toBe('b-dev');
+    await click(host.querySelector('button[aria-label="Improve onboarding · Open"]')!);
+    expect(new URL(window.location.href).searchParams.get('board')).toBe('b-dev');
+    await click(button('Issues'));
+    expect(new URL(window.location.href).searchParams.get('board')).toBe('b-dev');
+  });
+
+  it('opens a linked board even when a different board was remembered', async () => {
+    window.localStorage.setItem('oa:issue-board:workspace-1', 'team');
+    window.history.replaceState(null, '', '/workspace-1/issues?board=b-dev');
+    mocks.api.listIssueBoards.mockResolvedValueOnce([
+      { id: 'team', name: 'Team issues', default: true, active_count: 1, can_manage: false },
+      { id: 'b-dev', name: 'Development', default: false, active_count: 0, can_manage: false },
+    ]);
+    await act(async () => root.render(createElement(IssuesView)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(mocks.api.listIssues).toHaveBeenLastCalledWith(expect.objectContaining({ board: 'b-dev' }));
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain('Development');
+  });
+
+  it('falls back to Team issues for a deleted board link and fixes the URL', async () => {
+    window.history.replaceState(null, '', '/workspace-1/issues?board=deleted');
+    await act(async () => root.render(createElement(IssuesView)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(mocks.api.listIssues).toHaveBeenLastCalledWith(expect.objectContaining({ board: 'team' }));
+    expect(new URL(window.location.href).searchParams.get('board')).toBe('team');
+  });
+
+  it.each(['team', 'b-dev'])('lets readers copy a clean link to board %s', async (id) => {
+    window.history.replaceState(null, '', `/workspace-1/issues/issue-1?token=private-token&board=${id}`);
+    mocks.api.listIssueBoards.mockResolvedValueOnce([
+      { id: 'team', name: 'Team issues', default: true, active_count: 1, can_manage: false },
+      { id: 'b-dev', name: 'Development', default: false, active_count: 0, can_manage: false },
+    ]);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    await act(async () => root.render(createElement(IssuesView)));
+    const menu = host.querySelector<HTMLButtonElement>('button[aria-label^="Actions for"]')!;
+    await act(async () => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    const copy = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === 'Copy board link')!;
+    expect(copy).toBeTruthy();
+    await click(copy);
+    const copied = new URL(writeText.mock.calls[0][0]);
+    expect(copied.pathname).toBe('/workspace-1/issues');
+    expect([...copied.searchParams]).toEqual([['board', id]]);
+    expect(mocks.toast.success).toHaveBeenCalledWith('Board link copied');
+  });
+
+  it('copies an issue link from its row without opening it or copying authentication tokens', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    await act(async () => root.render(createElement(IssuesView)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    await click(host.querySelector('button[aria-label="Copy link to issue “Improve onboarding”"]')!);
+    const copied = new URL(writeText.mock.calls[0][0]);
+    expect(copied.pathname).toBe('/workspace-1/issues/issue-1');
+    expect([...copied.searchParams]).toEqual([['board', 'team']]);
+    expect(host.querySelector('section[aria-label="Discussion"]')).toBeNull();
+    expect(mocks.api.getIssue).not.toHaveBeenCalled();
   });
 
   it.each(['Active issues', 'Assigned to me', 'Open', 'In progress', 'Paused', 'Closed'].flatMap(label => [1, 2].map(pages => ({ label, pages }))))(
@@ -256,7 +343,7 @@ describe('shared issues', () => {
 
   it('does not offer Delete to people who may not delete the issue', async () => {
     await openIssue();
-    expect(host.querySelector('h1')?.textContent).toBe('Improve onboarding');
+    expect(host.querySelector('section[aria-label="Discussion"] h1')?.textContent).toBe('Improve onboarding');
     expect(button('Delete')).toBeUndefined();
   });
 
@@ -266,7 +353,7 @@ describe('shared issues', () => {
     await openIssue();
     await click(button('Delete'));
     expect(host.textContent).toContain('Only the person who opened this issue or a workspace admin can delete it');
-    expect(host.querySelector('h1')?.textContent).toBe('Improve onboarding');
+    expect(host.querySelector('section[aria-label="Discussion"] h1')?.textContent).toBe('Improve onboarding');
     expect(button('Delete').disabled).toBe(false);
   });
 
@@ -327,12 +414,14 @@ describe('shared issues', () => {
   });
 
   it('creates an issue without agents or an execution request', async () => {
+    mocks.ws.sessions = [{ sessionId: 'existing-thread', title: 'Existing thread', status: 'active' }];
     mocks.api.listIssues.mockResolvedValue({ issues: [], next_offset: null });
     await act(async () => root.render(createElement(IssuesView)));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(250);
     });
     await click(button('New issue'));
+    expect(host.textContent).not.toContain('Related thread (optional)');
     await fill(host.querySelector('input[required]')!, 'Improve onboarding');
     await click(button('Create issue'));
     expect(mocks.api.createIssue).toHaveBeenCalledWith(
@@ -342,6 +431,7 @@ describe('shared issues', () => {
         source_name: 'Alice',
       }),
     );
+    expect(mocks.api.createIssue.mock.lastCall![0]).not.toHaveProperty('channel_name');
 
     expect(host.textContent).toContain('Add to the discussion');
     expect(window.location.pathname).toBe('/workspace-1/issues/issue-1');
@@ -452,6 +542,29 @@ describe('shared issues', () => {
     expect(host.textContent).toContain('Discuss the first screen.');
   });
 
+  it('opens a numbered issue link and keeps the short number in the URL', async () => {
+    const numbered = { ...issue, number: 7 };
+    mocks.api.listIssues.mockResolvedValue({ issues: [numbered], next_offset: null });
+    mocks.api.getIssue.mockResolvedValue(numbered);
+    window.history.replaceState(null, '', '/workspace-1/issues/7');
+    await act(async () => root.render(createElement(IssuesView)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(mocks.api.getIssue).toHaveBeenCalledWith('7');
+    expect(host.textContent).toContain('Discuss the first screen.');
+    expect([...host.querySelectorAll('h1')].some(h => h.textContent?.endsWith('#7'))).toBe(true);
+    expect(window.location.pathname).toBe('/workspace-1/issues/7');
+  });
+
+  it('links an issue by its number once known', async () => {
+    window.history.replaceState(null, '', '/workspace-1/issues/issue-1');
+    const numbered = { ...issue, number: 12 };
+    mocks.api.listIssues.mockResolvedValue({ issues: [numbered], next_offset: null });
+    mocks.api.getIssue.mockResolvedValue(numbered);
+    await act(async () => root.render(createElement(IssuesView)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(window.location.pathname).toBe('/workspace-1/issues/12');
+  });
+
   it('opens a directly linked issue', async () => {
     window.history.replaceState(null, '', '/workspace-1?issue=issue-1');
     await act(async () => root.render(createElement(IssuesView)));
@@ -465,16 +578,44 @@ it('adds people and agents without starting work, and omits the issue Tasks sect
   mocks.api.discover.mockResolvedValue({ agents: [{ address: 'openagents:new-agent', display_name: 'New agent', status: 'online' }, { address: 'openagents:offline-agent', status: 'offline' }] });
   await openIssue();
   expect(host.textContent).not.toContain('Break out a task');
-  await click(button('Add people or agents'));
+  const header = host.querySelector('main > header')!;
+  const participants = header.querySelector('section[aria-label="Participants"]')!;
+  expect(participants.textContent).toContain('Alice');
+  expect(participants.textContent).toContain('Research agent');
+  await click([...participants.querySelectorAll('button')].find(button => button.textContent === 'Add people or agents')!);
   const dialog = host.querySelector('[role=dialog]')!;
   await click(Array.from(dialog.querySelectorAll<HTMLElement>('[role=checkbox]')).find((b) => b.textContent?.includes('Bob'))!);
   await click(Array.from(dialog.querySelectorAll<HTMLElement>('[role=checkbox]')).find((b) => b.textContent?.includes('New agent'))!);
+  mocks.api.getIssue.mockResolvedValue({ ...issue, participants: [...issue.participants,
+    { source: 'human:bob@example.com', name: 'Bob' }, { source: 'openagents:new-agent', name: 'New agent' },
+  ] });
   await click(button('Add to issue'));
   expect(mocks.api.addIssueParticipants).toHaveBeenCalledWith('issue-1', [
     expect.objectContaining({ kind: 'human', id: 'bob@example.com' }),
     expect.objectContaining({ kind: 'agent', id: 'new-agent' }),
   ]);
+  expect(participants.textContent).toContain('Bob');
+  expect(participants.textContent).toContain('New agent');
+  expect(mocks.ws.createTask).not.toHaveBeenCalled();
+  expect(mocks.ws.runTask).not.toHaveBeenCalled();
+});
 
+it.each([
+  { assignee: 'human:bob@example.com', assignee_name: 'Bob', name: 'Bob' },
+  { assignee: 'openagents:research-agent', assignee_name: null, name: 'Research agent' },
+  { assignee: null, assignee_name: null, name: 'Unassigned' },
+])('shows $name and issue settings inline without a Details toggle', async ({ assignee, assignee_name, name }) => {
+  mocks.api.getIssue.mockResolvedValue({ ...issue, assignee, assignee_name });
+  await openIssue();
+  const header = host.querySelector('main > header')!;
+  expect(header.querySelector('[aria-labelledby="issue-assignee-issue-1"]')?.textContent).toBe(name);
+  expect(header.querySelector('select[aria-label="Status"]')).not.toBeNull();
+  expect(header.textContent).toContain('Due date');
+  expect(header.textContent).toContain('Labels');
+  expect(button('Details')).toBeUndefined();
+  expect(host.querySelector('aside')).toBeNull();
+  expect(host.textContent).not.toContain('Workspace issue');
+  expect(host.textContent).not.toContain(t('issues.commentHint'));
 });
 
 it('clears a saved comment and reports delivery failure without inviting a duplicate submission', async () => {
@@ -747,9 +888,8 @@ it('shows activity only for online agents working in a linked conversation and c
   ];
   await openIssue();
   expect(host.querySelector('[role="status"]')?.getAttribute('aria-label')).toBe(t('chat.agentWorkingNamed', { name: 'Research agent' }));
-  expect(host.querySelectorAll('.thread-wip')).toHaveLength(2);
-  expect(host.querySelectorAll('.typing-dot')).toHaveLength(6);
-  expect(host.textContent).toContain('Research agent is working');
+  expect(host.querySelectorAll('.thread-wip')).toHaveLength(1);
+  expect(host.querySelectorAll('.typing-dot')).toHaveLength(3);
   mocks.ws.agents = [{ agentName: 'research-agent', status: 'online', busyChannels: [] }];
   await act(async () => root.render(createElement(IssuesView)));
   expect(host.querySelector('[role="status"]')).toBeNull();
@@ -808,23 +948,25 @@ it('explains when no accessible agents are online', async () => {
   expect(button('Assign to agent').disabled).toBe(true);
 });
 
-it('puts newest active linked conversations first, followed by newest idle conversations', async () => {
-  mocks.api.getIssue.mockResolvedValue({ ...issue, threads: ['old-idle', 'old-active', 'new-active', 'new-idle'].map(name => ({ channel_name: name, title: name, agents: ['research-agent'], status: 'active' })) });
-  mocks.ws.agents = [{ agentName: 'research-agent', status: 'online', busyChannels: ['old-active', 'new-active'] }];
+it('keeps linked conversations out of the page and opens each result in its own source thread', async () => {
+  mocks.api.getIssue.mockResolvedValue({ ...issue, threads: [{channel_name: 'work-thread', title: 'Linked conversation', agents: ['research-agent']}],
+    comments: [{id: 'result-1', kind: 'result', author: 'openagents:research-agent', content: 'Findings', source_event_id: 'event-1', reply_channel_name: 'work-thread', created_at: issue.created_at}] });
   await openIssue();
-  const linked = Array.from(host.querySelectorAll('button')).map(b => b.textContent?.trim()).filter(text => text && /^(old|new)-(idle|active)/.test(text));
-  expect(linked.map(text => text!.split(/research-agent/)[0])).toEqual(['new-active', 'old-active', 'new-idle', 'old-idle']);
+  expect(host.textContent).not.toContain('Linked conversations');
+  expect(host.querySelector('select[aria-label="Move to board"]')).toBeNull();
+  await click(button('Open in thread'));
+  expect(mocks.ws.setCurrentSessionId).toHaveBeenCalledWith('work-thread');
+  expect(mocks.layout.openView).toHaveBeenCalledWith('threads');
 });
-
 
 it('shows live issue work and requester completion, with active work taking precedence', async () => {
   mocks.api.listIssues.mockResolvedValue({ issues: [{...issue, linked_channels: ['work-thread']}], next_offset: null });
-  mocks.ws.agents = [{ name: 'research-agent', status: 'online', busyChannels: ['work-thread'] }];
+  mocks.ws.agents = [{ agentName: 'research-agent', displayName: 'Research agent', status: 'online', busyChannels: ['work-thread'] }];
   mocks.ws.completedSessionIds = new Set(['work-thread']);
   await act(async () => root.render(createElement(IssuesView)));
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
   expect(host.querySelector('button.thread-wip')).not.toBeNull();
-  expect(host.querySelector('[role="status"]')?.textContent).toBe('Agent is working');
+  expect(host.querySelector('[role="status"]')?.textContent).toBe('Research agent is working');
   expect(host.textContent).not.toContain('Agent work finished');
   mocks.ws.agents = [];
   await act(async () => root.render(createElement(IssuesView)));
@@ -887,14 +1029,14 @@ it('keeps selected knowledge on failure and prevents empty searches from submitt
   expect(host.querySelector('[aria-label="Remove Support guide"]')).toBeNull();
 });
 
-it('keeps the filtered list mounted while switching and closing issues in split view', async () => {
+it('opens list issues side by side by default and preserves the filtered list while switching and closing', async () => {
   const second = { ...issue, id: 'issue-2', title: 'Review onboarding' };
   mocks.api.listIssues.mockResolvedValue({ issues: [issue, second], next_offset: null });
   mocks.api.getIssue.mockImplementation(async (id: string) => id === second.id ? second : issue);
   await act(async () => root.render(createElement(IssuesView)));
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-  await click(host.querySelector('button[aria-label="Split view"]')!);
-  expect(host.textContent).toContain('Select an issue to view alongside the list.');
+  expect(host.querySelector('button[aria-label="Split view"]')).toBeNull();
+  expect(host.querySelector('section[aria-label="Discussion"]')).toBeNull();
   const list = host.querySelector('div[aria-label="List view"]')!;
   const search = host.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
   await fill(search, 'onboarding');
@@ -919,7 +1061,6 @@ it('keeps the filtered list mounted while switching and closing issues in split 
 it('returns to list or board view without leaving an invisible selected issue', async () => {
   await act(async () => root.render(createElement(IssuesView)));
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-  await click(host.querySelector('button[aria-label="Split view"]')!);
   await click(host.querySelector('button[aria-label="Improve onboarding · Open"]')!);
   await click(host.querySelector('button[aria-label="Board view"]')!);
   expect(window.location.pathname).toBe('/workspace-1/issues');
@@ -927,15 +1068,14 @@ it('returns to list or board view without leaving an invisible selected issue', 
   expect(host.querySelector('button[aria-label="Board view"]')?.getAttribute('aria-pressed')).toBe('true');
   await click(host.querySelector('button[aria-label="List view"]')!);
   await click(host.querySelector('button[aria-label="Improve onboarding · Open"]')!);
-  expect(host.querySelector('input[aria-label="Search issues"]')).toBeNull();
-  expect(host.querySelector('h1')?.textContent).toBe(issue.title);
+  expect(host.querySelector('input[aria-label="Search issues"]')).not.toBeNull();
+  expect(host.querySelector('section[aria-label="Discussion"] h1')?.textContent).toBe(issue.title);
 });
 
 it('clears the split detail when its issue is deleted from the list', async () => {
   mocks.api.listIssues.mockResolvedValue({ issues: [{ ...issue, can_delete: true }], next_offset: null });
   await act(async () => root.render(createElement(IssuesView)));
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
-  await click(host.querySelector('button[aria-label="Split view"]')!);
   await click(host.querySelector('button[aria-label="Improve onboarding · Open"]')!);
   await click(host.querySelector('button[aria-label="Delete issue “Improve onboarding”"]')!);
   expect(mocks.api.deleteIssue).toHaveBeenCalledWith(issue.id);

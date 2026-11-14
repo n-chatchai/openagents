@@ -1,7 +1,7 @@
 'use client';
 
 import { useLayout } from '@/components/layout/layout-context';
-import { requestedResource, resourcePath } from '@/lib/resource-link';
+import { issueLinkId, requestedResource, resourcePath } from '@/lib/resource-link';
 import { IssueLabel } from './issue-label';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -9,7 +9,7 @@ import {
   Check,
   LayoutList,
   KanbanSquare,
-  Columns2,
+  Link2,
   MessageSquare,
   Plus,
   Search,
@@ -20,12 +20,16 @@ import { useWorkspace } from '@/lib/workspace-context';
 import { workspaceApi } from '@/lib/api';
 import { unreadIssueCounts } from '@/lib/signals';
 import { useT } from '@/lib/i18n';
+import { shareOrigin } from '@/lib/share-origin';
+import { agentLabel } from '@/lib/helpers';
+import { AgentAvatar } from '@/components/agents/agent-avatar';
 import type { IssueStatus, WorkspaceIssue } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { DetailHeader } from '@/components/layout/app-header';
 import { IssueEditor } from './issue-editor';
+import { IssueAssigneeFilter } from './issue-assignee-filter';
 import { IssueDiscussion } from './issue-discussion';
 import { IssueBoardTabs, useIssueBoards } from './issue-boards';
 import {
@@ -62,17 +66,43 @@ function IssueWorkspace() {
       : (requestedResource(window.location.href)?.view === 'issues' ? requestedResource(window.location.href)?.id ?? null : null),
   );
   const selectedRef = useRef(selected);
-  const selectIssue = (id: string | null) => {
-    selectedRef.current = id;
+  const issuesRef = useRef(issues);
+  issuesRef.current = issues;
+  const boardIdRef = useRef(boardId);
+  boardIdRef.current = boardId;
+  const writeIssueUrl = (linkId: string | null, nextBoardId: string) => {
     const outer = new URL(window.location.href);
     const isHashRoute = outer.hash.startsWith('#/');
-    const url = isHashRoute ? new URL(outer.hash.slice(1), outer.origin) : outer;
-    url.pathname = resourcePath(decodeURIComponent(url.pathname.split('/')[1]), 'issues', id);
+    const url = isHashRoute ? new URL(outer.hash.slice(1), outer.href) : outer;
+    url.pathname = resourcePath(decodeURIComponent(url.pathname.split('/')[1]), 'issues', linkId);
     for (const key of ['issue', 'thread', 'knowledge', 'file']) url.searchParams.delete(key);
+    url.searchParams.set('board', nextBoardId);
     if (isHashRoute) { outer.hash = url.pathname + url.search; }
     window.history.replaceState(window.history.state, '', isHashRoute ? outer : url);
-    setSelected(id);
   };
+  // `id` may be an issue id or a link number; state always keeps the id and
+  // the URL the short number.
+  const selectIssue = (id: string | null, nextBoardId = boardId) => {
+    const known = id ? issuesRef.current.find((i) => i.id === id || (i.number != null && String(i.number) === id)) : undefined;
+    const next = known?.id ?? id;
+    selectedRef.current = next;
+    writeIssueUrl(known ? issueLinkId(known) : id, nextBoardId);
+    setSelected(next);
+  };
+  // An issue outside the loaded list (a numbered deep link, a notification):
+  // look it up once to learn both its id and its number.
+  useEffect(() => {
+    if (!selected || issuesRef.current.some((i) => i.id === selected)) return;
+    let cancelled = false;
+    workspaceApi.getIssue(selected).then((issue) => {
+      if (cancelled || selectedRef.current !== selected) return;
+      if (issue.id !== selected && String(issue.number) !== selected) return;
+      selectedRef.current = issue.id;
+      writeIssueUrl(issueLinkId(issue), boardIdRef.current);
+      setSelected(issue.id);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [selected]);
   useEffect(() => {
     if (!pendingIssueId) return;
     selectIssue(pendingIssueId);
@@ -80,13 +110,14 @@ function IssueWorkspace() {
   }, [pendingIssueId, setPendingIssueId]);
   useEffect(() => { if (!pendingIssueId) selectIssue(selected); }, []); // Normalize legacy issue links.
   const [createOpen, setCreateOpen] = useState(false);
-  const [view, setView] = useState<'list' | 'board' | 'split'>('list');
+  const [view, setView] = useState<'list' | 'board'>('list');
   const board = view === 'board';
-  const split = view === 'split';
+  const split = view === 'list' && selected !== null;
   const [status, setStatus] = useState<IssueStatus | 'all' | 'mine'>('all');
   const activeOnly = status === 'all' || status === 'mine';
   const boardStatuses: IssueStatus[] = activeOnly ? ['open', 'in_progress'] : [status as IssueStatus];
   const [query, setQuery] = useState('');
+  const [assignee, setAssignee] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
@@ -95,6 +126,16 @@ function IssueWorkspace() {
   const requestVersion = useRef(0);
   const reload = useCallback(() => setRevision((v) => v + 1), []);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [copiedIssue, setCopiedIssue] = useState<string | null>(null);
+  const copyIssueLink = async (issue: WorkspaceIssue) => {
+    try {
+      const url = new URL(resourcePath(workspace?.slug || workspace?.workspaceId || '', 'issues', issueLinkId(issue)), shareOrigin());
+      url.searchParams.set('board', boardId);
+      await navigator.clipboard.writeText(url.toString());
+      setCopiedIssue(issue.id);
+      toast.success(t('common.copied'));
+    } catch (e) { toast.error(errorMessage(e)); }
+  };
   const removeIssue = async (issue: WorkspaceIssue) => {
     if (deleting || !(await confirmDelete(issue.title))) return;
     setDeleting(issue.id);
@@ -117,7 +158,7 @@ function IssueWorkspace() {
   const loadedFor = useRef<string | null>(null);
   useEffect(() => {
     let active = true;
-    const loadKey = JSON.stringify([status, activeOnly, query, revision, pages, boardId]);
+    const loadKey = JSON.stringify([status, activeOnly, query, assignee, revision, pages, boardId]);
     if (loadedFor.current !== loadKey) setLoading(true);
     const load = async () => {
       const version = ++requestVersion.current;
@@ -127,6 +168,7 @@ function IssueWorkspace() {
             workspaceApi.listIssues({
               status: status === 'all' || status === 'mine' ? undefined : status,
               assignedToMe: status === 'mine',
+              assignee: assignee || undefined,
               activeOnly,
               query,
               board: boardId,
@@ -163,7 +205,7 @@ function IssueWorkspace() {
       clearTimeout(debounce);
       clearInterval(interval);
     };
-  }, [status, activeOnly, query, revision, pages, boardId]);
+  }, [status, activeOnly, query, assignee, revision, pages, boardId]);
 
   const preview = (description: string) =>
     description
@@ -171,7 +213,9 @@ function IssueWorkspace() {
       .replace(/[#*_`>]/g, '')
       .trim();
   const row = (issue: WorkspaceIssue, asCard = false) => {
-    const working = issue.linked_channels?.some(id => activeSessionIds?.has(id) || agents.some(agent => agent.status === 'online' && agent.busyChannels?.includes(id)));
+    const workingAgents = agents.filter(agent => agent.status === 'online' && agent.busyChannels?.some(id => issue.linked_channels?.includes(id)));
+    const working = workingAgents.length > 0 || issue.linked_channels?.some(id => activeSessionIds?.has(id));
+    const isSelected = split && selected === issue.id;
     const finished = !working && issue.linked_channels?.some(id => completedSessionIds?.has(id));
     const time = (
       <time
@@ -181,7 +225,7 @@ function IssueWorkspace() {
         {issueTime.label(issue.updated_at)}
       </time>
     );
-    // Delete sits beside the card's button rather than inside it: buttons cannot nest.
+    // Row actions sit beside the issue button: buttons cannot nest.
     return <div key={issue.id} className="relative">
     <button
       aria-label={`${issue.title} · ${t(statusKeys[issue.status])}`}
@@ -192,9 +236,9 @@ function IssueWorkspace() {
         asCard
           ? 'rounded-lg border border-border/70 bg-background p-4 shadow-xs hover:border-foreground/20'
           : 'flex items-start gap-3 px-5 py-4 hover:bg-muted/40 sm:px-8',
-        split && selected === issue.id && 'bg-muted ring-1 ring-inset ring-border',
-        working && 'thread-wip',
-        finished && 'bg-amber-50 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-200/60 dark:ring-amber-700/40 motion-safe:animate-[glow_2s_ease-in-out_infinite]',
+        isSelected && 'relative bg-blue-50 hover:bg-blue-50 dark:bg-blue-950/40 dark:hover:bg-blue-950/40 ring-1 ring-inset ring-blue-300 dark:ring-blue-700 before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-blue-500',
+        working && !isSelected && 'thread-wip',
+        finished && !isSelected && 'bg-amber-50 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-200/60 dark:ring-amber-700/40 motion-safe:animate-[glow_2s_ease-in-out_infinite]',
       )}
     >
       <StatusIcon
@@ -206,6 +250,7 @@ function IssueWorkspace() {
           className={cn('flex gap-4', asCard ? 'items-start' : 'items-center')}
         >
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          {issue.number != null && <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{issue.number}</span>}
           <span
             className={cn(
               'min-w-0 text-[13px] font-medium leading-5 text-foreground',
@@ -226,7 +271,8 @@ function IssueWorkspace() {
         {tasks.some(task => task.issueId === issue.id && task.status === 'need_input') && <span className="mt-1 inline-block rounded bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-600 dark:text-rose-400">{t('tasks.needsInput')}</span>}
         {(working || finished) && <span role="status" className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
           {working ? <span aria-hidden="true" className="inline-flex gap-0.5">{[0, 1, 2].map(i => <span key={i} className="typing-dot size-1 rounded-full bg-current" style={{ animationDelay: `${i * 0.15}s` }} />)}</span> : <Check aria-hidden="true" className="size-3 text-amber-600 dark:text-amber-400" />}
-          {t(working ? 'chat.agentWorking' : 'issueWork.finished')}
+          {workingAgents.length > 0 && <span className="inline-flex items-center -space-x-1" aria-hidden="true">{workingAgents.map(agent => <AgentAvatar key={agent.agentName} name={agent.agentName} size={16} />)}</span>}
+          {workingAgents.length ? t('issueWork.working', { agents: workingAgents.map(agentLabel).join(', ') }) : t(working ? 'chat.agentWorking' : 'issueWork.finished')}
         </span>}
         {issue.description && (
           <p
@@ -242,7 +288,7 @@ function IssueWorkspace() {
           className={cn(
             'flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px] text-muted-foreground',
             asCard ? 'mt-4' : 'mt-2',
-            issue.can_delete && 'pr-7',
+            'pr-14',
           )}
         >
           <IssueAvatar
@@ -276,6 +322,16 @@ function IssueWorkspace() {
         </div>
       </div>
     </button>
+    <div className={cn('absolute bottom-[13px] flex items-center gap-1', asCard ? 'right-3' : 'right-4 sm:right-7')}>
+      <button
+        type="button"
+        aria-label={t('issues.copyIssueLink', { title: issue.title })}
+        title={t('issues.copyLink')}
+        onClick={() => void copyIssueLink(issue)}
+        className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {copiedIssue === issue.id ? <Check className="size-3.5" /> : <Link2 className="size-3.5" />}
+      </button>
     {issue.can_delete && (
       <button
         type="button"
@@ -283,14 +339,12 @@ function IssueWorkspace() {
         title={t('common.delete')}
         disabled={deleting === issue.id}
         onClick={() => removeIssue(issue)}
-        className={cn(
-          'absolute bottom-[13px] flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
-          asCard ? 'right-3' : 'right-4 sm:right-7',
-        )}
+        className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
       >
         <Trash2 className="size-3.5" />
       </button>
     )}
+    </div>
     </div>;
   };
 
@@ -309,34 +363,32 @@ function IssueWorkspace() {
     );
   return (
     <div className="@container/issues flex h-full min-h-0 min-w-0 flex-col bg-background">
-      {/* New issue sits beside the title, as the list panels' New buttons do:
-          in the header's right corner it went unnoticed on a wide screen. */}
       <DetailHeader
         titleInHeader
-        title={<div className="flex min-w-0 items-center gap-2">
-          <h1 className="truncate text-sm font-semibold">{t('views.issues')}</h1>
-          <Button size="sm" className="ml-1 shrink-0 gap-1.5 font-semibold" onClick={() => setCreateOpen(true)}>
-            <Plus className="size-4" />
-            {t('issues.newIssue')}
-          </Button>
-        </div>}
-      />
+        title={<h1 className="truncate text-sm font-semibold">{t('views.issues')}</h1>}
+      >
+        <Button size="sm" className="shrink-0 gap-1.5 font-semibold" onClick={() => setCreateOpen(true)}>
+          <Plus className="size-4" />
+          {t('issues.newIssue')}
+        </Button>
+      </DetailHeader>
       <div className="flex shrink-0 flex-wrap items-center gap-x-6 gap-y-3 border-b border-border/70 px-5 pt-3 sm:px-8">
         <div className="w-full min-w-0">
           <IssueBoardTabs
             boards={boards}
             boardId={boardId}
+            workspaceId={workspace?.slug || workspace?.workspaceId || ''}
             onSelect={(id) => {
               if (id === boardId) return;
               setBoardId(id);
               setIssues([]);
               setNextOffset(null);
               setPages(1);
-              selectIssue(null);
+              selectIssue(null, id);
             }}
             onChanged={(selectId) => {
               void reloadBoards();
-              if (selectId && selectId !== boardId) { setBoardId(selectId); setIssues([]); setPages(1); selectIssue(null); }
+              if (selectId && selectId !== boardId) { setBoardId(selectId); setIssues([]); setPages(1); selectIssue(null, selectId); }
               reload();
             }}
           />
@@ -369,6 +421,16 @@ function IssueWorkspace() {
           ))}
         </div>
         <div className="mb-3 ml-auto flex min-w-0 flex-1 items-center justify-end gap-3 sm:flex-none">
+          <IssueAssigneeFilter
+            value={assignee}
+            onChange={(next) => {
+              if (next === assignee) return;
+              setAssignee(next);
+              setIssues([]);
+              setNextOffset(null);
+              setPages(1);
+            }}
+          />
           <div className="relative w-full sm:w-48">
             <Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" />
             <Input
@@ -410,17 +472,6 @@ function IssueWorkspace() {
             >
               <KanbanSquare />
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn('size-6 rounded-sm [&_svg]:size-3.5', split && 'bg-background shadow-xs')}
-              aria-label={t('issues.split')}
-              title={t('issues.split')}
-              aria-pressed={split}
-              onClick={() => setView('split')}
-            >
-              <Columns2 />
-            </Button>
           </div>
         </div>
       </div>
@@ -446,19 +497,19 @@ function IssueWorkspace() {
             </div>
             <h2 className="text-sm font-medium">
               {t(
-                query || status !== 'all'
+                query || assignee || status !== 'all'
                   ? 'issues.noMatches'
                   : 'issues.emptyTitle',
               )}
             </h2>
             <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
               {t(
-                query || status !== 'all'
+                query || assignee || status !== 'all'
                   ? 'issues.noMatchesHint'
                   : 'issues.emptyDescription',
               )}
             </p>
-            {!query && status === 'all' && (
+            {!query && !assignee && status === 'all' && (
               <Button
                 className="mt-6"
                 variant="outline"
@@ -519,7 +570,7 @@ function IssueWorkspace() {
           key={selected}
           id={selected}
           embedded
-          onBack={() => { selectIssue(null); reload(); }}
+          onBack={() => { selectIssue(null); reload(); void reloadBoards(); }}
           onChanged={reload}
         /> : <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">{t('issues.selectIssue')}</div>}
       </section>}

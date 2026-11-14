@@ -98,7 +98,20 @@ export interface NodeProbe {
 export interface NodeRuntime {
   type: string;
   installed: boolean;
+  /** Ready on the device's own setup or, failing that, on one of its agents'
+   * own keys: says the type works here, not that a new agent will. */
   ready: boolean;
+  /** Ready without any agent's own key: the device's key for the type, its
+   * environment or the CLI's sign-in, i.e. what a new agent, or one with no
+   * key of its own, runs on. Absent from devices too old to report it. */
+  typeReady?: boolean;
+  /** The CLI is signed in on the device, keys aside: what an agent on "the
+   * account signed in on the device" runs on. Null for a type with no
+   * sign-in; absent from devices too old to report it. */
+  signedIn?: boolean | null;
+  /** How the type authenticates on the device: `subscription` is the CLI's
+   * sign-in, but a type with a key as well reads `api_key`. */
+  auth?: { mode: 'subscription' | 'api_key' | 'none'; keyMasked: string | null } | null;
   version: string | null;
   reason: string | null;
   message: string | null;
@@ -823,7 +836,11 @@ export interface AgentCatalogDetail extends AgentCatalogEntry {
    */
   provider_locked?: boolean | null;
   /** Readiness metadata; login_command is the CLI sign-in to run on the device. */
-  check_ready?: { login_command?: string } | null;
+  check_ready?: {
+    login_command?: string;
+    /** Models that need no key or sign-in at all (OpenCode Zen's `opencode/…`). */
+    keyless_model_prefixes?: string[];
+  } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -928,6 +945,31 @@ export interface AcentaAccount {
   hasAccount: boolean;
   agents: AcentaAgent[];
   agentLimit: number;
+}
+
+/** How one Acenta agent is paid for. */
+export interface AcentaAgentUsage {
+  id: string;
+  /** included: no charge for this account; usage: from the balance; pass: monthly pass; subscription: monthly card plan. */
+  mode: 'included' | 'usage' | 'pass' | 'subscription';
+  tier: string | null;
+  status: string | null;
+  spentThisMonthCents: number;
+  /** When a monthly pass ends. */
+  renewalAt: string | null;
+}
+
+/** The signed-in user's Acenta balance and this month's spend. */
+export interface AcentaUsage {
+  hasAccount: boolean;
+  billingEnabled: boolean;
+  balanceEnabled: boolean;
+  balanceCents: number;
+  spentThisMonthCents: number;
+  autoTopup: boolean;
+  agents: AcentaAgentUsage[];
+  /** Acenta's dashboard, where the balance is topped up and plans are changed. */
+  manageUrl: string | null;
 }
 
 /** An agent whose runtime a provider hosts; it joins like any other agent. */
@@ -1419,18 +1461,41 @@ export type GrantRight = 'read' | 'act' | 'share';
 
 /** GET/POST/DELETE /v1/files/{id}/public-link — an "anyone with the link"
  *  view link. `token` is only returned to people who can manage the file. */
-export interface FilePublicLinkState {
-  link: { active: true; created_at: string | null; token?: string; created_by?: string } | null;
+/** What a public link can point at: a workspace file (web projects too) or
+ *  a knowledge document. */
+export type PublicShareKind = 'file' | 'knowledge';
+
+/** GET /v1/public-shares */
+export interface PublicShareState {
+  link: {
+    active: true;
+    created_at: string | null;
+    /** When the copy the link serves was taken. */
+    snapshot_at: string | null;
+    expires_at: string | null;
+    token?: string;
+    url?: string;
+    created_by?: string;
+  } | null;
   can_manage: boolean;
 }
 
-/** GET /v1/public/files/{token} — no auth. */
-export interface PublicFileInfo {
+/** GET /v1/public/shares/{token} — no auth. */
+export interface PublicShareInfo {
+  kind: PublicShareKind;
+  title: string;
   filename: string;
   content_type: string;
   size: number;
-  /** When the link was created. */
+  /** When the copy was taken. */
   shared_at: string | null;
+  expires_at: string | null;
+  web_project: boolean;
+  /** Where an HTML page or web project renders, on the separate share
+   *  domain; null when none is configured. */
+  render_url: string | null;
+  /** Where the link lives: the share domain's own page when there is one. */
+  public_url?: string;
 }
 
 /** GET /v1/grants */
@@ -1597,6 +1662,8 @@ export interface WorkspaceIssue {
   knowledge_ids?: string[];
   file_ids?: string[];
   id: string;
+  /** Per-workspace sequence (#42) used in links; null only on rare legacy rows. */
+  number?: number | null;
   title: string;
   description: string;
   status: IssueStatus;

@@ -1,9 +1,9 @@
 'use client';
 
 import { IssueWork } from './issue-work';
-import { WorkingBubble } from '@/components/chat/working-bubble';
+import { IssueAgentProgress } from './issue-agent-progress';
 import { IssueAttachments } from './issue-attachments';
-import { resourcePath } from '@/lib/resource-link';
+import { issueLinkId, resourcePath } from '@/lib/resource-link';
 import { shareOrigin } from '@/lib/share-origin';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -19,7 +19,6 @@ import {
   X,
   Play,
   Pencil,
-  PanelRight,
   Send,
   Reply,
   ChevronDown,
@@ -30,18 +29,10 @@ import { useWorkspace } from '@/lib/workspace-context';
 import { workspaceApi } from '@/lib/api';
 import { issueSignalChannel } from '@/lib/signals';
 import { useT, useFormatters } from '@/lib/i18n';
-import type { IssueDetail, IssueReply, IssueStatus } from '@/lib/types';
+import type { IssueDetail, IssueStatus } from '@/lib/types';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogBody,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/responsive-dialog';
 import { MarkdownContent } from '@/components/chat/markdown-content';
-import { TaskChatPopup } from '@/components/tasks/task-chat-popup';
+import { useLayout } from '@/components/layout/layout-context';
 import { cn } from '@/lib/utils';
 import { AddIssueParticipants } from './add-issue-participants';
 import { IssueProperties } from './issue-properties';
@@ -54,7 +45,6 @@ import { AttachmentPicker } from '@/components/tasks/attachment-picker';
 import { sidebarAgents } from '@/lib/sidebar-agents';
 import {
   ErrorNotice,
-  StatusBadge,
   StatusIcon,
   IssueAvatar,
   IssueSkeleton,
@@ -90,7 +80,8 @@ export function IssueDiscussion({
   const confirmDelete = useConfirmIssueDelete();
   const { timeAgo } = useFormatters();
   const issueTime = useIssueTime();
-  const { currentUser, sessions, refreshAgents, workspace, agents, unreadSignals, markChannelSignalsRead } = useWorkspace();
+  const { currentUser, refreshAgents, workspace, agents, unreadSignals, markChannelSignalsRead, setCurrentSessionId } = useWorkspace();
+  const { openView } = useLayout();
   const signalChannel = issueSignalChannel(id);
   const hasUnreadMention = !!unreadSignals?.[signalChannel];
   // Signals arriving while the tab is hidden or unfocused stay unread until the
@@ -122,12 +113,6 @@ export function IssueDiscussion({
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [actionOpen, setActionOpen] = useState(false);
-  const [thread, setThread] = useState('');
-  const [chat, setChat] = useState<{ channel: string; title: string } | null>(
-    null,
-  );
   const version = useRef(0);
   const mounted = useRef(true);
   const busyRef = useRef(false);
@@ -204,31 +189,13 @@ export function IssueDiscussion({
     }
   }
 
-  async function submitAction(e: React.FormEvent) {
-    e.preventDefault();
-    await mutate(
-      async () => {
-        await workspaceApi.linkIssueThread(id, thread);
-      },
-      () => {
-        setActionOpen(false);
-        setThread('');
-      },
-    );
-  }
-
   const workingIn = (channel: string) => agents.filter(agent => agent.status === 'online' && agent.busyChannels?.includes(channel));
-  // The API returns links oldest first. Reverse before stable activity sorting
-  // so the newest active conversation leads, followed by the newest idle ones.
-  const linkedThreads = [...(issue?.threads || [])].reverse().sort((a, b) => Number(workingIn(b.channel_name).length > 0) - Number(workingIn(a.channel_name).length > 0));
-  const workingAgents = agents.filter(agent => agent.status === 'online' && issue?.threads.some(thread => agent.busyChannels?.includes(thread.channel_name)));
-  const workingLabel = (names: typeof agents) => t('issueWork.working', { agents: names.map(agent => agent.displayName || agent.agentName).join(', ') });
-  const activityIndicator = (names: typeof agents) => <span className="inline-flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground"><span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">{[0, 1, 2].map(i => <span key={i} className="typing-dot size-1 rounded-full bg-current" style={{ animationDelay: `${i * 0.16}s` }} />)}</span><span className="truncate">{workingLabel(names)}</span></span>;
   const people = new Map((issue?.participants || []).map((p) => [p.source, p.name]));
   // Agents the viewer may ask for work; mentioning one not yet on the issue
   // adds it before the comment is posted.
   const usableAgents = new Set(sidebarAgents(agents ?? [], currentUser.id).filter(a => !a.builtin).map(a => `openagents:${a.agentName}`));
   const mentions = useIssueMentions(issue);
+  const participantNames = new Map(mentions.map(person => [person.source.toLowerCase(), person.name]));
   const canPost = !commentUploading && (!!comment.trim() || commentFiles.length > 0);
   const agentNames = mentions
     .filter((m) => m.kind === 'agent')
@@ -239,43 +206,6 @@ export function IssueDiscussion({
   const humanNames = Object.fromEntries(
     mentions.filter((m) => m.kind === 'human').map((m) => [m.token, m.name]),
   );
-  const share = (reply: IssueReply | null | undefined) => {
-    if (!reply) return null;
-    const shared = issue?.comments.some((c) => c.source_event_id === reply.id);
-    return (
-      <details className="group/reply mt-2 pl-6">
-        <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
-          <ChevronRight className="size-3 transition-transform group-open/reply:rotate-90" />
-          {t('issues.latestReply')}
-          {shared && <Check className="ml-auto size-3" />}
-        </summary>
-        <p className="mt-2 line-clamp-4 text-xs leading-5 text-muted-foreground">
-          {reply.content}
-        </p>
-        <Button
-          className="mt-2 h-auto px-0 py-1 text-[11px]"
-          size="sm"
-          variant="ghost"
-          disabled={busy || shared}
-          onClick={() =>
-            mutate(() =>
-              workspaceApi.commentOnIssue(id, {
-                ...identity,
-                source_event_id: reply.id,
-              }),
-            )
-          }
-        >
-          {shared ? (
-            <Check className="size-3" />
-          ) : (
-            <ArrowUpRight className="size-3" />
-          )}
-          {t(shared ? 'issues.shared' : 'issues.shareResult')}
-        </Button>
-      </details>
-    );
-  };
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -296,18 +226,7 @@ export function IssueDiscussion({
             </span>
           </div>
         }
-      >
-        <Button
-          className={cn(!embedded && 'lg:hidden')}
-          variant="ghost"
-          size="sm"
-          aria-expanded={detailsOpen}
-          onClick={() => setDetailsOpen((v) => !v)}
-        >
-          <PanelRight />
-          {t('issues.details')}
-        </Button>
-      </Header>
+      />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {(error || loadError) && (
           <div className="mx-auto max-w-6xl px-5 pt-5 sm:px-8">
@@ -328,17 +247,23 @@ export function IssueDiscussion({
             </div>
           )
         ) : (
-          <div className={cn('mx-auto grid min-h-full max-w-[1200px] grid-cols-1', !embedded && 'lg:grid-cols-[minmax(0,1fr)_264px]')}>
+          <div className="mx-auto min-h-full max-w-[1000px]">
             <main className={cn('min-w-0 px-5 pb-12 pt-7', !embedded && 'sm:px-9 sm:pt-9 lg:px-10')}>
               <header className="mb-8">
                 <div className="mb-3 flex items-center gap-2">
-                  <StatusBadge status={issue.status} />
-                  <span className="text-[11px] text-muted-foreground">
-                    {t('issues.workspaceIssue')}
-                  </span>
+                  <div className="relative inline-flex items-center">
+                    <StatusIcon status={issue.status} className="pointer-events-none absolute left-2 size-3.5" />
+                    <select id={`issue-status-${id}`} aria-label={t('issues.status')} disabled={busy} value={issue.status}
+                      className="h-7 appearance-none rounded-md border border-border/70 bg-background pl-7 pr-7 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onChange={event => void mutate(() => workspaceApi.updateIssue(id, { status: event.target.value as IssueStatus, ...identity }))}>
+                      {statuses.map(status => <option key={status} value={status}>{t(statusKeys[status])}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 size-3 text-muted-foreground" />
+                  </div>
                 </div>
                 <h1 className="max-w-[32ch] break-words text-[24px] font-semibold leading-[1.35] tracking-[-0.025em] sm:text-[27px]">
                   {issue.title}
+                  {issue.number != null && <span className="ml-2 font-normal text-muted-foreground">#{issue.number}</span>}
                 </h1>
                 <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <IssueAvatar
@@ -357,6 +282,45 @@ export function IssueDiscussion({
                     {issueTime.label(issue.created_at)}
                   </time>
                 </div>
+                <div className="mt-3 space-y-2 border-y border-border/60 py-2">
+                  <div className="grid grid-cols-1 items-center gap-x-5 gap-y-1 sm:grid-cols-2">
+                    <IssueProperties issue={issue} busy={busy} update={values => void mutate(() => workspaceApi.updateIssue(id, { ...values, ...identity }))} />
+                    <label className="flex min-w-0 items-center gap-2 text-[11px] font-medium text-muted-foreground">
+                      <span className="shrink-0">{t('threadSettings.shareMyAgents')}</span>
+                      <select className={cn(selectClass, 'h-8 min-w-0 flex-1 border-transparent bg-transparent px-1.5 text-xs font-normal hover:border-border')} aria-label={t('threadSettings.shareMyAgents')}
+                        value={issue.agent_sharing_mode || 'no'} disabled={busy}
+                        onChange={event => void mutate(async () => { await workspaceApi.setIssueAgentSharing(id, event.target.value as 'no' | 'yes' | 'approval'); await refreshAgents(); })}>
+                        <option value="no">{t('threadSettings.sharingNo')}</option>
+                        <option value="yes">{t('threadSettings.sharingYes')}</option>
+                        <option value="approval">{t('threadSettings.sharingApproval')}</option>
+                      </select>
+                    </label>
+                  </div>
+                  <section aria-label={t('issues.participants')} className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xs text-muted-foreground">{t('issues.participants')} <span className="ml-1 tabular-nums">{people.size}</span></h2>
+                      <AddIssueParticipants issueId={id} existing={Array.from(people.keys())} onAdded={() => { void refresh(); onChanged(); }} />
+                    </div>
+                    {people.size > 0 && <div className="flex flex-wrap gap-1.5">
+                      {Array.from(people, ([person, savedName]) => {
+                        const name = participantNames.get(person.toLowerCase()) || savedName;
+                        const participant = issue.participants.find(item => item.source === person);
+                        const owner = participant?.owner_name || participant?.owner_email;
+                        const access = participant?.request_access;
+                        const accessLabel = access ? t(participant?.owner_email?.toLowerCase() === currentUser.id.toLowerCase() ? 'messageAgentAccess.yours' : access === 'yes' ? 'messageAgentAccess.shared' : access === 'approval' ? 'messageAgentAccess.approval' : 'messageAgentAccess.notShared') : '';
+                        const hint = [name, owner && t('messageAgentAccess.owner', { name: owner }), accessLabel].filter(Boolean).join('\n');
+                        return <span key={person} title={hint} className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border/60 bg-muted/20 py-1 pl-1 pr-2.5 text-xs">
+                          <IssueAvatar source={person} name={name} size={20} />
+                          <span className="max-w-36 truncate">{name}</span>
+                          {person.startsWith('openagents:') && <button type="button" disabled={busy}
+                            className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                            aria-label={t('issues.removeAgent', { name })} title={t('issues.removeAgent', { name })}
+                            onClick={() => void mutate(() => workspaceApi.removeIssueAgent(id, person.slice('openagents:'.length)))}><X className="size-3" /></button>}
+                        </span>;
+                      })}
+                    </div>}
+                  </section>
+                </div>
                 {/* Under the title, where the eye already is — tucked in the
                     detail header's right corner they were easy to miss. */}
                 <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -367,7 +331,7 @@ export function IssueDiscussion({
                     onClick={async () => {
                       try {
                         const url = new URL(
-                          resourcePath(workspace?.slug || workspace?.workspaceId || '', 'issues', id),
+                          resourcePath(workspace?.slug || workspace?.workspaceId || '', 'issues', issueLinkId(issue)),
                           shareOrigin(),
                         );
                         await navigator.clipboard.writeText(url.toString());
@@ -518,6 +482,11 @@ export function IssueDiscussion({
                             >
                               {timeAgo(c.created_at)}
                             </time>
+                            {c.kind === 'result' && (c.reply_channel_name || c.channel_name) && <button type="button"
+                              className="ml-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                              onClick={() => { setCurrentSessionId(c.reply_channel_name || c.channel_name!); openView('threads'); }}>
+                              {t('issues.openInThread')}<ArrowUpRight className="size-3" />
+                            </button>}
                           </div>
                           <div className="text-[13px] leading-6 text-foreground/85 [&_.markdown-content_p]:whitespace-pre-line">
                             {c.content && <MarkdownContent
@@ -551,7 +520,10 @@ export function IssueDiscussion({
                     );
                   })}
                 </div>
-                {workingAgents.length > 0 && <div className="thread-wip mt-6 space-y-2 rounded-xl border border-border/60 px-4 py-3">{workingAgents.map(agent => <WorkingBubble key={agent.agentName} agentName={agent.agentName} agents={workingAgents} status={t('chat.agentWorking')} />)}</div>}
+                {issue.threads.map(thread => {
+                  const working = workingIn(thread.channel_name);
+                  return working.length ? <IssueAgentProgress key={thread.channel_name} thread={thread} agents={working} /> : null;
+                })}
                 <form
                   className="relative mt-8 flex gap-3"
                   onKeyDownCapture={(e) => {
@@ -611,10 +583,7 @@ export function IssueDiscussion({
                       <AttachmentPicker key={pickerKey} compact value={commentFiles} onChange={setCommentFiles}
                         disabled={busy} onUploadingChange={setCommentUploading} />
                     </div>
-                    <div className="flex items-center justify-between gap-3 px-3 pb-3">
-                      <p className="max-w-[52ch] flex-1 pl-1 text-[11px] leading-4 text-muted-foreground">
-                        {t('issues.commentHint')}
-                      </p>
+                    <div className="flex items-center justify-end gap-3 px-3 pb-3">
                       <Button
                         size="sm"
                         variant="mono"
@@ -632,144 +601,6 @@ export function IssueDiscussion({
                 </form>
               </section>
             </main>
-            <aside
-              className={cn(
-                'order-first border-b border-border/60 bg-muted/10 px-5 py-7',
-                !embedded && 'sm:px-8 lg:order-last lg:block lg:border-b-0 lg:border-l lg:px-6 lg:py-9',
-                !detailsOpen && 'hidden',
-              )}
-              aria-label={t('issues.details')}
-            >
-              <div className="space-y-7 lg:sticky lg:top-8">
-                <section>
-                  <label
-                    className="mb-2.5 block text-[11px] font-medium text-muted-foreground"
-                    htmlFor={`issue-status-${id}`}
-                  >
-                    {t('issues.status')}
-                  </label>
-                  <div className="relative flex items-center">
-                    <StatusIcon
-                      status={issue.status}
-                      className="pointer-events-none absolute left-2.5 size-3.5"
-                    />
-                    <select
-                      id={`issue-status-${id}`}
-                      className="h-8 w-full appearance-none rounded-md border border-border/70 bg-background pl-8 pr-7 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      disabled={busy}
-                      value={issue.status}
-                      onChange={(e) => {
-                        const status = e.target.value as IssueStatus;
-                        void mutate(() =>
-                          workspaceApi.updateIssue(id, { status, ...identity }),
-                        );
-                      }}
-                    >
-                      {statuses.map((s) => (
-                        <option key={s} value={s}>
-                          {t(statusKeys[s])}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 size-3 text-muted-foreground" />
-                  </div>
-                </section>
-                <IssueProperties issue={issue} busy={busy} update={values => void mutate(() => workspaceApi.updateIssue(id, { ...values, ...identity }))} />
-                <section>
-                  <h2 className="mb-3 text-[11px] font-medium text-muted-foreground">
-                    {t('issues.participants')}
-                  </h2>
-                  <div className="max-h-64 space-y-2.5 overflow-y-auto">
-                    {Array.from(people, ([person, name]) => (
-                      <div key={person} className="flex items-center gap-2.5" title={name}>
-                        <IssueAvatar source={person} name={name} size={26} />
-                        <span className="min-w-0 flex-1 text-xs font-medium">
-                          <span className="block truncate">{name}</span>
-                          {person.startsWith('openagents:') && (() => {
-                            const participant = issue.participants.find(item => item.source === person);
-                            if (!participant?.request_access) return null;
-                            const mine = participant.owner_email?.toLowerCase() === currentUser.id.toLowerCase();
-                            const label = mine ? t('messageAgentAccess.yours') : participant.request_access === 'yes' ? t('messageAgentAccess.shared') : participant.request_access === 'approval' ? t('messageAgentAccess.approval') : t('messageAgentAccess.notShared');
-                            return <span className="mt-1 block space-y-0.5 text-[10px] font-normal text-muted-foreground">
-                              {participant.owner_email && <span className="block truncate" title={participant.owner_name || participant.owner_email}>{t('messageAgentAccess.owner', { name: participant.owner_name || participant.owner_email })}</span>}
-                              <span className="inline-block rounded bg-muted px-1.5 py-0.5">{label}</span>
-                            </span>;
-                          })()}
-                        </span>
-                        {person.startsWith('openagents:') && <>
-                          <button type="button" disabled={busy} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t('issues.removeAgent', { name })} title={t('issues.removeAgent', { name })}
-                            onClick={() => void mutate(() => workspaceApi.removeIssueAgent(id, person.slice('openagents:'.length)))}><X className="size-3.5" /></button>
-                        </>}
-                      </div>
-                    ))}
-                  </div>
-                  <AddIssueParticipants issueId={id} existing={Array.from(people.keys())} onAdded={() => { void refresh(); onChanged(); }} />
-                </section>
-                <label className="flex flex-col gap-2 text-xs text-muted-foreground">
-                  {t('threadSettings.shareMyAgents')}
-                  <select className={selectClass} aria-label={t('threadSettings.shareMyAgents')}
-                    value={issue.agent_sharing_mode || 'no'} disabled={busy}
-                    onChange={event => void mutate(async () => { await workspaceApi.setIssueAgentSharing(id, event.target.value as 'no' | 'yes' | 'approval'); await refreshAgents(); })}>
-                    <option value="no">{t('threadSettings.sharingNo')}</option>
-                    <option value="yes">{t('threadSettings.sharingYes')}</option>
-                    <option value="approval">{t('threadSettings.sharingApproval')}</option>
-                  </select>
-                </label>
-                <section className="border-t border-border/60 pt-5">
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <h2 className="text-[11px] font-medium text-muted-foreground">
-                      {t('issueWork.threads')}
-                      <span className="ml-2 tabular-nums">
-                        {issue.threads.length || ''}
-                      </span>
-                    </h2>
-                    <button
-                      aria-label={t('issues.linkThread')}
-                      title={t('issues.linkThread')}
-                      className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      disabled={busy}
-                      onClick={() => setActionOpen(true)}
-                    >
-                      <Link2 className="size-4" />
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    {linkedThreads.map((th) => (
-                      <div key={th.channel_name} className={cn("relative rounded-lg transition-colors", workingIn(th.channel_name).length > 0 && "thread-wip border border-border/60 p-3")}>
-                        <button
-                          className="group flex w-full items-start gap-2 text-left text-xs leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          onClick={() =>
-                            setChat({
-                              channel: th.channel_name,
-                              title: th.title,
-                            })
-                          }
-                        >
-                          <MessageSquare className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0 flex-1">
-                            <span className="line-clamp-2 font-medium group-hover:underline">
-                              {th.title}
-                            </span>
-                            <span className="mt-1 block truncate text-[11px] text-muted-foreground">
-                              {workingIn(th.channel_name).length > 0 ? activityIndicator(workingIn(th.channel_name)) : th.agents.join(', ')}
-                            </span>
-                          </span>
-                          <ArrowUpRight className="mt-1 size-3 shrink-0 text-muted-foreground/50" />
-                        </button>
-                        {share(th.latest_reply)}
-                      </div>
-                    ))}
-                  </div>
-                  {issue.threads.length === 0 && (
-                    <p className="mb-3 text-xs leading-5 text-muted-foreground">
-                      {t('issues.noAgentWork')}
-                    </p>
-                  )}
-
-                </section>
-
-              </div>
-            </aside>
           </div>
         )}
       </div>
@@ -785,79 +616,7 @@ export function IssueDiscussion({
           }}
         />
       )}
-      {chat && (
-        <TaskChatPopup
-          open
-          onOpenChange={(open) => {
-            if (!open) setChat(null);
-          }}
-          sessionId={chat.channel}
-          taskTitle={chat.title}
-          assignee={null}
-        />
-      )}
-      <Dialog
-        open={actionOpen}
-        onOpenChange={(open) => {
-          if (!open && !busy) setActionOpen(false);
-        }}
-      >
-        <DialogContent className="max-w-[480px]">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-medium">
-              {t('issues.linkThread')}
-            </DialogTitle>
-          </DialogHeader>
-          <form
-            className="flex min-h-0 flex-1 flex-col"
-            onSubmit={submitAction}
-          >
-            <DialogBody className="space-y-5 pb-2">
-              <label className="block space-y-2 text-sm">
-                <span>{t('issues.sourceThread')}</span>
-                <select
-                  required
-                  className={cn(selectClass, 'w-full')}
-                  value={thread}
-                  onChange={(e) => setThread(e.target.value)}
-                >
-                  <option value="">{t('issues.selectThread')}</option>
-                  {sessions
-                    .filter(
-                      (s) =>
-                        s.status !== 'deleted' &&
-                        !issue?.threads.some(
-                          (th) => th.channel_name === s.sessionId,
-                        ),
-                    )
-                    .map((s) => (
-                      <option key={s.sessionId} value={s.sessionId}>
-                        {s.title || s.sessionId}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              {error && <ErrorNotice message={error} />}
-            </DialogBody>
-            <DialogFooter className="border-t border-border/60 bg-muted/15 py-4">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => setActionOpen(false)}
-              >
-                {t('common.cancel')}
-              </Button>
-              <Button
-                type="submit"
-                disabled={busy || !thread}
-              >
-                {t(busy ? 'common.saving' : 'issues.linkThread')}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+
     </div>
   );
 }

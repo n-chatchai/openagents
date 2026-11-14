@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import mimetypes
+import re
 import secrets
 import uuid
 import zipfile
@@ -23,6 +24,7 @@ from app.routers.sharing import _load
 from app.routers.network import _emit_event_blocking
 from openagents.core.onm_events import Event
 from app.routers.files import _owner_for, _viewer_for
+from app.routers.browser import _browser_conversation
 from app.services.access_model import Principal, allowed, can_read_file, can_view_channel, resource_for_file, workspace_human_roles
 from app.storage import get_file_store
 
@@ -47,6 +49,20 @@ class PublishProject(BaseModel):
     source: Optional[str] = None
     visibility: Literal['private', 'public', 'inherit'] = 'private'
     expected_revision: Optional[str] = None
+
+
+# The sandbox gives a page an opaque origin, where reading localStorage or
+# sessionStorage throws and stops the page's script; generated pages use them
+# for scores and progress. Give such pages an in-memory stand-in for the view.
+STORAGE_SHIM = b'<script>(function(){function M(){var d=Object.create(null);return Object.create(Storage.prototype,{length:{get:function(){return Object.keys(d).length}},key:{value:function(i){var k=Object.keys(d);return i<k.length?k[i]:null}},getItem:{value:function(k){k=String(k);return k in d?d[k]:null}},setItem:{value:function(k,v){d[String(k)]=String(v)}},removeItem:{value:function(k){delete d[String(k)]}},clear:{value:function(){d=Object.create(null)}}})}["localStorage","sessionStorage"].forEach(function(n){try{window[n]}catch(e){try{Object.defineProperty(window,n,{value:M(),configurable:true})}catch(_){}}})})();</script>'
+
+
+def with_storage_shim(html):
+    """Insert STORAGE_SHIM before the page's own scripts, keeping any doctype first."""
+    for pattern in (rb'<head\b[^>]*>', rb'<html\b[^>]*>', rb'<!doctype[^>]*>'):
+        match = re.search(pattern, html, re.I)
+        if match: return html[:match.end()] + STORAGE_SHIM + html[match.end():]
+    return STORAGE_SHIM + html
 
 
 def valid_path(path):
@@ -81,6 +97,14 @@ def read_archive(record):
     """Validate even bundles uploaded through the generic file API."""
     try:
         data = get_file_store().read(record.storage_key)
+    except (ValueError, KeyError, TypeError, RuntimeError, OSError):
+        raise HTTPException(404, 'Project bundle is unavailable or invalid.')
+    return open_archive(data)
+
+
+def open_archive(data):
+    """(archive, manifest) for a bundle's bytes; 404 when it is not a valid one."""
+    try:
         if len(data) > MAX_BYTES + 1024 * 1024: raise ValueError()
         archive = zipfile.ZipFile(io.BytesIO(data))
         infos = archive.infolist()
@@ -120,9 +144,18 @@ def publish(body, project_id, db, token, authorization):
             raise HTTPException(403, 'You cannot update this project.')
         if body.expected_revision != revision(row):
             raise HTTPException(409, 'The project changed. Refresh it before uploading an update.')
+    elif body.channel_name and body.channel_name.startswith('dm:'):
+        # A DM has no Channel row. Accept it when the caller is one of its two
+        # participants and the conversation exists, as the shared browser does.
+        conversation = _browser_conversation(db, ctx.wid, ctx.viewer.label, body.channel_name)
+        if not conversation:
+            raise HTTPException(404, 'Thread not available.')
+        body.channel_name = conversation[0]
     elif body.channel_name:
-        channel = db.execute(select(Channel).where(Channel.workspace_id == ctx.wid, Channel.name == body.channel_name, Channel.status != 'deleted')).scalar_one_or_none()
-        if not channel or not can_view_channel(db, ctx.wid, ctx.viewer, channel):
+        # Like file uploads: a thread is checked, a channel without a thread row
+        # (the default "general") has nothing to protect.
+        channel = db.execute(select(Channel).where(Channel.workspace_id == ctx.wid, Channel.name == body.channel_name)).scalar_one_or_none()
+        if channel and (channel.status == 'deleted' or not can_view_channel(db, ctx.wid, ctx.viewer, channel)):
             raise HTTPException(404, 'Thread not available.')
     if not row and body.visibility == 'inherit' and not body.channel_name:
         raise HTTPException(400, 'Select a thread to inherit its sharing.')
@@ -213,6 +246,7 @@ def project_asset(ticket: str, asset_path: str, request: Request, db: Session = 
         except KeyError: raise denied
     mime = mimetypes.guess_type(asset_path)[0] or 'application/octet-stream'
     if asset_path.endswith(('.js', '.mjs')): mime = 'text/javascript'
+    if mime == 'text/html': content = with_storage_shim(content)
     # A host source inherits the page protocol, including behind TLS proxies.
     asset_base = request.url.netloc + f'/v1/project-preview/{ticket}/'
     # Also sandbox direct navigation: project scripts never gain the app origin.
