@@ -57,7 +57,6 @@ import type {
   RegistryLeaderboardEntry,
   RegistrySkill,
   WorkspaceFile,
-  WorkspaceInvitation,
   WorkspaceMe,
   WorkspaceNode,
   WorkspaceRole,
@@ -70,7 +69,6 @@ import type {
   AgentGrant,
   AgentGrantResult,
   AgentProfileUpdate,
-  AgentProfileView,
   ChannelParticipants,
   ChannelVisibility,
   InviteTargetKind,
@@ -1622,10 +1620,6 @@ class WorkspaceApi {
     });
   }
 
-  async updateAgentRole(_agentName: string, _role: string): Promise<WorkspaceAgent> {
-    throw new Error('Agent role management is not yet available in event-native mode');
-  }
-
   async removeAgent(agentName: string): Promise<void> {
     await this.request<unknown>('/v1/remove', {
       method: 'POST',
@@ -1786,18 +1780,6 @@ class WorkspaceApi {
         model,
       }),
     });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Invitations (stubs — not yet event-native)
-  // ---------------------------------------------------------------------------
-
-  async createInvitation(_targetAgentName: string, _expiresInHours = 168): Promise<WorkspaceInvitation> {
-    throw new Error('Invitations are not yet available in event-native mode');
-  }
-
-  async listInvitations(_status?: string): Promise<WorkspaceInvitation[]> {
-    return []; // Return empty list — invitations not yet migrated
   }
 
   // ---------------------------------------------------------------------------
@@ -2579,15 +2561,6 @@ class WorkspaceApi {
     return raw || {};
   }
 
-  /** PUT /v1/channels/{channel}/brief — partial upsert; only the keys in `body` change. */
-  async putBriefRaw(channel: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const raw = await this.request<Record<string, unknown> | null>(
-      `/v1/channels/${encodeURIComponent(channel)}/brief`,
-      { method: 'PUT', body: JSON.stringify({ network: this.workspaceId, ...body }) },
-    );
-    return raw || {};
-  }
-
   // ── v1.1 M1/M2 — thread privacy, participants, sharing, agent directory ─────
 
   /** Who is in a thread — the humans on its ACL and the agents in it. */
@@ -2920,13 +2893,6 @@ class WorkspaceApi {
   /** Ownership transfer = PATCH owner_email (owner hands over / admin forces). */
   async transferThread(channel: string, ownerEmail: string): Promise<unknown> {
     return this.updateChannelAccess(channel, { ownerEmail });
-  }
-
-  /** v1.1 M4 — the specialist profile as the caller may see it: owners and
-   * admins get shared_instructions + allowed_knowledge, teammates a summary. */
-  async getAgentProfile(agentName: string): Promise<AgentProfileView> {
-    const params = new URLSearchParams({ network: this.requireWorkspace() });
-    return this.request<AgentProfileView>(`/v1/agents/${encodeURIComponent(agentName)}/profile?${params}`);
   }
 
   /** Permission model v1.1 — owner/admin flips a file between private, public

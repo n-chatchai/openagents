@@ -67,7 +67,7 @@ export function Brand() {
           />
         ) : (
           <span
-            className="truncate text-sm font-medium cursor-pointer transition-colors hover:text-primary"
+            className="truncate text-base font-semibold cursor-pointer transition-colors hover:text-primary"
             onClick={startEditing}
             title={t('header.clickToRename')}
           >

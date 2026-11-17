@@ -12,7 +12,6 @@ import { goToCentralLogin, redirectToLogin } from '@/lib/auth-redirects';
 import { DOOR_LOGIN } from '@/lib/door';
 import { LogIn } from 'lucide-react';
 import { useT } from '@/lib/i18n';
-import { CampaignMilestoneToasts } from '@/components/campaign/campaign-feedback';
 import { recallWorkspaceToken, rememberWorkspaceToken } from '@/lib/workspace-snapshot';
 
 function WorkspaceLoadingSplash() {
@@ -150,7 +149,6 @@ function BearerWorkspace({ workspaceId, idToken }: { workspaceId: string; idToke
       <WorkspaceProvider workspaceId={workspaceId} token={state.token} bearerToken={idToken}>
         <IdentityGate>
           <LayoutProvider>
-            <CampaignMilestoneToasts idToken={idToken} />
             <Wrapper />
           </LayoutProvider>
         </IdentityGate>
@@ -227,7 +225,6 @@ function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
       <WorkspaceProvider workspaceId={workspaceId} token={token} bearerToken={idToken || undefined}>
         <IdentityGate>
           <LayoutProvider>
-            {idToken && <CampaignMilestoneToasts idToken={idToken} />}
             <Wrapper />
           </LayoutProvider>
         </IdentityGate>

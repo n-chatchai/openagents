@@ -383,6 +383,7 @@ def send_event(
     # v1.1 visibility: a person may not post into a private thread they are
     # not a participant of (machines are exempt; the pipeline auth mod still
     # runs its own checks after this).
+    _viewer = None
     if body.target and str(body.target).startswith("channel/"):
         from app.services.access_model import agent_name_from_source
         from app.services.visibility import can_view_channel_name, resolve_viewer
@@ -425,13 +426,23 @@ def send_event(
                     if not member or member.status == "removed" or not can_start_agent_thread(db, str(workspace.id), creator, member):
                         return json_response(ResponseCode.FORBIDDEN, "You do not have direct access to this agent")
 
+    # Who Yumi acts for is the server's to say: drop any client copy, then
+    # record the signed-in sender of a message.
+    from app.services.personal_assistant import ACTING_FOR
+    metadata = {k: v for k, v in (body.metadata or {}).items() if k != ACTING_FOR}
+    if body.type == "workspace.message.posted":
+        from app.services.visibility import resolve_viewer
+        sender = _viewer or resolve_viewer(db, workspace, x_workspace_token, authorization)
+        if sender.kind == "human" and sender.email:
+            metadata[ACTING_FOR] = sender.email
+
     # Build ONM Event
     event = Event(
         type=body.type,
         source=source,
         target=body.target,
         payload=payload,
-        metadata=body.metadata or {},
+        metadata=metadata,
         visibility=body.visibility or "channel",
         network=str(workspace.id),
     )
@@ -547,9 +558,6 @@ def send_event(
 
     # Invoke cloud agents if any are targeted by this message.
     if result.type == "workspace.message.posted":
-        # Authoritative activation checkpoint (server-side PostHog, keyed by email).
-        from app.services.analytics import track_message_posted
-        background_tasks.add_task(track_message_posted, str(workspace.id), event_snapshot)
         from app.services.cloud_agent import invoke_cloud_agents
         background_tasks.add_task(invoke_cloud_agents, str(workspace.id), event_snapshot)
         # Drive any workflow run bound to this channel (advance to the next step).
@@ -561,11 +569,6 @@ def send_event(
         # Wake agents watching this thread / this sender (bounded subscriptions).
         from app.services.watches import notify_watchers
         background_tasks.add_task(notify_watchers, str(workspace.id), event_snapshot)
-        # Credits campaign: agent replies drive the conversation/daily
-        # milestones (no-op unless enabled and the source is an agent).
-        if result.source.startswith("openagents:"):
-            from app.services import campaign as campaign_service
-            background_tasks.add_task(campaign_service.on_agent_message, str(workspace.id), result.source)
 
     return success_response({
         "id": result.id,
@@ -749,7 +752,8 @@ def resolve_routing_choice(
                     "message_type": "chat"})
     event = Event(type="workspace.message.posted", source=f"human:{viewer.email.lower()}",
         target=original.target, visibility=original.visibility or "channel", payload=payload,
-        metadata={"routing_assignment": {"message_id": original.id, "agent": body.agent, "thread_id": channel.id}})
+        metadata={"routing_assignment": {"message_id": original.id, "agent": body.agent, "thread_id": channel.id},
+                  "acting_for": viewer.email.lower()})
     updated.update(status="assigned", agent=body.agent, assignment_event_id=event.id)
     original.metadata_ = {**(original.metadata_ or {}), "routing_choice": updated}
     context = PipelineContext(network_id=str(workspace.id), agent_address=event.source,

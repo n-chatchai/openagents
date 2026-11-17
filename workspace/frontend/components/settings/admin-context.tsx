@@ -40,7 +40,7 @@ export function canAccessSettingsSection(me: WorkspaceMe | null, section: string
   // ChatGPT or Claude, and its public address defaults to openagents.org:
   // the page would hand a person's key to someone else's server.
   if (DOOR_LOGIN && section === 'connected-apps') return false;
-  return !!me && (['profile', 'connected-apps', 'preferences', 'api-credits'].includes(section) || canAdminister(me));
+  return !!me && (['profile', 'connected-apps', 'preferences'].includes(section) || canAdminister(me));
 }
 
 export const AdminSettingsContext = createContext<AdminSettingsValue | null>(null);

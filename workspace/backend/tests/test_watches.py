@@ -39,7 +39,6 @@ def invoked(monkeypatch):
 @pytest.fixture
 def quiet_background(monkeypatch):
     """Stub the other post-event hooks that need a real DATABASE_URL."""
-    import app.services.campaign as campaign
     import app.services.integrations as integrations
     import app.services.push as push
     import app.services.workflow as workflow
@@ -50,7 +49,6 @@ def quiet_background(monkeypatch):
     monkeypatch.setattr(push, "fanout_for_event", noop)
     monkeypatch.setattr(workflow, "advance_workflow", noop)
     monkeypatch.setattr(integrations, "relay_for_event", noop)
-    monkeypatch.setattr(campaign, "on_agent_message", noop)
 
 
 def _hdr(ws):
@@ -335,7 +333,8 @@ class TestExpiry:
 class TestYumiTools:
     def test_watch_list_stop_via_tools(self, client, workspace, setup):
         from app.services.yumi import WorkspaceApi, execute_tool
-        api = WorkspaceApi(workspace["id"], workspace["token"])
+        from tests.conftest import acting_api
+        api = acting_api(workspace["id"])
 
         res = asyncio.run(execute_tool(api, "yumi", "watch_thread",
                                        {"thread": setup["work"], "note": "relay to Li Lei", "minutes": 45},
@@ -378,7 +377,8 @@ class TestYumiTools:
         assert "Slack" in bridged_thread_context("ext-slack-12345678-D0AAA")
 
         _join(client, workspace, "yumi")
-        api = WorkspaceApi(workspace["id"], workspace["token"])
+        from tests.conftest import acting_api
+        api = acting_api(workspace["id"])
         ch = _make_thread(client, workspace, "Plain", ["yumi"], master="yumi")
         # A watch wake-up is flagged as automated in the live thread block.
         ctx = asyncio.run(thread_context(api, ch, "system:watch", {}))

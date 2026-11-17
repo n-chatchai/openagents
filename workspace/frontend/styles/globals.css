@@ -2,6 +2,7 @@
 @import 'tailwindcss';
 
 @import 'tw-animate-css';
+@import './shadcn-tailwind.css';
 
 /** Dark Mode Variant **/
 @custom-variant dark (&:is(.dark *));
@@ -17,9 +18,6 @@
   --popover-foreground: oklch(0.209 0.006 179);
   --primary: oklch(0.465 0.039 179.3);
   --primary-foreground: oklch(0.985 0.005 170);
-  /* Upstream's blue brand actions take Erawan's primary. */
-  --brand: oklch(0.465 0.039 179.3);
-  --brand-foreground: oklch(0.985 0.005 170);
   --secondary: oklch(0.958 0.006 175);
   --secondary-foreground: oklch(0.26 0.012 178.5);
   --muted: oklch(0.962 0.005 175);
@@ -28,6 +26,11 @@
   --accent-foreground: oklch(0.26 0.012 178.5);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: var(--color-white);
+  /* Status colours the registry leaves to the app (upstream's). Used as text
+     and as a tint (`bg-success/10 text-success`), never as a large fill. */
+  --success: var(--color-emerald-600);
+  --warning: var(--color-amber-600);
+  --info: var(--color-blue-600);
   --chart-1: oklch(0.560 0.060 178.6);
   --chart-2: oklch(0.580 0.080 240.7);
   --chart-3: oklch(0.600 0.055 333.7);
@@ -77,8 +80,6 @@
   --popover-foreground: oklch(0.952 0.008 168.7);
   --primary: oklch(0.787 0.061 178.6);
   --primary-foreground: oklch(0.166 0.004 164.5);
-  --brand: oklch(0.787 0.061 178.6);
-  --brand-foreground: oklch(0.166 0.004 164.5);
   --secondary: oklch(0.260 0.012 178.5);
   --secondary-foreground: oklch(0.952 0.008 168.7);
   --muted: oklch(0.248 0.010 178);
@@ -87,6 +88,9 @@
   --accent-foreground: oklch(0.952 0.008 168.7);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: var(--color-white);
+  --success: var(--color-emerald-400);
+  --warning: var(--color-amber-400);
+  --info: var(--color-blue-400);
   --chart-1: oklch(0.787 0.061 178.6);
   --chart-2: oklch(0.716 0.064 240.7);
   --chart-3: oklch(0.720 0.043 333.7);
@@ -125,6 +129,9 @@
 /** Theme Setup **/
 @theme inline {
   --font-sans: var(--font-inter), var(--font-noto-thai), ui-sans-serif, system-ui, sans-serif;
+  /** Extra-wide screens (2100px), for grids that keep adding columns. **/
+  --breakpoint-3xl: 131.25rem;
+
   /** Base Colors **/
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -138,12 +145,18 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-  --color-brand: var(--brand);
-  --color-brand-foreground: var(--brand-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
 
   /** Sidebar **/
   --color-sidebar: var(--sidebar);
@@ -159,10 +172,17 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-xl: calc(var(--radius) + 4px);
+  /* nova's multiplicative radius scale */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Headings follow the body face (preset fontHeading: inherit). */
+  --font-heading: inherit;
 
   /** Animations **/
   --animate-marquee: marquee var(--duration) infinite linear;
@@ -188,8 +208,8 @@
 
 /** Thread completion glow **/
 @keyframes glow {
-  0%, 100% { box-shadow: 0 0 4px 0 rgba(251, 191, 36, 0.3); }
-  50% { box-shadow: 0 0 8px 2px rgba(251, 191, 36, 0.4); }
+  0%, 100% { box-shadow: 0 0 4px 0 color-mix(in oklab, var(--success) 30%, transparent); }
+  50% { box-shadow: 0 0 8px 2px color-mix(in oklab, var(--success) 40%, transparent); }
 }
 
 /** Shared thread/issue activity: a visible band sweeps across the row. **/
@@ -321,28 +341,6 @@ html {
 /* Card Title */
 [data-slot=card-title] {
   @apply font-medium;
-}
-
-/* ── Syntax Highlighting (highlight.js) ── */
-@import 'highlight.js/styles/github.css';
-
-.dark .hljs {
-  background: transparent;
-  color: var(--color-zinc-300);
-}
-.dark .hljs-keyword { color: #ff7b72; }
-.dark .hljs-string { color: #a5d6ff; }
-.dark .hljs-comment { color: #8b949e; }
-.dark .hljs-number { color: #79c0ff; }
-.dark .hljs-title { color: #d2a8ff; }
-.dark .hljs-built_in { color: #ffa657; }
-.dark .hljs-attr { color: #79c0ff; }
-.dark .hljs-literal { color: #79c0ff; }
-.dark .hljs-type { color: #ffa657; }
-
-.markdown-content .hljs {
-  background: transparent;
-  padding: 0;
 }
 
 /* Proactive routing: keep the approved traveling signal and arrival ripple. */

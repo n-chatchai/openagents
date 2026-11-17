@@ -65,13 +65,20 @@ export const TITLEBAR_HEIGHT = 40
 let chromeDimmed = false
 
 /**
- * A colour with the dialog overlay laid over it — `bg-black/50`, the same 50%
- * black the renderer paints across the page, applied by hand because the
- * buttons are not part of the page.
+ * The surface under the window buttons. See `setChromeSurface`.
+ */
+export type ChromeSurface = "page" | "sidebar"
+let chromeSurface: ChromeSurface = "page"
+
+/**
+ * A colour with the dialog overlay laid over it — `bg-black/10`, the same 10%
+ * black the renderer paints across the page (radix-nova's overlay), applied by
+ * hand because the buttons are not part of the page. The overlay's backdrop
+ * blur has no counterpart here; over a flat fill it would change nothing.
  */
 function dimmed(hex: string): string {
   const n = parseInt(hex.slice(1), 16)
-  const mix = (shift: number): number => ((n >> shift) & 0xff) >> 1
+  const mix = (shift: number): number => Math.round(((n >> shift) & 0xff) * 0.9)
   const out = (mix(16) << 16) | (mix(8) << 8) | mix(0)
   return `#${out.toString(16).padStart(6, "0")}`
 }
@@ -87,11 +94,14 @@ const CHROME = {
   dark: { bg: "#0a0a0a", title: "#fafafa", msg: "#a1a1a1", detail: "#737373", accent: "#e5e5e5" },
 } as const
 
+/** `--sidebar` in globals.css (and in the Workspace web app); keep in step. */
+const SIDEBAR_BG = { light: "#fafafa", dark: "#171717" } as const
+
 /**
  * The Windows/Linux window-controls overlay, coloured as the right-hand end of
- * the header it sits in, which is painted in the page surface
- * (`bg-background`) — as is the content the buttons sit over during
- * onboarding.
+ * the header it sits in: the page surface (`bg-background`) on This Computer
+ * and during onboarding, the sidebar surface on the Workspace side, whose bar
+ * runs on into the web app's sidebar-coloured shell.
  *
  * One pixel shorter than the header, so its bottom border runs on under the
  * buttons instead of stopping where they begin.
@@ -105,7 +115,7 @@ export function titleBarOverlayColors(): {
   height: number
 } {
   const scheme = nativeTheme.shouldUseDarkColors ? "dark" : "light"
-  const color = CHROME[scheme].bg
+  const color = chromeSurface === "sidebar" ? SIDEBAR_BG[scheme] : CHROME[scheme].bg
   const symbolColor = scheme === "dark" ? "#f5f5f7" : "#1c1c1e"
   return {
     color: chromeDimmed ? dimmed(color) : color,
@@ -144,6 +154,15 @@ export function setChromeDimmed(win: BrowserWindow | null, dim: boolean): void {
   refreshTitleBarOverlay(win)
 }
 
+/**
+ * Match the window buttons to the surface of the bar they sit in. The renderer
+ * reports "sidebar" while the Workspace bar is up and "page" otherwise.
+ */
+export function setChromeSurface(win: BrowserWindow | null, surface: ChromeSurface): void {
+  if (chromeSurface === surface) return
+  chromeSurface = surface
+  refreshTitleBarOverlay(win)
+}
 
 /**
  * Colours for the startup splash, in the app's own theme so the first thing it
