@@ -576,6 +576,16 @@ describe('safe defaults of the other runtimes', () => {
     noBypass(o._buildRunArgs({ runCwd: tmp, model: 'p/m' }));
   });
 
+  it('OpenCode: the subagent external_directory allow reaches only an unrestricted turn', () => {
+    // A HOME of its own, so this computer's OpenCode config is not read.
+    const o = make('opencode', 'otto', { agentEnv: { PATH: process.env.PATH, HOME: tmp, USERPROFILE: tmp } });
+    o._wiresWorkspaceMcp = () => false;
+    const perm = (posture) => o._turnEnv(posture).OPENCODE_PERMISSION;
+    assert.deepEqual(JSON.parse(perm({ mode: 'execute', unrestricted: false })), { bash: 'ask', external_directory: 'ask' });
+    assert.deepEqual(JSON.parse(perm({ mode: 'plan', unrestricted: true })), { bash: 'ask', external_directory: 'ask', edit: 'deny' });
+    assert.deepEqual(JSON.parse(perm({ mode: 'execute', unrestricted: true })), { external_directory: 'allow' });
+  });
+
   it('Cline builder never auto-approves without the opt-in', () => {
     assert.equal(valueAfter(buildClineArgs({ prompt: 'x' }), '--auto-approve'), 'false');
     assert.equal(valueAfter(buildClineArgs({ prompt: 'x', planMode: true }), '--auto-approve'), 'false');

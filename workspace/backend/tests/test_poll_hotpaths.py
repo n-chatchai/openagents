@@ -1,5 +1,6 @@
 """Caches on the hottest read paths stay exact and person-scoped."""
 import re
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import pytest
 from sqlalchemy import event
 
 from app import cache
+from app.services import dm_summary
 from app.models import Channel, ChannelHumanMember, EventRecord
 from app.services.access_model import Principal, thread_shared_agent_names
 from tests.test_people_messaging import people, quiet_side_effects, _as  # noqa: F401
@@ -28,9 +30,15 @@ def memory_cache(monkeypatch, db):
     event.remove(db.bind, 'before_cursor_execute', capture)
 
 
+def now_ms():
+    return int(time.time() * 1000)
+
+
 def add_event(db, workspace, source, target, timestamp, visibility='direct', content='hello'):
+    # Tests pass small offsets; real events carry current timestamps, which
+    # the incremental DM summary relies on (it counts rows newer than its base).
     db.add(EventRecord(id=str(uuid4()), network_id=workspace['id'], source=source, target=target,
-                       timestamp=timestamp, type='workspace.message.posted', visibility=visibility,
+                       timestamp=now_ms() + timestamp, type='workspace.message.posted', visibility=visibility,
                        payload={'content': content}))
     db.commit()
 
@@ -46,7 +54,7 @@ def aggregates(state):
     return [q for q in state.queries if 'msg_count' in q]
 
 
-def test_dm_summary_is_reused_until_a_direct_message_changes(client, db, workspace, people, memory_cache):
+def test_dm_summary_is_reused_until_a_direct_message_changes(client, db, workspace, people, memory_cache, monkeypatch):
     me = 'human:adam@acme.test'
     add_event(db, workspace, me, 'openagents:mine', 100)
     assert conversations(client, workspace, 'adam')[0]['message_count'] == 1
@@ -57,8 +65,13 @@ def test_dm_summary_is_reused_until_a_direct_message_changes(client, db, workspa
     assert aggregates(memory_cache) == [], 'channel traffic must not invalidate DM summaries'
 
     add_event(db, workspace, 'openagents:mine', me, 200, content='newer')
+    assert conversations(client, workspace, 'adam')[0]['message_count'] == 1
+    assert aggregates(memory_cache) == [], 'a busy workspace reuses the list for a few seconds'
+
+    later = time.time() + dm_summary.MERGED_MAX_STALE_SECONDS + 1
+    monkeypatch.setattr(time, 'time', lambda: later)
     result = conversations(client, workspace, 'adam')
-    assert aggregates(memory_cache), 'a new DM recomputes the summary'
+    assert aggregates(memory_cache), 'after the stale window a new DM recomputes the summary'
     assert result[0]['message_count'] == 2
     assert result[0]['last_message']['content'] == 'newer'
 
@@ -107,15 +120,52 @@ def test_agent_sharing_lookup_skips_the_join_without_opt_ins(db, workspace, peop
 
 
 def test_dm_summary_never_reuses_an_entry_after_the_generation_key_is_lost(
-        client, db, workspace, people, memory_cache):
+        client, db, workspace, people, memory_cache, monkeypatch):
     # A summary cached before the workspace's first DM write...
     db.execute(EventRecord.__table__.insert().values(
         id=str(uuid4()), network_id=workspace['id'], source='human:adam@acme.test', target='openagents:mine',
-        timestamp=100, type='workspace.message.posted', visibility='direct', payload={'content': 'first'}))
+        timestamp=now_ms() + 100, type='workspace.message.posted', visibility='direct', payload={'content': 'first'}))
     db.commit()
     assert conversations(client, workspace, 'adam')[0]['message_count'] == 1
     # ...must not become current again when a later generation is evicted.
     add_event(db, workspace, 'openagents:mine', 'human:adam@acme.test', 200, content='later')
     for key in [k for k in memory_cache.store if k.startswith('v1events:dm-generation:')]:
         del memory_cache.store[key]
+    later = time.time() + dm_summary.MERGED_MAX_STALE_SECONDS + 1
+    monkeypatch.setattr(time, 'time', lambda: later)
     assert conversations(client, workspace, 'adam')[0]['message_count'] == 2
+
+
+def poll_type(client, workspace, event_type, **params):
+    response = client.get('/v1/events', params={'network': workspace['id'], 'type': event_type, **params},
+                          headers={'X-Workspace-Token': workspace['token']})
+    assert response.status_code == 200
+    return [e['payload']['content'] for e in response.json()['data']['events']]
+
+
+def test_prefix_type_polls_match_like_semantics(client, db, workspace):
+    from app.services.poll_queries import workspace_types_matching
+    for i, kind in enumerate(['workspace.message.posted', 'workspace.messageX', 'workspace.user.heartbeat',
+                              'workspace.toolXresult', 'workspace.tool_result']):
+        db.add(EventRecord(id=str(uuid4()), network_id=workspace['id'], source='openagents:a', target='channel/general',
+                           timestamp=now_ms() + i, type=kind, visibility='channel', payload={'content': kind}))
+    db.commit()
+    assert set(workspace_types_matching(db, workspace['id'], 'workspace.message')) == {'workspace.message.posted', 'workspace.messageX'}
+    # '_' is a single-character wildcard in LIKE, as before.
+    assert set(workspace_types_matching(db, workspace['id'], 'workspace.tool_')) == {'workspace.toolXresult', 'workspace.tool_result'}
+    assert set(poll_type(client, workspace, 'workspace.message')) >= {'workspace.message.posted', 'workspace.messageX'}
+    assert poll_type(client, workspace, 'workspace.nothing') == []
+
+
+def test_cursor_polls_return_exactly_the_newer_events(client, db, workspace):
+    base = now_ms()
+    # Two events share the cursor's timestamp: only the one with the larger id is newer.
+    for event_id, ts, content in [('a-tie', base, 'cursor'), ('b-tie', base, 'same-ms-after'),
+                                  ('c', base - 5, 'older'), ('d', base + 1, 'newer-1'), ('e', base + 2, 'newer-2')]:
+        db.add(EventRecord(id=event_id, network_id=workspace['id'], source='openagents:a', target='channel/general',
+                           timestamp=ts, type='workspace.message.posted', visibility='channel', payload={'content': content}))
+    db.add(EventRecord(id='hb', network_id=workspace['id'], source='human:x', target='channel/general',
+                       timestamp=base + 3, type='workspace.user.heartbeat', visibility='channel', payload={'content': 'hb'}))
+    db.commit()
+    assert poll_type(client, workspace, 'workspace.message', after='a-tie') == ['same-ms-after', 'newer-1', 'newer-2']
+    assert poll_type(client, workspace, 'workspace.message', before='d', sort='desc') == ['same-ms-after', 'cursor', 'older']

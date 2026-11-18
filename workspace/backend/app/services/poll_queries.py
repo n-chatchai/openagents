@@ -1,10 +1,11 @@
 """Indexed event polling and short-lived, commit-invalidated stream heads."""
 import hashlib
 import json
+import re
 import time
 import uuid
 
-from sqlalchemy import event, literal_column, select
+from sqlalchemy import event, literal_column, select, text
 from sqlalchemy.orm import Session
 
 from app import cache
@@ -20,6 +21,42 @@ def event_type_filter(prefix):
     if prefix in POLL_PREFIXES:
         return EventRecord.type.like(literal_column("'" + prefix + "%'"))
     return EventRecord.type.startswith(prefix)
+
+
+def _like_prefix_regex(prefix):
+    # SQL LIKE semantics for `prefix%`: '_' matches one character, '%' any run.
+    out = []
+    for ch in prefix:
+        out.append('.' if ch == '_' else '.*' if ch == '%' else re.escape(ch))
+    return re.compile(''.join(out), re.S)
+
+
+_TYPES_SKIP_SCAN = text(
+    "WITH RECURSIVE t(type) AS ("
+    " SELECT min(type) FROM events WHERE network_id = :w"
+    " UNION ALL"
+    " SELECT (SELECT min(e.type) FROM events e WHERE e.network_id = :w AND e.type > t.type)"
+    " FROM t WHERE t.type IS NOT NULL"
+    ") SELECT type FROM t WHERE type IS NOT NULL"
+)
+
+
+def workspace_types_matching(db, workspace_id, prefix):
+    """Event types present in the workspace that `type LIKE prefix%` matches.
+
+    A recursive skip scan over (network_id, type) costs one index probe per
+    distinct type (about 20) instead of reading the workspace's events. Polls
+    then filter with type IN (...) and can range-scan (network_id, type,
+    timestamp); a LIKE with a bound parameter cannot, so a poll for a rare
+    type used to read every heartbeat event in the workspace.
+    """
+    if db.bind.dialect.name == 'postgresql':
+        rows = db.execute(_TYPES_SKIP_SCAN, {'w': str(workspace_id)}).scalars().all()
+    else:  # SQLite (tests)
+        rows = db.execute(select(EventRecord.type).where(
+            EventRecord.network_id == workspace_id).distinct()).scalars().all()
+    pattern = _like_prefix_regex(prefix)
+    return sorted(t for t in rows if pattern.match(t))
 
 
 def _generation_key(workspace_id):
@@ -56,6 +93,27 @@ def dm_generation(workspace_id):
     return value.hex()
 
 
+def _dm_rewrite_generation_key(workspace_id):
+    return 'v1events:dm-rewrite-generation:' + str(workspace_id)
+
+
+def dm_rewrite_generation(workspace_id):
+    """Changes only when existing DM history may have been edited or deleted
+    (not on appends), so incremental DM summaries know when to rebuild."""
+    key = _dm_rewrite_generation_key(workspace_id)
+    value = cache.get_bytes(key)
+    if value is None:
+        value = uuid.uuid4().hex.encode()
+        cache.set_bytes(key, value, DM_GENERATION_TTL_SECONDS)
+    return value.hex()
+
+
+def _was_or_is_dm(row):
+    from sqlalchemy import inspect
+    added, unchanged, deleted = inspect(row).attrs.visibility.history
+    return 'direct' in [*(added or ()), *(unchanged or ()), *(deleted or ())] or row.visibility == 'direct'
+
+
 def _may_change_dms(row, is_new):
     # Edits and deletes are rare; treat any of them as a possible DM change
     # rather than reasoning about which attributes moved.
@@ -67,8 +125,11 @@ def _remember_event_writes(session, flush_context, instances):
     for row in session.new.union(session.dirty).union(session.deleted):
         if isinstance(row, EventRecord):
             session.info.setdefault('poll_head_workspaces', set()).add(str(row.network_id))
-            if _may_change_dms(row, row in session.new):
+            is_new = row in session.new
+            if _may_change_dms(row, is_new):
                 session.info.setdefault('dm_workspaces', set()).add(str(row.network_id))
+            if not is_new and _was_or_is_dm(row):
+                session.info.setdefault('dm_rewrite_workspaces', set()).add(str(row.network_id))
 
 
 @event.listens_for(Session, 'after_commit')
@@ -82,6 +143,8 @@ def _invalidate_committed_heads(session):
         cache.set_bytes(_generation_key(workspace_id), uuid.uuid4().hex.encode(), 60)
     for workspace_id in session.info.pop('dm_workspaces', set()):
         cache.set_bytes(_dm_generation_key(workspace_id), uuid.uuid4().hex.encode(), DM_GENERATION_TTL_SECONDS)
+    for workspace_id in session.info.pop('dm_rewrite_workspaces', set()):
+        cache.set_bytes(_dm_rewrite_generation_key(workspace_id), uuid.uuid4().hex.encode(), DM_GENERATION_TTL_SECONDS)
 
 
 @event.listens_for(Session, 'after_rollback')
@@ -89,6 +152,7 @@ def _discard_rolled_back_heads(session):
     if not session.in_nested_transaction():
         session.info.pop('poll_head_workspaces', None)
         session.info.pop('dm_workspaces', None)
+        session.info.pop('dm_rewrite_workspaces', None)
 
 
 # How long an event may take between its timestamp and becoming visible to

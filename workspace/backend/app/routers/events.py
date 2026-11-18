@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json as _json
 import logging
+import time
 from types import SimpleNamespace
 from typing import Optional
 from uuid import UUID
@@ -29,7 +30,7 @@ from app.response import ResponseCode, json_response, success_response
 from app.routers.network import _verify_workspace_access, _workspace_filter
 from app.services.unread_window import unread_cutoff_ms
 from app.services.read_state import stream_allows as read_state_stream_allows
-from app.services.poll_queries import dm_generation, event_type_filter, poll_generation, resume_cursor, stream_head
+from app.services.poll_queries import POLL_PREFIXES, dm_generation, event_type_filter, poll_generation, resume_cursor, stream_head, workspace_types_matching
 from openagents.core.onm_events import Event
 from openagents.core.onm_mods import EventRejected, PipelineContext
 
@@ -39,9 +40,6 @@ router = APIRouter(prefix="/v1", tags=["Events"])
 
 POLL_CACHE_TTL_SECONDS = 1.5
 EMPTY_CONTROL_POLL_CACHE_TTL_SECONDS = 10.0
-# DM writes change the key, so this only bounds memory and idle viewers'
-# recomputation (see poll_queries.dm_generation).
-CONVERSATION_PAIRS_CACHE_TTL_SECONDS = 600.0
 
 
 def _poll_cache_ttl(event_type, response):
@@ -995,8 +993,12 @@ def poll_events(
             ).one_or_none()
             if cursor_row is not None:
                 after_position = {"id": cursor_row.id, "timestamp": cursor_row.timestamp}
-                # Use (timestamp, id) tuple to avoid skipping/duplicating events with the same timestamp
+                # Use (timestamp, id) tuple to avoid skipping/duplicating events with the same timestamp.
+                # The implied `timestamp >=` bound is what lets PostgreSQL range-scan
+                # (network_id, timestamp): it cannot use the OR alone, and without
+                # it every at-head poll walked the workspace's entire history.
                 query = query.where(
+                    EventRecord.timestamp >= cursor_row.timestamp,
                     or_(
                         EventRecord.timestamp > cursor_row.timestamp,
                         and_(EventRecord.timestamp == cursor_row.timestamp, EventRecord.id > cursor_row.id),
@@ -1009,6 +1011,7 @@ def poll_events(
             ).one_or_none()
             if cursor_row is not None:
                 query = query.where(
+                    EventRecord.timestamp <= cursor_row.timestamp,
                     or_(
                         EventRecord.timestamp < cursor_row.timestamp,
                         and_(EventRecord.timestamp == cursor_row.timestamp, EventRecord.id < cursor_row.id),
@@ -1022,7 +1025,10 @@ def poll_events(
             query = query.where(EventRecord.target == f"channel/{channel}")
 
         if type:
-            query = query.where(event_type_filter(type))
+            if type in POLL_PREFIXES:
+                query = query.where(event_type_filter(type))
+            else:
+                query = query.where(EventRecord.type.in_(workspace_types_matching(db, workspace_id, type)))
 
         if exclude_message_types:
             excluded = [t.strip() for t in exclude_message_types.split(",") if t.strip()]
@@ -1233,21 +1239,16 @@ def list_conversations(
     except (ValueError, TypeError):
         return json_response(ResponseCode.BAD_REQUEST, "Invalid DM read markers")
 
-    from app.services.conversation_queries import conversation_pairs_query, conversation_detail_queries
+    from app.services.conversation_queries import conversation_detail_queries
     from app.services.visibility import resolve_viewer
     viewer = resolve_viewer(db, workspace, x_workspace_token, authorization)
-    visibility_filters = [_dm_privacy_clause(_dm_addresses(viewer))] if _dm_viewer_scope(viewer) else []
-    # The aggregation reads a workspace's whole DM history. Its inputs are the
-    # filters plus the DM history itself, so key on exactly those.
-    dm_scope = _dm_viewer_scope(viewer)
-    pairs_key = "v1events:dm-pairs:" + hashlib.sha1("|".join([
-        str(workspace.id), str(limit), agent or "", dm_scope or "", dm_generation(workspace.id),
-    ]).encode("utf-8")).hexdigest()
-    pairs = [SimpleNamespace(**row) for row in cache.json_singleflight(
-        pairs_key, CONVERSATION_PAIRS_CACHE_TTL_SECONDS,
-        lambda: [dict(row._mapping) for row in db.execute(
-            conversation_pairs_query(workspace.id, limit, agent, visibility_filters))],
-    )]
+    # Totals come from one incrementally maintained, workspace-wide summary;
+    # visibility depends only on each pair's participants, so filter per viewer.
+    from app.services.dm_summary import visible_pairs, workspace_pairs
+    from app.services.poll_queries import dm_rewrite_generation
+    all_pairs = workspace_pairs(db, workspace.id, dm_generation(workspace.id), dm_rewrite_generation(workspace.id))
+    viewer_addresses = _dm_addresses(viewer) if _dm_viewer_scope(viewer) else None
+    pairs = [SimpleNamespace(**row) for row in visible_pairs(all_pairs, viewer_addresses, agent, limit)]
 
     from app.models import DirectThreadLink, DirectThreadPreference
     # Stored per-person markers (shared across devices) merge with the ones
