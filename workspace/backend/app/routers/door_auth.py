@@ -83,10 +83,12 @@ def create_door_session(request: Request):
 # ---------------------------------------------------------------------------
 #
 # A phone app cannot read the door's cookie, and the door answers /door/ with
-# a 401 rather than a sign-in page. So the app opens the web page
-# /auth/app in the system's sign-in sheet: the door signs the person in like
-# any page, the page asks POST /door/app-code for a short code, and hands it
-# back to the app through its URL scheme. The app then trades the code at
+# a 401 rather than a sign-in page. So the app opens the door's own sign-in
+# (/oauth2/start) in the system's sign-in sheet, with /door/app-start as where
+# to go after; that answers with a redirect to the app's URL scheme carrying a
+# short code. (The web page /auth/app, which asks POST /door/app-code and
+# hands the code back from the browser, does the same for a door that cannot
+# take a return path.) The app then trades the code at
 # POST /v1/auth/app-session (outside the door, as all of /v1/ is) for the same
 # session /door/session mints.
 #
@@ -178,6 +180,36 @@ def create_app_code(body: AppCodeRequest, request: Request):
         return json_response(ResponseCode.UNAUTHORIZED, "Not signed in at the door")
     logger.info("door_auth: app code for %s", email)
     return success_response({"code": sign_app_code(email, body.challenge), "expires_in": APP_CODE_TTL})
+
+
+APP_RETURN = "pixelteam://auth"
+
+
+@router.get("/app-start")
+def app_start(request: Request, challenge: str = ""):
+    """The phone app's sign-in, straight back to the app: no page of ours between.
+
+    The app opens the door's own sign-in, /oauth2/start?rd=/door/app-start?challenge=…,
+    in the system's sign-in sheet. Once the door has signed the person in it
+    sends them here, and this answers with a redirect to the app's scheme
+    carrying the code — or the reason there is none — which the sheet catches.
+    """
+    from urllib.parse import urlencode
+    from fastapi.responses import RedirectResponse
+
+    def back(**params):
+        return RedirectResponse(f"{APP_RETURN}?{urlencode(params)}", status_code=302)
+
+    header = config.DOOR_EMAIL_HEADER
+    if not header or not workspace_session_enabled():
+        return back(error="no_door")
+    if not _CHALLENGE.match(challenge or ""):
+        return back(error="bad_request")
+    email = (request.headers.get(header) or "").strip().lower()
+    if not email or "@" not in email:
+        return back(error="not_signed_in")
+    logger.info("door_auth: app sign-in for %s", email)
+    return back(code=sign_app_code(email, challenge))
 
 
 app_router = APIRouter(prefix="/v1/auth", tags=["Auth"])

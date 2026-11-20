@@ -59,3 +59,23 @@ def test_nothing_on_a_deployment_without_a_door(client, monkeypatch):
     assert client.post("/door/app-code", json={"challenge": CHALLENGE}, headers=DOOR).status_code == 404
     code = door_auth.sign_app_code("somchai@team.test", CHALLENGE)
     assert client.post("/v1/auth/app-session", json={"code": code, "verifier": VERIFIER}).status_code == 404
+
+
+def test_app_start_goes_straight_back_to_the_app_with_a_code(client):
+    r = client.get("/door/app-start", params={"challenge": CHALLENGE}, headers=DOOR, follow_redirects=False)
+    assert r.status_code == 302
+    loc = r.headers["location"]
+    assert loc.startswith("pixelteam://auth?code=")
+    from urllib.parse import parse_qs, urlparse
+    code = parse_qs(urlparse(loc).query)["code"][0]
+    ok = client.post("/v1/auth/app-session", json={"code": code, "verifier": VERIFIER})
+    assert ok.status_code == 200 and ok.json()["data"]["email"] == "somchai@team.test"
+
+
+def test_app_start_says_why_to_the_app_rather_than_to_a_page(client, monkeypatch):
+    def where(**kw):
+        return client.get("/door/app-start", follow_redirects=False, **kw).headers["location"]
+    assert where(params={"challenge": CHALLENGE}) == "pixelteam://auth?error=not_signed_in"
+    assert where(params={"challenge": "x"}, headers=DOOR) == "pixelteam://auth?error=bad_request"
+    monkeypatch.setattr(config, "DOOR_EMAIL_HEADER", "")
+    assert where(params={"challenge": CHALLENGE}, headers=DOOR) == "pixelteam://auth?error=no_door"
