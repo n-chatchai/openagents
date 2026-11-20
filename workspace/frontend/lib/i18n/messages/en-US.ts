@@ -1660,6 +1660,9 @@ export const messages = {
     desktopNoSession: 'Signed in, but no desktop session was issued. Please try again.',
     desktopUnreachable: 'Could not reach the desktop app.',
     desktopReturn: 'You are signed in. Return to OpenAgents to continue.',
+    appLinkInvalid: 'This link is missing the information the phone app needs.',
+    appNoDoor: 'This workspace cannot sign in the phone app.',
+    appReturn: 'You are signed in. Return to the app to continue.',
   },
 
   notFound: {

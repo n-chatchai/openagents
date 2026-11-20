@@ -1626,6 +1626,9 @@ export const messages: Messages = {
     desktopNoSession: '已登录，但未能获取桌面应用会话，请重试。',
     desktopUnreachable: '无法连接到桌面应用。',
     desktopReturn: '你已登录，请返回 OpenAgents 继续使用。',
+    appLinkInvalid: '此链接缺少手机应用所需的信息。',
+    appNoDoor: '此工作区无法为手机应用登录。',
+    appReturn: '你已登录，请返回应用继续使用。',
   },
 
   notFound: {
