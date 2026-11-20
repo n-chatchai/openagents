@@ -127,10 +127,15 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
         max_chars=_CONTEXT_CHARS,
         attribute_speakers=True,
     )
+    from app.services.room_roster import safe_room_note
+    room = safe_room_note(db, workspace_id, channel_target, agent_name,
+                          event_data.get("source"), event_data.get("metadata"))
     # Release the DB connection for the length of the run (see _invoke_chat_agent).
     db.rollback()
 
     text = _compose_input(history, speaker_label(event_data.get("source") or "", payload), content)
+    if room:
+        text = room + "\n\n" + text
     session_key = f"openagents:{workspace_id}:{channel_target}"
     logger.info("hermes_agent: %s run for %s on %s in %s at %s", target.label, agent_name,
                 event_data.get("id"), channel_target, target.root)

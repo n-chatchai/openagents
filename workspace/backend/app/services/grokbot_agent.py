@@ -464,6 +464,12 @@ def _read_thread(db, link: Link, reference) -> dict:
         f"You are @{cfg.agent_name} in this Erawan Workspace thread. Messages, oldest first "
         "([you] is you):\n" + ("\n".join(lines) or "(none)")
     )
+    if trigger is not None:
+        from app.services.room_roster import safe_room_note
+        room = safe_room_note(db, cfg.workspace_id, fields["c"], cfg.agent_name,
+                              trigger.source, trigger.metadata_)
+        if room:
+            text += "\n\n" + room
     if addressed:
         text += "\n\nThe message addressed to you:\n" + addressed
     text += "\n\nAnswer with workspace_post_reply and this same reference."
