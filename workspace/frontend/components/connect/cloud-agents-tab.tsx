@@ -86,8 +86,11 @@ export function CloudAgentsTab({
   const t = useT();
   const isTokenPay = selectedProvider === 'tokenpay';
   const isHermes = selectedProvider === 'hermes';
-  // Somebody's own Chang Bot: a connection token from the Chang Bot app, nothing else.
+  // Somebody's own Pixel Bot: a connection token from the Pixel Bot app, nothing else.
   const isChangbot = selectedProvider === 'changbot';
+  // Erawan OPS, the operators' agent: a key from the ops page, nothing else.
+  const isErawanOps = selectedProvider === 'erawanops';
+  const isTokenOnly = isChangbot || isErawanOps;
   // Somebody's own Grok Bot: a plugin and a webhook routine, set up in steps.
   const isGrokbot = selectedProvider === 'grokbot';
   const tokenPay = useTokenPayModels(isTokenPay, cfgKey);
@@ -102,7 +105,7 @@ export function CloudAgentsTab({
   // Somebody's own agents first: in a team's workspace that is what most
   // people come here to add.
   const providerGroups = [
-    { label: t('connect.groupYourAgents'), names: ['changbot', 'grokbot', 'hermes'] },
+    { label: t('connect.groupYourAgents'), names: ['changbot', 'grokbot', 'hermes', 'erawanops'] },
     { label: t('connect.groupChat'), names: ['openai', 'anthropic', 'google', 'xai', 'deepseek', 'mistral', 'sensenova'] },
     { label: t('connect.groupSearch'), names: ['perplexity', 'manus'] },
     { label: t('connect.groupFast'), names: ['groq', 'together', 'fireworks', 'openrouter', 'tokenpay', 'sambanova', 'cerebras'] },
@@ -128,7 +131,7 @@ export function CloudAgentsTab({
               {selectedProviderInfo.label}
             </CardTitle>
             <CardDescription>
-              {isGrokbot ? t('connect.grokSubtitle') : isChangbot ? t('connect.changbotSubtitle') : isHermes ? t('connect.hermesSubtitle') : isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
+              {isGrokbot ? t('connect.grokSubtitle') : isChangbot ? t('connect.changbotSubtitle') : isErawanOps ? t('connect.erawanopsSubtitle') : isHermes ? t('connect.hermesSubtitle') : isCustomProvider ? t('connect.customSubtitle') : t('connect.providerSubtitle')}
             </CardDescription>
           </CardHeader>
 
@@ -257,17 +260,18 @@ export function CloudAgentsTab({
 
             {/* API Key */}
             {!isTokenPay && <Field>
-              <FieldLabel htmlFor="cloud-key">{isChangbot ? t('connect.changbotTokenLabel') : t('connect.apiKey')}</FieldLabel>
+              <FieldLabel htmlFor="cloud-key">{isTokenOnly ? t('connect.changbotTokenLabel') : t('connect.apiKey')}</FieldLabel>
               <Input
                 id="cloud-key"
                 type="password"
                 value={cfgKey}
                 onChange={(e) => setCfgKey(e.target.value)}
-                placeholder={isHermes ? 'API_SERVER_KEY' : isChangbot ? '' : t('connect.apiKeyPlaceholder')}
+                placeholder={isHermes ? 'API_SERVER_KEY' : isTokenOnly ? '' : t('connect.apiKeyPlaceholder')}
                 className="text-sm font-mono h-9"
               />
               {isHermes && <FieldDescription>{t('connect.hermesKeyHint')}</FieldDescription>}
               {isChangbot && <FieldDescription>{t('connect.changbotTokenHint')}</FieldDescription>}
+              {isErawanOps && <FieldDescription>{t('connect.erawanopsKeyHint')}</FieldDescription>}
             </Field>}
 
             {/* Advanced */}

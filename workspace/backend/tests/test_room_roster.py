@@ -136,7 +136,7 @@ def test_facts_for_erawans_own_platform_carry_verified_addresses(workspace, db):
     assert room_facts(db, workspace["id"], "channel/sales", "nok", f"human:{SOMCHAI}", {})["requester_email"] is None
 
 
-def _platform_run(monkeypatch, workspace, db, token):
+def _platform_run(monkeypatch, workspace, db, token, ops=False):
     import asyncio
     import time
     from types import SimpleNamespace
@@ -174,7 +174,8 @@ def _platform_run(monkeypatch, workspace, db, token):
     event = {"id": "evt-9", "source": source, "target": "channel/sales", "metadata": metadata,
              "payload": {"content": "@nok สถานะ"}, "timestamp": int(time.time() * 1000)}
     cfg = SimpleNamespace(agent_name="nok", api_key=token)
-    asyncio.run(changbot_agent.invoke_changbot_agent(db, workspace["id"], event, cfg, 0))
+    invoke = changbot_agent.invoke_erawanops_agent if ops else changbot_agent.invoke_changbot_agent
+    asyncio.run(invoke(db, workspace["id"], event, cfg, 0))
     return bodies
 
 
@@ -185,9 +186,9 @@ def test_a_pixel_bot_connection_tells_the_gateway_the_room(workspace, db, monkey
     assert body["room"]["requester_email"] == SOMYING and SOMCHAI in body["room"]["people"]
 
 
-def test_an_erawan_ops_key_goes_to_the_platforms_ops_door(workspace, db, monkeypatch):
+def test_erawan_ops_runs_go_to_the_platforms_ops_door(workspace, db, monkeypatch):
     _room(db, workspace)
-    ((url, body),) = _platform_run(monkeypatch, workspace, db, "eops_abc.def")
+    ((url, body),) = _platform_run(monkeypatch, workspace, db, "eops_abc.def", ops=True)
     assert url.endswith("/internal/ops/workspace/v1/runs")
     assert body["room"]["people"] and body["session_key"]
 
@@ -196,3 +197,11 @@ def test_a_third_partys_hermes_gets_no_addresses(workspace, db, monkeypatch):
     from app.services import hermes_agent
     target = hermes_agent.RunTarget(root="https://hermes.test/v1", api_key="k")
     assert target.room_facts is False
+
+
+def test_an_ops_key_in_the_pixel_bot_card_is_sent_to_the_right_card():
+    import asyncio
+    from app.services import changbot_agent
+    why = asyncio.run(changbot_agent.probe("eops_abc.def"))
+    assert why and "Erawan OPS card" in why
+    assert "eops_" in asyncio.run(changbot_agent.probe_ops("pbc_token"))

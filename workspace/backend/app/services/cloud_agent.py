@@ -174,7 +174,7 @@ async def _invoke_cloud_agents(workspace_id: str, event_data: dict) -> None:
                 error_detail = str(exc)[:200] if str(exc) else "Unknown error"
                 from app.services.hermes_agent import AgentRunError
                 # An agent that words its own refusals for the people in the
-                # room (the Chang Bot gateway) is shown as it said it.
+                # room (the Pixel Bot gateway) is shown as it said it.
                 if isinstance(exc, AgentRunError):
                     message = str(exc)[:500]
                 else:
@@ -197,7 +197,9 @@ async def _invoke_single(
     from app.services.yumi import YUMI_PROVIDER
     from app.services.personal_assistant import may_invoke
     from app.services.hermes_agent import HERMES_PROVIDER, invoke_hermes_agent
-    from app.services.changbot_agent import CHANGBOT_PROVIDER, invoke_changbot_agent
+    from app.services.changbot_agent import (
+        CHANGBOT_PROVIDER, ERAWANOPS_PROVIDER, invoke_changbot_agent, invoke_erawanops_agent,
+    )
     from app.services.grokbot_agent import GROKBOT_PROVIDER, invoke_grokbot_agent
     if cloud_config.provider == YUMI_PROVIDER and not may_invoke(db, workspace_id, event_data):
         logger.info("Yumi: ignoring invocation outside a personal conversation")
@@ -206,6 +208,8 @@ async def _invoke_single(
         await invoke_hermes_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == CHANGBOT_PROVIDER:
         await invoke_changbot_agent(db, workspace_id, event_data, cloud_config, depth)
+    elif cloud_config.provider == ERAWANOPS_PROVIDER:
+        await invoke_erawanops_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == GROKBOT_PROVIDER:
         await invoke_grokbot_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == YUMI_PROVIDER or cloud_config.category == "assistant":

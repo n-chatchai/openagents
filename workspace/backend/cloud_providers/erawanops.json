@@ -1,0 +1,15 @@
+{
+  "name": "erawanops",
+  "label": "Erawan OPS",
+  "description": "Erawan OPS, the agent that looks after Erawan Cloud: paste a key made on the ops page. It answers only a room of Erawan operators.",
+  "description_zh": "Erawan OPS：照看 Erawan Cloud 的智能体。粘贴在运维页面生成的密钥；只在全是 Erawan 运维人员的会话中回答。",
+  "base_url": null,
+  "order": 203,
+  "models": [
+    {
+      "id": "erawanops",
+      "category": "chat",
+      "label": "Erawan OPS"
+    }
+  ]
+}

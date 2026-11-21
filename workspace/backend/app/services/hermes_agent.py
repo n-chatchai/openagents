@@ -21,7 +21,7 @@ Hermes keeps its own history of the thread; each run carries only what other
 people said since its last reply. Paperclip's hermes_gateway adapter talks to
 Hermes the same way.
 
-The runner below is shared: Chang Bot (app/services/changbot_agent.py) is a
+The runner below is shared: Pixel Bot (app/services/changbot_agent.py) is a
 Hermes behind Erawan's gateway, which speaks the same runs protocol under its
 own root and keeps approvals for the bot's owner.
 
@@ -76,7 +76,7 @@ class RunTarget:
     session_in_body: bool = False
     approvals: str = "deny"
     headers: dict = field(default_factory=dict)
-    # The far side words its refusals and failures for the room (the Chang Bot
+    # The far side words its refusals and failures for the room (the Pixel Bot
     # gateway, in Thai): show them as they are, without the room's own frame.
     own_errors: bool = False
     # Erawan's own platform (Pixel Bot, Erawan OPS) is told the room as data —
@@ -254,7 +254,7 @@ async def _follow_stream(http, target, headers, run_id, deltas, deadline, notes)
 
     A stream that goes quiet is picked up again from the last event seen
     (Last-Event-ID): a long tool call sends nothing, and neither Hermes nor
-    the Chang Bot gateway keeps the line alive meanwhile.
+    the Pixel Bot gateway keeps the line alive meanwhile.
     """
     url = f"{target.root}/runs/{run_id}/events"
     timeout = httpx.Timeout(30.0, read=_STREAM_IDLE)
@@ -335,7 +335,7 @@ async def _on_approval(http, target, headers, run_id, event, notes) -> None:
     """An approval the agent asks for: answered here, or left to its owner."""
     what = event.get("description") or event.get("command") or "an action"
     if target.approvals == "owner":
-        # Somebody else holds the answer (Chang Bot: a card on the owner's
+        # Somebody else holds the answer (Pixel Bot: a card on the owner's
         # phone). Say once what the run waits on; the stream carries on when
         # it is answered.
         note = f"({target.label} asked its owner to approve {what}.)"

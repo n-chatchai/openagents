@@ -27,7 +27,9 @@ from app.routers.network import _resolve_workspace, _verify_workspace_access
 from app.config import config
 from app.services.cloud_providers import providers_catalog, validate_provider_model
 from app.services.hermes_agent import HERMES_PROVIDER, probe as hermes_probe
-from app.services.changbot_agent import CHANGBOT_PROVIDER, probe as changbot_probe
+from app.services.changbot_agent import (
+    CHANGBOT_PROVIDER, ERAWANOPS_PROVIDER, probe as changbot_probe, probe_ops as erawanops_probe,
+)
 from app.services.grokbot_agent import GROKBOT_PROVIDER
 from app.services.yumi import (
     YUMI_CATEGORY,
@@ -214,13 +216,20 @@ def add_cloud_agent(
         if problem:
             return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Hermes: {problem}")
         member_description = "Hermes Agent (bring your own)"
-    # Somebody's own Chang Bot (app/services/changbot_agent.py): the gateway
-    # must take the connection token from the Chang Bot app.
+    # Somebody's own Pixel Bot (app/services/changbot_agent.py): the gateway
+    # must take the connection token from the Pixel Bot app.
     if body.provider == CHANGBOT_PROVIDER:
         problem = asyncio.run(changbot_probe(body.api_key))
         if problem:
-            return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Chang Bot: {problem}")
-        member_description = "Chang Bot (Erawan)"
+            return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Pixel Bot: {problem}")
+        member_description = "Pixel Bot (Erawan)"
+    # Erawan OPS, the operators' agent: a key from the ops page, and the
+    # platform's door for it must take it (app/services/changbot_agent.py).
+    if body.provider == ERAWANOPS_PROVIDER:
+        problem = asyncio.run(erawanops_probe(body.api_key))
+        if problem:
+            return json_response(ResponseCode.BAD_REQUEST, f"Could not reach Erawan OPS: {problem}")
+        member_description = "Erawan OPS (answers a room of Erawan operators)"
     # Somebody's own Grok Bot (app/services/grokbot_agent.py): it joins first,
     # with nothing to probe; its plugin key and routine webhook come in the
     # setup steps after (routers/grokbot.py).
