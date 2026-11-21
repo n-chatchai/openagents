@@ -2097,7 +2097,14 @@ def delete_workspace(
     x_workspace_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ):
-    """Soft-delete a workspace (set status to 'deleted'). Requires workspace token or Firebase owner auth."""
+    """Soft-delete a workspace (set status to 'deleted').
+
+    A person must be its admin or owner: any member used to pass, so anyone
+    invited could delete the whole team. The machine token stays trusted as
+    upstream has it (and alone it opens nothing behind SHARED_TOKEN_NEEDS_PERSON).
+    """
+    from app.access import verify_workspace_access
+
     workspace = db.execute(
         select(Workspace).where(_workspace_filter(workspace_id))
     ).scalar_one_or_none()
@@ -2105,8 +2112,10 @@ def delete_workspace(
     if not workspace or workspace.status == "deleted":
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
-    if not _verify_workspace_access(workspace, x_workspace_token, authorization):
+    if not verify_workspace_access(workspace, x_workspace_token, authorization, db=db):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
+    if not verify_workspace_access(workspace, x_workspace_token, authorization, db=db, min_role="admin"):
+        return json_response(ResponseCode.FORBIDDEN, "Only an admin or owner can delete the workspace")
 
     workspace.status = "deleted"
     db.commit()

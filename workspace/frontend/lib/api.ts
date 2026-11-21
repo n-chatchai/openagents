@@ -363,6 +363,11 @@ class WorkspaceApi {
     return this.request<Workspace>(`/v1/workspaces/${this.workspaceId}`);
   }
 
+  /** Soft-delete this workspace (admin or owner; backend DELETE /v1/workspaces/{id}). */
+  async deleteWorkspace(): Promise<void> {
+    await this.request(`/v1/workspaces/${this.workspaceId}`, { method: 'DELETE' });
+  }
+
   async updateWorkspace(updates: { name?: string; settings?: Record<string, unknown>; browserfabric_api_key?: string; require_login?: boolean }): Promise<Workspace> {
     return this.request<Workspace>(`/v1/workspaces/${this.workspaceId}`, {
       method: 'PATCH',

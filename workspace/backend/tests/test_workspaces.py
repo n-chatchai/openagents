@@ -820,3 +820,42 @@ class TestMemberModel:
         self._join(client, workspace, "agent-alpha")
         resp = self._patch(client, workspace, "agent-alpha", "bad\nmodel")
         assert resp.status_code == 400
+
+
+class TestDeleteWorkspaceNeedsAnAdmin:
+    """A member must not be able to delete the whole team; an admin or owner may."""
+
+    def _person(self, db, workspace, email, role):
+        from app.config import config
+        from app.firebase_auth import mint_workspace_session
+        from app.models import User, WorkspaceMembership
+        if not config.WORKSPACE_SESSION_SECRET:
+            config.WORKSPACE_SESSION_SECRET = "test-session-secret-at-least-32-bytes"
+        user = User(email=email)
+        db.add(user)
+        db.flush()
+        db.add(WorkspaceMembership(workspace_id=workspace["id"], user_id=user.id, role=role))
+        db.commit()
+        token, _ = mint_workspace_session({"email": email, "display_name": None, "email_verified": True})
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_a_member_cannot_delete_it(self, client, db, workspace):
+        member = self._person(db, workspace, "member@team.test", "member")
+        r = client.delete(f"/v1/workspaces/{workspace['id']}", headers=member)
+        assert r.status_code == 403
+        still = client.get(f"/v1/workspaces/{workspace['id']}", headers=member)
+        assert still.status_code == 200
+
+    def test_an_admin_can(self, client, db, workspace):
+        admin = self._person(db, workspace, "admin@team.test", "admin")
+        r = client.delete(f"/v1/workspaces/{workspace['id']}", headers=admin)
+        assert r.status_code == 200 and r.json()["data"]["status"] == "deleted"
+
+    def test_a_stranger_gets_nothing(self, client, db, workspace):
+        from app.config import config
+        from app.firebase_auth import mint_workspace_session
+        if not config.WORKSPACE_SESSION_SECRET:
+            config.WORKSPACE_SESSION_SECRET = "test-session-secret-at-least-32-bytes"
+        token, _ = mint_workspace_session({"email": "stranger@else.test", "display_name": None, "email_verified": True})
+        r = client.delete(f"/v1/workspaces/{workspace['id']}", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 401

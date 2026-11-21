@@ -6,6 +6,8 @@ import { toast } from 'sonner';
 import { Input } from '@/components/ui/input';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
 import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { usePrompt } from '@/components/ui/dialogs-provider';
 import { useAdminSettings, canAdminister } from '@/components/settings/admin-context';
 import { ReadOnlyBanner, SectionHeader } from '@/components/settings/section-chrome';
 import { SettingsCard, SettingsRow } from '@/components/settings/settings-card';
@@ -40,6 +42,28 @@ export default function GeneralSettingsPage() {
   const [name, setName] = useState(workspace.name);
   const [monitorMode, setMonitorMode] = useState(!!workspace.settings?.monitorMode);
   const [saving, setSaving] = useState<Part | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const prompt = usePrompt();
+
+  // Typing the name is the confirmation: the whole team loses the workspace.
+  const deleteWorkspace = async () => {
+    const typed = await prompt({
+      title: t('admin.deleteWorkspaceConfirm'),
+      description: workspace.name,
+      confirmText: t('admin.deleteWorkspaceButton'),
+      validate: (v) => (v.trim() === workspace.name.trim() ? null : t('admin.deleteWorkspaceMismatch')),
+    });
+    if (typed === null) return;
+    setDeleting(true);
+    try {
+      await workspaceApi.deleteWorkspace();
+      toast.success(t('admin.deleteWorkspaceDone'));
+      window.location.assign('/');
+    } catch {
+      toast.error(t('admin.deleteWorkspaceFailed'));
+      setDeleting(false);
+    }
+  };
 
   // Deliberately without any ?token= — links we surface for sharing must
   // never carry the workspace machine token (use invite links instead).
@@ -112,6 +136,16 @@ export default function GeneralSettingsPage() {
           <Switch id="general-monitor-mode" checked={monitorMode} onCheckedChange={setMonitorMode} disabled={!editable} />
         </SettingsRow>
       </SettingsCard>
+
+      {editable && (
+        <SettingsCard title={t('admin.deleteWorkspaceTitle')} description={t('admin.deleteWorkspaceHint')}>
+          <div>
+            <Button variant="destructive" onClick={deleteWorkspace} disabled={deleting}>
+              {t('admin.deleteWorkspaceButton')}
+            </Button>
+          </div>
+        </SettingsCard>
+      )}
     </div>
   );
 }
