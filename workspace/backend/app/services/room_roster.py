@@ -52,7 +52,7 @@ def _people_names(db, emails) -> dict:
     return {e: names.get(e) or _flat(e.split("@", 1)[0]) or "someone" for e in emails}
 
 
-def _room_people(db, workspace_id: str, channel) -> list:
+def _room_people(db, workspace_id: str, channel, limit: Optional[int] = _MAX_PEOPLE) -> list:
     """Emails of the people who can read the thread, owner first."""
     from app.models import User, WorkspaceMembership
     from app.services.access_model import channel_participant_emails
@@ -67,7 +67,7 @@ def _room_people(db, workspace_id: str, channel) -> list:
     else:
         emails = list(channel_participant_emails(db, channel))
     ordered = ([owner] if owner else []) + sorted({_norm(e) for e in emails} - {owner, ""})
-    return ordered[:_MAX_PEOPLE]
+    return ordered if limit is None else ordered[:limit]
 
 
 def _channel(db, workspace_id: str, channel_target: str):
@@ -168,3 +168,45 @@ def safe_room_note(db, workspace_id, channel_target, agent_name, source, metadat
         except Exception:
             pass
         return ""
+
+
+def room_facts(db, workspace_id: str, channel_target: str, agent_name: str,
+               source: Optional[str], metadata: Optional[dict]) -> Optional[dict]:
+    """The room as data, for a bot reached through Erawan's own platform.
+
+    Unlike the note, this carries addresses: it goes to Erawan's platform (the
+    Pixel Bot gateway, Erawan OPS), never to a third party, so the bot's side
+    can decide by who is really there — Erawan OPS answers only a room of
+    operators. The asker is set only when the server stamped the sender.
+    None outside a thread.
+    """
+    from app.models import WorkspaceMember
+
+    channel = _channel(db, str(workspace_id), channel_target or "")
+    if channel is None:
+        return None
+    me = db.get(WorkspaceMember, (str(workspace_id), agent_name))
+    asking_bot = (source or "")[len("openagents:"):] if (source or "").startswith("openagents:") else None
+    return {
+        "workspace": str(workspace_id),
+        "room": channel.name,
+        "requester_email": verified_sender(source, metadata),
+        "requester_bot": asking_bot,
+        "people": _room_people(db, str(workspace_id), channel, limit=None),
+        "owner_email": _norm(me.owner_email) if me is not None else None,
+    }
+
+
+def safe_room_facts(db, workspace_id, channel_target, agent_name, source, metadata) -> Optional[dict]:
+    """room_facts, or None if it fails; the bot's side then refuses what it must."""
+    import logging
+
+    try:
+        return room_facts(db, str(workspace_id), channel_target or "", agent_name, source, metadata)
+    except Exception as e:  # pragma: no cover - defensive
+        logging.getLogger(__name__).warning("room_roster: no facts for %s: %s", agent_name, e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None

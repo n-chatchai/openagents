@@ -29,18 +29,44 @@ CHANGBOT_PROVIDER = "changbot"
 _LABEL = "Chang Bot"
 
 
+# Erawan OPS, the operators' agent, comes in the same way (bring your own
+# bot): an operator makes a key on the ops page and pastes it here. Its key
+# says it is OPS, and its runs go to the platform's own door for it, which
+# answers only a room of operators (control plane ops_agent.py).
+OPS_KEY_PREFIX = "eops_"
+_OPS_LABEL = "Erawan OPS"
+
+
 def _root() -> str:
     gateway = os.environ.get("CHANGBOT_GATEWAY_URL", "https://changbot.erawan.cloud").rstrip("/")
     return f"{gateway}/v1/agent"
 
 
+def _ops_root() -> str:
+    base = os.environ.get("ERAWAN_OPS_WORKSPACE_URL",
+                          "http://erawan-api.erawan.svc.cluster.local:9001/internal/ops/workspace")
+    return f"{base.rstrip('/')}/v1"
+
+
+def is_ops_key(token: Optional[str]) -> bool:
+    return bool(token) and str(token).startswith(OPS_KEY_PREFIX)
+
+
+def target_for(token: str) -> RunTarget:
+    """Where this connection's runs go: the Pixel Bot gateway, or Erawan OPS's door."""
+    if is_ops_key(token):
+        return RunTarget(root=_ops_root(), api_key=token, label=_OPS_LABEL, session_in_body=True,
+                         approvals="owner", own_errors=True, room_facts=True)
+    return RunTarget(root=_root(), api_key=token, label=_LABEL, session_in_body=True,
+                     approvals="owner", own_errors=True, room_facts=True)
+
+
 async def invoke_changbot_agent(db, workspace_id: str, event_data: dict, cloud_config, depth: int) -> None:
-    """Run the addressed Chang Bot on the trigger message and post its answer."""
-    target = RunTarget(root=_root(), api_key=cloud_config.api_key, label=_LABEL,
-                       session_in_body=True, approvals="owner", own_errors=True)
-    await invoke_run_agent(db, workspace_id, event_data, cloud_config, depth, target)
+    """Run the addressed Chang Bot (or Erawan OPS) on the trigger message and post its answer."""
+    await invoke_run_agent(db, workspace_id, event_data, cloud_config, depth, target_for(cloud_config.api_key))
 
 
 async def probe(token: str) -> Optional[str]:
-    """None when the gateway takes this connection token, else why not."""
-    return await probe_root(_root(), token, _LABEL, credential="connection token")
+    """None when the gateway (or OPS's door) takes this connection token, else why not."""
+    target = target_for(token)
+    return await probe_root(target.root, token, target.label, credential="connection token")

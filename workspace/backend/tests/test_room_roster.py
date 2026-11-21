@@ -123,3 +123,76 @@ def test_a_hermes_run_starts_with_the_room_note(workspace, db, monkeypatch):
     assert "This message is from สมหญิง, a teammate, not your owner." in text
     assert text.rstrip().endswith("@nok สรุปยอดขาย")
     assert posted == ["done"]
+
+
+def test_facts_for_erawans_own_platform_carry_verified_addresses(workspace, db):
+    from app.services.room_roster import room_facts
+    _room(db, workspace)
+    facts = room_facts(db, workspace["id"], "channel/sales", "nok", *_human(SOMYING))
+    assert facts["room"] == "sales" and facts["workspace"] == workspace["id"]
+    assert facts["requester_email"] == SOMYING and facts["owner_email"] == SOMCHAI
+    assert set(facts["people"]) == {SOMCHAI, SOMYING}
+    # An unstamped sender is nobody the platform may trust.
+    assert room_facts(db, workspace["id"], "channel/sales", "nok", f"human:{SOMCHAI}", {})["requester_email"] is None
+
+
+def _platform_run(monkeypatch, workspace, db, token):
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    from app.services import changbot_agent, cloud_agent, hermes_agent
+
+    bodies = []
+
+    class Resp:
+        status_code = 202
+        def json(self):
+            return {"run_id": "r1"}
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, url, headers=None, json=None):
+            bodies.append((url, json))
+            return Resp()
+
+    async def follow(*a, **k):
+        return ("completed", "ok", None)
+
+    async def fake_post(*a, **k):
+        return None
+
+    monkeypatch.setattr(hermes_agent.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(hermes_agent, "_follow_stream", follow)
+    monkeypatch.setattr(cloud_agent, "_post_response", fake_post)
+    source, metadata = _human(SOMYING)
+    event = {"id": "evt-9", "source": source, "target": "channel/sales", "metadata": metadata,
+             "payload": {"content": "@nok สถานะ"}, "timestamp": int(time.time() * 1000)}
+    cfg = SimpleNamespace(agent_name="nok", api_key=token)
+    asyncio.run(changbot_agent.invoke_changbot_agent(db, workspace["id"], event, cfg, 0))
+    return bodies
+
+
+def test_a_pixel_bot_connection_tells_the_gateway_the_room(workspace, db, monkeypatch):
+    _room(db, workspace)
+    ((url, body),) = _platform_run(monkeypatch, workspace, db, "pbc_token")
+    assert "/v1/agent/runs" in url
+    assert body["room"]["requester_email"] == SOMYING and SOMCHAI in body["room"]["people"]
+
+
+def test_an_erawan_ops_key_goes_to_the_platforms_ops_door(workspace, db, monkeypatch):
+    _room(db, workspace)
+    ((url, body),) = _platform_run(monkeypatch, workspace, db, "eops_abc.def")
+    assert url.endswith("/internal/ops/workspace/v1/runs")
+    assert body["room"]["people"] and body["session_key"]
+
+
+def test_a_third_partys_hermes_gets_no_addresses(workspace, db, monkeypatch):
+    from app.services import hermes_agent
+    target = hermes_agent.RunTarget(root="https://hermes.test/v1", api_key="k")
+    assert target.room_facts is False

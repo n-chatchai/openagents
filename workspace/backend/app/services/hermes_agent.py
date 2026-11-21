@@ -79,6 +79,11 @@ class RunTarget:
     # The far side words its refusals and failures for the room (the Chang Bot
     # gateway, in Thai): show them as they are, without the room's own frame.
     own_errors: bool = False
+    # Erawan's own platform (Pixel Bot, Erawan OPS) is told the room as data —
+    # who asked and who is in it — so its side can decide whether to answer
+    # (room_roster.room_facts). Never set for a third party's bot.
+    room_facts: bool = False
+    room: Optional[dict] = None
 
 
 def api_base(base_url: Optional[str]) -> str:
@@ -130,6 +135,10 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
     from app.services.room_roster import safe_room_note
     room = safe_room_note(db, workspace_id, channel_target, agent_name,
                           event_data.get("source"), event_data.get("metadata"))
+    if target.room_facts:
+        from app.services.room_roster import safe_room_facts
+        target.room = safe_room_facts(db, workspace_id, channel_target, agent_name,
+                                      event_data.get("source"), event_data.get("metadata"))
     # Release the DB connection for the length of the run (see _invoke_chat_agent).
     db.rollback()
 
@@ -196,6 +205,8 @@ async def _run(target: RunTarget, text: str, session_key: str,
         body = {"input": text}
         if target.session_in_body:
             body["session_key"] = session_key
+        if target.room_facts and target.room is not None:
+            body["room"] = target.room
         r = await http.post(f"{target.root}/runs", headers=start_headers, json=body)
         if r.status_code not in (200, 201, 202):
             if target.own_errors:
