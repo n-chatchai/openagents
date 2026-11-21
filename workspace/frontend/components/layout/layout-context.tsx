@@ -11,6 +11,8 @@ import {
   useState,
   useTransition
 } from 'react';
+import { useWorkspace } from '@/lib/workspace-context';
+import { useThreadViewState, type BrowserView } from './use-thread-view-state';
 import type { ArtifactReference } from '@/lib/thread-artifacts';
 import { requestedResource } from '@/lib/resource-link';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -61,7 +63,7 @@ const DEFAULT_FILES_BROWSE: FilesBrowseState = {
  * over the full detail area, so the sidebar collapses down to the rail.
  */
 export const VIEWS_WITH_LIST: ReadonlySet<ViewMode> = new Set<ViewMode>([
-  'threads', 'files', 'routines', 'knowledge',
+  'threads', 'files', 'knowledge',
 ]);
 
 /**
@@ -118,9 +120,24 @@ export const RAIL_WIDTH_EXPANDED = 208;
 
 /** On mobile, which pane is showing: the list or the detail */
 export type MobilePane = 'list' | 'detail';
-export type ConnectSetupRequest = { method: 'desktop' | 'terminal' };
+export type DeviceSetupMethod = 'desktop' | 'terminal' | 'agent';
+export type ConnectSetupRequest = { method: DeviceSetupMethod | 'cloud' };
+
+/** Which device agent's full settings to open, and the device it is on. */
+export interface EditAgentRequest {
+  agentName: string;
+  nodeId: string;
+}
 
 interface LayoutState {
+  selectedBrowser: ArtifactReference | null;
+  browserView: BrowserView | null;
+  browserWatchOnly: boolean;
+  setBrowserView: (view: BrowserView, browser?: ArtifactReference, watchOnly?: boolean) => void;
+  hasSavedThreadView: boolean;
+  applyThreadArtifactDefault: (artifact: ArtifactReference | null, unavailable?: boolean) => void;
+  conversationWidth: number;
+  setConversationWidth: (width: number) => void;
   selectedArtifact: ArtifactReference | null;
   setSelectedArtifact: (artifact: ArtifactReference | null) => void;
   openArtifact: (artifact: ArtifactReference) => void;
@@ -150,6 +167,13 @@ interface LayoutState {
   addAgentPending: boolean;
   /** The connect view calls this once it has opened the gallery. */
   consumeAddAgent: () => void;
+  /** Close the agent profile and open Connect Agents on the full settings of
+   * one device agent. */
+  openEditAgent: (request: EditAgentRequest) => void;
+  /** Set by `openEditAgent` until the devices tab acts on it. */
+  editAgentPending: EditAgentRequest | null;
+  /** The devices tab calls this once it has acted on the request. */
+  consumeEditAgent: () => void;
   threadFilter: 'all' | 'channels' | 'starred' | 'archived' | 'dms';
   setThreadFilter: (filter: 'all' | 'channels' | 'starred' | 'archived' | 'dms') => void;
   selectedAgentName: string | null;
@@ -165,6 +189,8 @@ interface LayoutState {
   isDetailExpanded: boolean;
   toggleDetailExpanded: () => void;
   /** Whether the current view has a list panel at all */
+  selectedRoutineId: string | null;
+  setSelectedRoutineId: (id: string | null) => void;
   hasListPanel: boolean;
   /** Whether the icon rail is widened to show its labels */
   isRailExpanded: boolean;
@@ -207,6 +233,13 @@ const LayoutContext = createContext<LayoutState | undefined>(undefined);
 
 export function LayoutProvider({ children }: { children: ReactNode }) {
   const isMobile = useIsMobile();
+  const { workspace, currentUser, currentSessionId } = useWorkspace();
+  const threadView = useThreadViewState(workspace?.workspaceId || '', currentUser.id, currentSessionId || '');
+  const { selectedArtifact, selectedBrowser, browserView, browserWatchOnly, previewOpen: showBrowserPreview, conversationWidth } = threadView.state;
+  const setSelectedArtifact = useCallback((artifact: ArtifactReference | null) => threadView.update({ selectedArtifact: artifact }), [threadView.update]);
+  const setShowBrowserPreview = useCallback((open: boolean) => threadView.update({ previewOpen: open }), [threadView.update]);
+  const setBrowserView = useCallback((view: BrowserView, browser?: ArtifactReference, watchOnly = false) => threadView.update({ browserView: view, browserWatchOnly: watchOnly, ...(view === 'closed' ? { selectedBrowser: null } : browser ? { selectedBrowser: browser } : {}) }), [threadView.update]);
+  const setConversationWidth = useCallback((width: number) => threadView.update({ conversationWidth: width }), [threadView.update]);
   const [threadFilter, setThreadFilter] = useState<'all' | 'channels' | 'starred' | 'archived' | 'dms'>('all');
   const [viewMode, setViewMode] = useState<ViewMode>('threads');
   useEffect(() => {
@@ -225,25 +258,14 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (requestedResource(window.location.href)?.id || /\/threads\//.test(window.location.pathname) || new URLSearchParams(window.location.search).has('thread')) setMobilePane('detail');
   }, []);
-  const [splitBrowser, setSplitBrowser] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem('x-split-browser') === '1';
-  });
-
-  const handleSetSplitBrowser = (v: boolean) => {
-    setSplitBrowser(v);
-    localStorage.setItem('x-split-browser', v ? '1' : '0');
-  };
-
+  const splitBrowser = true;
+  const handleSetSplitBrowser = (v: boolean) => { if (!v) setShowBrowserPreview(false); };
   const [isRailExpanded, setIsRailExpanded] = useState(false);
-  const [showBrowserPreview, setShowBrowserPreview] = useState(false);
-  const [selectedArtifact, setSelectedArtifact] = useState<ArtifactReference | null>(null);
   const openArtifact = useCallback((artifact: ArtifactReference) => {
-    setSelectedArtifact(artifact);
-    if (artifact.kind !== 'browser') setSplitBrowser(true);
-    setShowBrowserPreview(artifact.kind !== 'browser');
+    if (artifact.kind === 'browser') threadView.update({ selectedBrowser: artifact, browserView: 'compact', browserWatchOnly: false });
+    else threadView.update({ selectedArtifact: artifact, previewOpen: true });
     setMobilePane('detail');
-  }, []);
+  }, [threadView.update]);
   const [newThreadOpen, setNewThreadOpen] = useState(false);
   const [newThreadAsChannel, setNewThreadAsChannel] = useState(false);
   // Separate openers rather than a flag argument: `openNewThread` is wired
@@ -274,13 +296,15 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
 
   // In the app-shell-4 layout the list lives *inside* the sidebar, so
   // "expand the detail pane" and "collapse the sidebar" are the same gesture.
+  const [selectedRoutineId, setSelectedRoutineId] = useState<string | null>(null);
   const hasListPanel = VIEWS_WITH_LIST.has(viewMode);
   // Default to open the first time a view is used; after that the user's own
   // choice for that view wins.
-  const isSidebarOpen = hasListPanel ? listPrefs[viewMode] ?? true : false;
+  const isSidebarOpen = hasListPanel ? (viewMode === 'threads' ? threadView.state.sidebarOpen : null) ?? listPrefs[viewMode] ?? true : false;
 
   const setSidebarOpen = (open: boolean) => {
     if (!hasListPanel) return; // nothing to remember for full-width views
+    if (viewMode === 'threads') threadView.update({ sidebarOpen: open });
     const next = { ...listPrefs, [viewMode]: open };
     setListPrefs(next);
     writeListPrefs(next);
@@ -329,6 +353,15 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
     openView('connect');
   };
   const consumeAddAgent = useCallback(() => setAddAgentPending(false), []);
+
+  const [editAgentPending, setEditAgentPending] = useState<EditAgentRequest | null>(null);
+  const openEditAgent = (request: EditAgentRequest) => {
+    setSelectedAgentName(null);
+    // A fresh object per click, so asking again for the same agent re-runs.
+    setEditAgentPending({ ...request });
+    openView('connect');
+  };
+  const consumeEditAgent = useCallback(() => setEditAgentPending(null), []);
 
   // Sidebar widths now come from <SidebarProvider> (components/ui/sidebar).
   const cssVariables = useMemo(() => ({
@@ -379,6 +412,9 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
       openAddAgent,
       addAgentPending,
       consumeAddAgent,
+      openEditAgent,
+      editAgentPending,
+      consumeEditAgent,
       threadFilter,
       setThreadFilter,
       selectedAgentName,
@@ -390,12 +426,17 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
       isDetailExpanded,
       toggleDetailExpanded,
       hasListPanel,
+      selectedRoutineId, setSelectedRoutineId,
       isRailExpanded,
       toggleRail,
       setRailExpanded,
       splitBrowser,
       setSplitBrowser: handleSetSplitBrowser,
       selectedArtifact, setSelectedArtifact, openArtifact,
+      selectedBrowser, browserView, browserWatchOnly, setBrowserView,
+      hasSavedThreadView: threadView.hasSavedView,
+      applyThreadArtifactDefault: threadView.applyDefault,
+      conversationWidth, setConversationWidth,
       showBrowserPreview,
       setShowBrowserPreview,
       newThreadOpen,

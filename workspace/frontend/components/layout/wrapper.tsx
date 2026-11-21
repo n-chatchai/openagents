@@ -12,13 +12,14 @@ import { useLandingNote } from './use-landing-note';
 import { useDesktopThreadLinks } from './use-desktop-thread-links';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 import { AppSidebar } from './app-sidebar';
+import { ArtifactSplitView } from './artifact-split-view';
 import { AppHeader } from './app-header';
 import { OnboardingSurfaceContext } from './onboarding-surface';
 import { MobileShell } from './mobile-shell';
 import { useLayout, RAIL_WIDTH_COLLAPSED, RAIL_WIDTH_EXPANDED } from './layout-context';
-import { isRecentAgent } from '@/lib/helpers';
 import { cn } from '@/lib/utils';
-import { shouldOpenFirstRunOnboarding } from '@/lib/first-run-entry';
+import { hasAddedWorkspaceAgent, shouldOpenFirstRunOnboarding } from '@/lib/first-run-entry';
+import { RoutineList } from '@/components/routines/routine-list';
 import { ChatView } from '@/components/chat/chat-view';
 import { FilePreview } from '@/components/files/file-preview';
 import { TrashView } from '@/components/files/trash-view';
@@ -40,6 +41,7 @@ import { useT } from '@/lib/i18n';
 import { NewThreadDialogHost } from '@/components/threads/new-thread-dialog-host';
 import { WorkspaceLoadError } from './workspace-load-error';
 import { WorkspaceLoadingScreen } from './workspace-loading-screen';
+import { useSearchParams } from 'next/navigation';
 
 /** Narrowest the workspace shell lays out at — the desktop app's minimum window width. */
 export const WORKSPACE_MIN_WIDTH = 960;
@@ -53,8 +55,8 @@ export function Wrapper() {
   useLandingNote();
   const {
     isMobile, viewMode, isAgentPanelOpen, isSidebarOpen, setSidebarOpen,
-    hasListPanel, mobilePane, splitBrowser, showBrowserPreview, isRailExpanded,
-    filesSection, selectedAgentName, setSelectedAgentName, openView,
+    hasListPanel, mobilePane, splitBrowser, showBrowserPreview, isRailExpanded, conversationWidth, setConversationWidth,
+    filesSection, selectedAgentName, setSelectedAgentName, openView, connectSetupRequest,
   } = useLayout();
 
   // v1.1 M2: `#?agent=<name>` (where an agent invite lands) opens the agent
@@ -66,6 +68,27 @@ export function Wrapper() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const { workspace, workspaceLoadError, retryWorkspace, monitorMode, agents, loading, sessions, currentSessionId, currentUser, selectedFileId, selectedKnowledgeId } = useWorkspace();
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [welcomeActive, setWelcomeActive] = useState(false);
+  const [welcomeKey, setWelcomeKey] = useState(0);
+  const [forceWelcome, setForceWelcome] = useState(false);
+  const openWelcome = () => {
+    setOnboardingDismissed(false);
+    setForceWelcome(true);
+    setWelcomeKey(key => key + 1);
+    openView('connect');
+  };
+  const finishWelcome = () => setForceWelcome(false);
+  const openConnect = () => {
+    setOnboardingDismissed(true);
+    setForceWelcome(false);
+    openView('connect');
+  };
+  const previewWelcome = useSearchParams().get('welcome') === 'preview';
+  useEffect(() => {
+    if (previewWelcome) openView('connect');
+    // This is an explicit preview entry, not a navigation lock.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewWelcome]);
   // Resolve a stable identity before writing the URL; never expose DM participants.
   useEffect(() => {
     if (loading || workspaceLoadError || desktopHost()) return;
@@ -112,11 +135,10 @@ export function Wrapper() {
     const isAgentDm = dmCounterpart(currentSessionId, myAddress(currentUser)) === `openagents:${selectedAgentName}`;
     if (viewMode !== 'threads' || !isAgentDm) setSelectedAgentName(null);
   }, [currentSessionId, viewMode, selectedAgentName, setSelectedAgentName, currentUser]);
-  // "Real agent" = a non-builtin agent that the sidebar would actually show
-  // (online or seen within the last hour). A long-offline leftover agent is
-  // hidden from the sidebar, so it must not silently block onboarding either —
-  // otherwise the workspace looks empty yet never onboards (matches nav's rule).
-  const hasAgents = agents.some((a) => isRecentAgent(a) && !a.builtin);
+  // Registered agents count even while offline. Yumi is built in and does not
+  // complete setup; removing the last added agent makes Welcome available again.
+  const hasAgents = hasAddedWorkspaceAgent(agents);
+  const welcomeAvailable = !hasAgents;
   // Keep setup available from Connect Agent without replacing conversations.
   const userSessions = sessions.filter(
     (s) => !(s.master && agents.some((a) => a.builtin && a.agentName === s.master)),
@@ -139,14 +161,15 @@ export function Wrapper() {
       viewMode,
     })) return;
     try {
-      if (localStorage.getItem(key) === '1') return;
+      if (localStorage.getItem(key) === '1' && localStorage.getItem('oa:welcomeFilmSeen') === '1') return;
       localStorage.setItem(key, '1');
     } catch { /* Private browsing still gets setup once per mounted workspace. */ }
     openView('connect');
   }, [loading, workspaceLoadError, workspace, currentUser.id, hasAgents, userSessions.length, currentSessionId, viewMode, openView]);
   const showOnboarding =
-    !onboardingDismissed && !hasAgents && userSessions.length === 0 && viewMode === 'connect' &&
-    !currentSessionId?.startsWith('dm:');
+    !onboardingDismissed && viewMode === 'connect' &&
+    (forceWelcome || !connectSetupRequest) &&
+    (previewWelcome || !hasAgents);
 
   const dismissOnboarding = () => {
     setOnboardingDismissed(true);
@@ -162,7 +185,10 @@ export function Wrapper() {
   }
 
   if (isMobile) {
-    return <MobileShell showOnboarding={showOnboarding} dismissOnboarding={dismissOnboarding} />;
+    return <MobileShell showOnboarding={showOnboarding} dismissOnboarding={dismissOnboarding}
+      welcomeActive={welcomeActive} onWelcomeChange={setWelcomeActive} previewWelcome={previewWelcome}
+      welcomeAvailable={welcomeAvailable} openWelcome={openWelcome} openConnect={openConnect} welcomeKey={welcomeKey}
+      forceWelcome={forceWelcome} onWelcomeComplete={finishWelcome} />;
   }
 
   // ── Desktop layout (app-shell-4) ──
@@ -189,7 +215,8 @@ export function Wrapper() {
   // layout); the frame keeps the height exact so no vertical page scroll
   // appears with it.
   return (
-    <OnboardingSurfaceContext.Provider value={{ active: showOnboarding, onDismiss: dismissOnboarding }}>
+    <OnboardingSurfaceContext.Provider value={{ active: showOnboarding, welcome: showOnboarding && welcomeActive,
+      welcomeAvailable, onOpenWelcome: openWelcome, onOpenConnect: openConnect, onDismiss: dismissOnboarding }}>
     <div className="h-[calc(100vh-var(--oa-banner-h,0px))] w-full overflow-x-auto overflow-y-hidden">
     <SidebarProvider
       open={sidebarOpen}
@@ -219,7 +246,8 @@ export function Wrapper() {
           {showOnboarding ? (
             /* Guided first-agent setup owns the full Connect Agent surface. */
             <div className="relative flex-1 min-w-0 overflow-hidden bg-background">
-              <FirstRunOnboarding onDismiss={dismissOnboarding} />
+              <FirstRunOnboarding key={welcomeKey} onDismiss={dismissOnboarding} onWelcomeChange={setWelcomeActive}
+                previewWelcome={previewWelcome} forceWelcome={forceWelcome} onWelcomeComplete={finishWelcome} />
             </div>
           ) : viewMode === 'threads' && monitorMode ? (
             /* Monitor mode: 2x3 grid over the whole detail area */
@@ -229,23 +257,20 @@ export function Wrapper() {
             </div>
           ) : viewMode === 'threads' && splitBrowser && showBrowserPreview ? (
             /* Split view: conversation + artifact side by side */
-            <div className="flex flex-1 min-w-0">
-              <div className="relative flex-1 min-w-0 overflow-hidden border-e border-border bg-background">
+            <ArtifactSplitView width={conversationWidth} onResize={setConversationWidth} conversation={
+              <>
                 <div className="h-full">
                   <ChatView />
                 </div>
                 {isAgentPanelOpen && <AgentProfilePanel />}
-              </div>
-              <div className="relative flex-1 min-w-0 overflow-hidden bg-background">
-                <ArtifactPanel />
-              </div>
-            </div>
+              </>
+            } preview={<ArtifactPanel />} />
           ) : (
             <div className="relative flex-1 min-w-0 overflow-hidden bg-background">
               {/* Kept mounted like the views below: remounting a long thread or
                   a large file grid on every switch back was the visible lag. */}
-              {(visitedViews.current.has('threads') || visitedViews.current.has('routines')) && (
-                <Activity mode={viewMode === 'threads' || viewMode === 'routines' ? 'visible' : 'hidden'}>
+              {visitedViews.current.has('threads') && (
+                <Activity mode={viewMode === 'threads' ? 'visible' : 'hidden'}>
                   {/* In the chat view the profile DOCKS beside the thread instead
                       of sliding over it: clicking an agent opens their DM in the
                       middle with the profile alongside, so neither hides the other. */}
@@ -253,10 +278,11 @@ export function Wrapper() {
                     <div className="relative flex-1 min-w-0 overflow-hidden">
                       <ChatView />
                     </div>
-                    {isAgentPanelOpen && (viewMode === 'threads' || viewMode === 'routines') && <AgentProfilePanel docked />}
+                    {isAgentPanelOpen && viewMode === 'threads' && <AgentProfilePanel docked />}
                   </div>
                 </Activity>
               )}
+              {visitedViews.current.has('routines') && <Activity mode={viewMode === 'routines' ? 'visible' : 'hidden'}><RoutineList /></Activity>}
               {visitedViews.current.has('files') && (
                 <Activity mode={viewMode === 'files' ? 'visible' : 'hidden'}>
                   {filesSection === 'trash' ? <TrashView /> : <FilePreview />}
@@ -272,7 +298,7 @@ export function Wrapper() {
               {visitedViews.current.has('knowledge') && <Activity mode={viewMode === 'knowledge' ? 'visible' : 'hidden'}><KnowledgeView /></Activity>}
 
               {/* Agent profile slide-over (non-chat views keep the overlay) */}
-              {isAgentPanelOpen && viewMode !== 'threads' && viewMode !== 'routines' && <AgentProfilePanel />}
+              {isAgentPanelOpen && viewMode !== 'threads' && <AgentProfilePanel />}
             </div>
           )}
         </div>

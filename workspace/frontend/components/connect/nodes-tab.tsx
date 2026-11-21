@@ -1,22 +1,21 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
-import { ChevronRight, Server, RefreshCw, Plus } from 'lucide-react';
-import { Spinner } from '@/components/ui/spinner';
-import { useLayout } from '@/components/layout/layout-context';
+import { ChevronLeft } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import type { DeviceSetupMethod } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useT } from '@/lib/i18n';
 import { desktopHost } from '@/lib/desktop-host';
 import { type CatalogState } from '@/components/agents/agent-setup';
 import { DesktopComputerStep } from './desktop-computer-step';
 import { useLocalNodeId } from './use-local-node-id';
-import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
 import type { AgentCatalogEntry, CloudAgentProvider, WorkspaceNode, PairingCode } from '@/lib/types';
 import { NodeCard, PendingAgent } from './node-card';
 import { PairAnotherDevice } from './pair-another-device';
 import { usePendingAgents } from './use-pending-agents';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
+import { useConnectRequests, useJoinedNotice } from './use-connect-requests';
 import { WorkspaceAgentSetup } from './workspace-agent-setup';
+import { NodesRoster } from './nodes-roster';
 
 // ---------------------------------------------------------------------------
 // Add-agent gallery — pick an agent type to run on a node
@@ -36,6 +35,9 @@ export function NodesTab({
   loaded,
   loadFailed = false,
   pairing,
+  pairingMethodRequest,
+  onPairingMethodChange,
+  showPairingError = false,
   pairingLoading,
   pairingError,
   onGenerate,
@@ -58,11 +60,14 @@ export function NodesTab({
   loaded: boolean;
   loadFailed?: boolean;
   pairing: PairingCode | null;
+  pairingMethodRequest?: { method: DeviceSetupMethod } | null;
+  onPairingMethodChange?: (method: DeviceSetupMethod) => void;
+  showPairingError?: boolean;
   pairingLoading: boolean;
   pairingError: boolean;
   onGenerate: () => void;
   onDismissPairing: () => void;
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
 }) {
   const t = useT();
   const { workspace } = useWorkspace();
@@ -95,7 +100,9 @@ export function NodesTab({
   const [addingNodeId, setAddingNodeId] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ nodeId: string; agent: import('@/lib/types').NodeAgent } | null>(null);
   const [retrying, setRetrying] = useState<{ nodeId: string; pending: PendingAgent } | null>(null);
-  const { pending, addPending: queuePending, removePending } = usePendingAgents(nodes);
+  // Onboarding opens a thread with a new agent instead of announcing it.
+  const announceJoined = useJoinedNotice(autoAddAgent);
+  const { pending, addPending: queuePending, removePending } = usePendingAgents(nodes, announceJoined);
   // A new agent's device opens to show it spinning up.
   const addPending = (nodeId: string, agent: Parameters<typeof queuePending>[1]) => {
     setExpandedNodeId(nodeId);
@@ -107,7 +114,7 @@ export function NodesTab({
   // the "Add agent" button.
   const autoAddedRef = useRef(false);
   useEffect(() => {
-    if (!autoAddAgent || autoAddedRef.current) return;
+    if (!autoAddAgent || autoAddedRef.current || pairing || pairingLoading || showPairingError) return;
     if (pairedNodeId) {
       // The device just paired here. Wait for its first heartbeat, which lists
       // the agents it runs: one connected by `agn join` from inside Claude
@@ -125,23 +132,28 @@ export function NodesTab({
       ? nodes.find((n) => n.nodeId === preferredNodeId && n.status === 'online')
       : nodes.find((n) => (n.agents || []).length === 0) || nodes[0];
     if (target) { autoAddedRef.current = true; setAddingNodeId(target.nodeId); }
-  }, [autoAddAgent, nodes, preferredNodeId, pairedNodeId, onFirstAgentCreated, onAgentJoined]);
+  }, [autoAddAgent, nodes, preferredNodeId, pairedNodeId, onFirstAgentCreated, onAgentJoined, pairing, pairingLoading, showPairingError]);
 
-  // The sidebar's "+" beside Agents: open a device's gallery, this computer
-  // first. Waits for the node list; with no device yet the list itself (and
-  // its pairing step) is the right place to land.
-  const { addAgentPending, consumeAddAgent } = useLayout();
-  useEffect(() => {
-    if (!addAgentPending) return;
-    if (!loaded) return;
-    consumeAddAgent();
-    const online = nodes.filter((n) => n.status === 'online');
-    const target = online.find((n) => n.nodeId === localNodeId) || online[0] || nodes[0];
-    if (!target) return;
-    setEditing(null);
-    setExpandedNodeId(target.nodeId);
-    setAddingNodeId(target.nodeId);
-  }, [addAgentPending, consumeAddAgent, loaded, nodes, localNodeId]);
+  // Requests from the sidebar and the agent profile. Each opens one screen,
+  // so it closes whichever form (add, retry, edit) was left open.
+  useConnectRequests({
+    nodes,
+    loaded,
+    localNodeId,
+    onRefresh,
+    openGallery: (nodeId) => {
+      setEditing(null);
+      setRetrying(null);
+      setExpandedNodeId(nodeId);
+      setAddingNodeId(nodeId);
+    },
+    openEditor: (nodeId, agent) => {
+      setAddingNodeId(null);
+      setRetrying(null);
+      setExpandedNodeId(nodeId);
+      setEditing({ nodeId, agent });
+    },
+  });
 
   // This computer just joined and came online: open its agent picker as soon
   // as the list (polled) has it, the same next step as first-run onboarding.
@@ -227,10 +239,12 @@ export function NodesTab({
 
   // Connecting another device is its own screen. Keep the existing device
   // roster out of the way while the pairing code is waiting to be redeemed.
-  if (showDeviceSetup || pairing) {
+  if (showDeviceSetup || pairing || showPairingError) {
     return (
       <PairAnotherDevice
         pairing={pairing}
+        methodRequest={pairingMethodRequest}
+        onMethodChange={onPairingMethodChange}
         pairingError={pairingError}
         pairingLoading={pairingLoading}
         onBack={() => { setShowDeviceSetup(false); onDismissPairing(); }}
@@ -242,14 +256,11 @@ export function NodesTab({
   const listReady = !(loading && nodes.length === 0) && !(loadFailed && nodes.length === 0);
   if (canConnectHere && listReady && !pairing && (nodes.length === 0 || choosing)) {
     return (
-      <div className="p-6 flex flex-col gap-5 max-w-2xl mx-auto w-full">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-6 sm:px-6 sm:py-7">
         {nodes.length > 0 && (
-          <button
-            onClick={() => setChoosing(false)}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ChevronRight className="size-3.5 rotate-180" />{t('connect.nodeBack')}
-          </button>
+          <Button variant="ghost" size="sm" onClick={() => setChoosing(false)} className="-ml-2 self-start text-muted-foreground">
+            <ChevronLeft data-icon="inline-start" />{t('connect.nodeBack')}
+          </Button>
         )}
         <DesktopComputerStep
           key={workspace!.workspaceId}
@@ -264,85 +275,30 @@ export function NodesTab({
   }
 
   return (
-    <div className="p-6 flex flex-col gap-5 max-w-2xl mx-auto w-full">
-      {/* Heading + refresh */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="font-heading text-lg font-medium">{t('connect.nodeHeading')}</h3>
-          <p className="text-sm text-muted-foreground">{t('connect.nodeSubtitle')}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {nodes.length > 0 && (
-            <Button variant="outline" onClick={canConnectHere ? () => setChoosing(true) : () => { setShowDeviceSetup(true); onGenerate(); }}>
-              <Plus data-icon="inline-start" />{t('connect.nodeConnectAnother')}
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={onRefresh}
-            title={t('connect.nodeRefresh')}
-            aria-label={t('connect.nodeRefresh')}
-          >
-            <RefreshCw className={cn(loading && 'animate-spin')} />
-          </Button>
-        </div>
-      </div>
-
-      {/* Node list / empty state */}
-      {loading && nodes.length === 0 ? (
-        <div role="status" className="flex items-center justify-center gap-2 py-14 text-sm text-muted-foreground">
-          <Spinner />{t('common.loading')}
-        </div>
-      ) : loadFailed && nodes.length === 0 ? (
-        <Empty role="alert" data-testid="nodes-load-failed" className="border">
-          <EmptyHeader>
-            <EmptyDescription>{t('connect.nodeListLoadFailed')}</EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Button variant="outline" onClick={onRefresh}>
-              <RefreshCw data-icon="inline-start" />{t('common.retry')}
-            </Button>
-          </EmptyContent>
-        </Empty>
-      ) : nodes.length === 0 ? (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon"><Server /></EmptyMedia>
-            <EmptyTitle>{t('connect.nodeEmptyTitle')}</EmptyTitle>
-            <EmptyDescription>{t('connect.nodeEmptyBody')}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {nodes.map((node) => (
-            <NodeCard
-              key={node.nodeId}
-              node={node}
-              isThisComputer={!!localNodeId && node.nodeId === localNodeId}
-              expanded={node.nodeId === expandedNode?.nodeId}
-              onExpand={() => setExpandedNodeId(node.nodeId)}
-              pending={pending[node.nodeId] || []}
-              onAddAgent={() => { setExpandedNodeId(node.nodeId); setAddingNodeId(node.nodeId); }}
-              onEditAgent={(agent) => setEditing({ nodeId: node.nodeId, agent })}
-              onDismissPending={(name) => removePending(node.nodeId, name)}
-              onRetryPending={(p) => setRetrying({ nodeId: node.nodeId, pending: p })}
-              onChanged={onRefresh}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* A new workspace can start pairing without a device roster. */}
-      {loadFailed && nodes.length === 0 ? null : nodes.length === 0 ? (
-        <Button onClick={onGenerate} disabled={pairingLoading} className="w-full" size="lg">
-          {pairingLoading ? (
-            <><Spinner data-icon="inline-start" />{t('connect.nodeGenerating')}</>
-          ) : (
-            <><Plus data-icon="inline-start" />{t('connect.nodeConnect')}</>
-          )}
-        </Button>
-      ) : null}
-    </div>
+    <NodesRoster
+      empty={nodes.length === 0}
+      loading={loading}
+      loadFailed={loadFailed}
+      pairingLoading={pairingLoading}
+      onConnectAnother={canConnectHere ? () => setChoosing(true) : () => { setShowDeviceSetup(true); onGenerate(); }}
+      onGenerate={onGenerate}
+      onRefresh={onRefresh}
+    >
+      {nodes.map((node) => (
+        <NodeCard
+          key={node.nodeId}
+          node={node}
+          isThisComputer={!!localNodeId && node.nodeId === localNodeId}
+          expanded={node.nodeId === expandedNode?.nodeId}
+          onExpand={() => setExpandedNodeId(node.nodeId)}
+          pending={pending[node.nodeId] || []}
+          onAddAgent={() => { setExpandedNodeId(node.nodeId); setAddingNodeId(node.nodeId); }}
+          onEditAgent={(agent) => setEditing({ nodeId: node.nodeId, agent })}
+          onDismissPending={(name) => removePending(node.nodeId, name)}
+          onRetryPending={(p) => setRetrying({ nodeId: node.nodeId, pending: p })}
+          onChanged={onRefresh}
+        />
+      ))}
+    </NodesRoster>
   );
 }

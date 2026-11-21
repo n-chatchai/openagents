@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogBody,
@@ -28,12 +29,13 @@ const ROOT_FOLDER = '__root__';
 interface KnowledgeEditorProps {
   open: boolean;
   defaultFolder?: string;
+  draft?: { title: string; content: string };
   entry: (KnowledgeEntry & { content: string }) | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function KnowledgeEditor({ open, entry, onClose, onSaved, defaultFolder = "" }: KnowledgeEditorProps) {
+export function KnowledgeEditor({ open, entry, onClose, onSaved, defaultFolder = "", draft }: KnowledgeEditorProps) {
   const { createKnowledge, updateKnowledge } = useWorkspace();
   const t = useT();
   const [folders, setFolders] = useState<string[]>([]);
@@ -55,12 +57,12 @@ export function KnowledgeEditor({ open, entry, onClose, onSaved, defaultFolder =
         setContent(entry.content || '');
         setVisibility(entry.visibility ?? 'public');
       } else {
-        setTitle('');
-        setContent('');
+        setTitle(draft?.title || '');
+        setContent(draft?.content || '');
         setVisibility('private');
       }
     }
-  }, [open, entry, defaultFolder]);
+  }, [open, entry, defaultFolder, draft]);
 
   const handleSave = async () => {
     if (!title.trim() || !content.trim()) return;
@@ -95,6 +97,7 @@ export function KnowledgeEditor({ open, entry, onClose, onSaved, defaultFolder =
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{isEditing ? t('knowledge.editorTitleEdit') : t('knowledge.editorTitleNew')}</DialogTitle>
+          {!isEditing && <DialogDescription>{t('knowledge.library.editorHint')}</DialogDescription>}
         </DialogHeader>
 
         <DialogBody>

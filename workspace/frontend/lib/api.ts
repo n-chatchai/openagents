@@ -43,6 +43,7 @@ import type {
   PairingCode,
   RoutineDraft,
   RoutineItem,
+  RoutineRun,
   ShareSummary,
   TimerItem,
   TodoItem,
@@ -57,6 +58,7 @@ import type {
   RegistryLeaderboardEntry,
   RegistrySkill,
   WorkspaceFile,
+  WorkspaceFileStorage,
   WorkspaceMe,
   WorkspaceNode,
   WorkspaceRole,
@@ -223,6 +225,8 @@ function toRoutineItem(raw: Record<string, unknown>): RoutineItem {
     name: raw.name as string,
     message: raw.message as string,
     context: (raw.context || null) as string | null,
+    sourceChannelName: (raw.source_channel_name || null) as string | null,
+    latestRun: (raw.latest_run || null) as RoutineRun | null,
     scheduleHour: (raw.schedule_hour || 0) as number,
     scheduleMinute: (raw.schedule_minute || 0) as number,
     scheduleDays: (raw.schedule_days || null) as number[] | null,
@@ -242,10 +246,14 @@ class WorkspaceApi {
   private bearerToken: string = '';
   private workspaceId: string = '';
   // Mints a fresh identity token after the server rejected ours (401). Set by
-  // the auth context for Firebase sign-ins; null where the page cannot refresh
-  // (workspace-issued sessions, the desktop host which pushes renewals itself).
+  // the auth context: Firebase sign-ins mint a new ID token, workspace-issued
+  // sessions renew. Null where the page cannot refresh (the desktop host, which
+  // pushes renewals itself).
   private bearerRefresher: (() => Promise<string | null>) | null = null;
   private refreshInFlight: Promise<string | null> | null = null;
+  // Public registry metadata is shared across workspaces. Reuse hover preloads
+  // and reopenings briefly, but always retry failed requests.
+  private agentDetailCache = new Map<string, { expiresAt: number; promise: Promise<AgentCatalogDetail> }>();
 
   configure(workspaceId: string, token: string, bearerToken?: string) {
     this.workspaceId = workspaceId;
@@ -268,6 +276,11 @@ class WorkspaceApi {
 
   setBearerRefresher(refresher: (() => Promise<string | null>) | null) {
     this.bearerRefresher = refresher;
+  }
+
+  /** Remove `refresher` if it is still the one installed (another sign-in may have replaced it). */
+  clearBearerRefresher(refresher: () => Promise<string | null>) {
+    if (this.bearerRefresher === refresher) this.bearerRefresher = null;
   }
 
   /** One refresh at a time, shared by every request that hit a 401 together. */
@@ -298,6 +311,11 @@ class WorkspaceApi {
   /** Whether configure() has run with a non-empty workspace id. */
   isConfigured(): boolean {
     return this.workspaceId !== '';
+  }
+
+  /** The workspace requests go to; '' before configure(). */
+  currentWorkspaceId(): string {
+    return this.workspaceId;
   }
 
   /**
@@ -360,7 +378,7 @@ class WorkspaceApi {
   // ---------------------------------------------------------------------------
 
   async getWorkspace(): Promise<Workspace> {
-    return this.request<Workspace>(`/v1/workspaces/${this.workspaceId}`);
+    return this.request<Workspace>(`/v1/workspaces/${this.workspaceId}`, { signal: AbortSignal.timeout(15_000) });
   }
 
   /** Soft-delete this workspace (admin or owner; backend DELETE /v1/workspaces/{id}). */
@@ -462,7 +480,7 @@ class WorkspaceApi {
   /** Queue a remote agent-management command for a node (owner/admin only). */
   async enqueueNodeCommand(
     nodeId: string,
-    action: 'create_agent' | 'configure_agent' | 'start_agent' | 'stop_agent' | 'remove_agent' | 'detect_runtimes' | 'list_dir' | 'probe_agent' | 'list_models',
+    action: 'login_start' | 'login_status' | 'login_input' | 'login_cancel' | 'credential_key' | 'create_agent' | 'configure_agent' | 'start_agent' | 'stop_agent' | 'remove_agent' | 'detect_runtimes' | 'list_dir' | 'probe_agent' | 'list_models',
     args: Record<string, unknown> = {},
   ): Promise<NodeCommand> {
     return this.request<NodeCommand>(`/v1/nodes/${nodeId}/commands`, {
@@ -472,8 +490,8 @@ class WorkspaceApi {
   }
 
   /** Recent remote commands for a node (to show pending/done status). */
-  async listNodeCommands(nodeId: string): Promise<NodeCommand[]> {
-    return this.request<NodeCommand[]>(`/v1/nodes/${nodeId}/commands`);
+  async listNodeCommands(nodeId: string, limit?: number): Promise<NodeCommand[]> {
+    return this.request<NodeCommand[]>(`/v1/nodes/${nodeId}/commands${limit ? `?limit=${limit}` : ''}`);
   }
 
   /** Remove/forget a node from the workspace (owner/admin only). */
@@ -784,7 +802,7 @@ class WorkspaceApi {
   async discover(readAt?: Record<string, number>): Promise<NetworkDiscovery> {
     const params = new URLSearchParams({ network: this.workspaceId });
     if (readAt) params.set('read_at', JSON.stringify(Object.fromEntries(Object.entries(readAt).filter(([id]) => !id.startsWith('dm:')).slice(-100))));
-    return this.request<NetworkDiscovery>(`/v1/discover?${params}`);
+    return this.request<NetworkDiscovery>(`/v1/discover?${params}`, { signal: AbortSignal.timeout(15_000) });
   }
 
   /** Get network profile metadata. */
@@ -1025,16 +1043,25 @@ class WorkspaceApi {
       /** Fraction uploaded, 0–1. Never fires if the browser can't measure it. */
       onProgress?: (fraction: number) => void;
       signal?: AbortSignal;
+      /** Explicit destination; empty string means workspace root. */
+      folder?: string;
     },
   ): Promise<WorkspaceFile> {
     const formData = new FormData();
-    formData.append('file', file);
+    const explicitFolder = options?.folder !== undefined;
+    if (explicitFolder) {
+      formData.append('files', file, file.name.split('/').pop() || file.name);
+      formData.append('path', options.folder!);
+      formData.append('on_conflict', 'rename');
+    } else {
+      formData.append('file', file);
+    }
     formData.append('network', this.workspaceId);
     if (channelName) formData.append('channel_name', channelName);
 
     return new Promise<WorkspaceFile>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${API_URL}/v1/files`);
+      xhr.open('POST', `${API_URL}/v1/files${explicitFolder ? '/upload' : ''}`);
       if (this.token) xhr.setRequestHeader('X-Workspace-Token', this.token);
       if (this.bearerToken) xhr.setRequestHeader('Authorization', `Bearer ${this.bearerToken}`);
 
@@ -1050,7 +1077,13 @@ class WorkspaceApi {
           return;
         }
         try {
-          resolve(mapFileResponse(JSON.parse(xhr.responseText).data));
+          const data = JSON.parse(xhr.responseText).data;
+          const uploaded = explicitFolder ? data.files?.[0] : data;
+          if (!uploaded) {
+            reject(new Error(data.skipped?.[0]?.detail || data.skipped?.[0]?.reason || 'Upload failed'));
+            return;
+          }
+          resolve(mapFileResponse(uploaded));
         } catch {
           reject(new Error('Upload failed: malformed response'));
         }
@@ -1078,22 +1111,35 @@ class WorkspaceApi {
    * drops folders and makes their counts shrink as new files arrive, so we
    * walk the pages until we have them all.
    */
-  async listFiles(): Promise<{ files: WorkspaceFile[]; total: number }> {
+  async listFiles(): Promise<{ files: WorkspaceFile[]; total: number; storage?: WorkspaceFileStorage }> {
     const PAGE_SIZE = 200; // the endpoint's hard ceiling
     const MAX_PAGES = 25;  // 5k files: a backstop, not an expected limit
     const files: WorkspaceFile[] = [];
     let total = 0;
+    let storage: WorkspaceFileStorage | undefined;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      const raw = await this.request<{ files: Record<string, unknown>[]; total: number }>(
+      const raw = await this.request<{
+        files: Record<string, unknown>[];
+        total: number;
+        storage?: { used_bytes: number; active_bytes: number; trash_bytes: number; limit_bytes: number | null };
+      }>(
         `/v1/files?network=${this.workspaceId}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`
       );
       total = raw.total;
+      if (page === 0 && raw.storage) {
+        storage = {
+          usedBytes: raw.storage.used_bytes,
+          activeBytes: raw.storage.active_bytes,
+          trashBytes: raw.storage.trash_bytes,
+          limitBytes: raw.storage.limit_bytes,
+        };
+      }
       files.push(...raw.files.map(mapFileResponse));
       if (raw.files.length < PAGE_SIZE || files.length >= total) break;
     }
 
-    return { files, total };
+    return { files, total, storage };
   }
 
   /** Download bytes as the signed-in viewer, including for headerless image elements. */
@@ -1568,7 +1614,17 @@ class WorkspaceApi {
 
   /** Fetch full detail for one agent type (install/uninstall + supported models). */
   async getAgentCatalogDetail(agentType: string): Promise<AgentCatalogDetail> {
-    return this.request<AgentCatalogDetail>(`/v1/agent-catalog/${encodeURIComponent(agentType)}`);
+    const cached = this.agentDetailCache.get(agentType);
+    if (cached && cached.expiresAt > Date.now()) return cached.promise;
+    const promise = this.request<AgentCatalogDetail>(`/v1/agent-catalog/${encodeURIComponent(agentType)}`, {
+      signal: AbortSignal.timeout(8_000),
+    });
+    this.agentDetailCache.set(agentType, { expiresAt: Date.now() + 60_000, promise });
+    try { return await promise; }
+    catch (error) {
+      if (this.agentDetailCache.get(agentType)?.promise === promise) this.agentDetailCache.delete(agentType);
+      throw error;
+    }
   }
 
   /**
@@ -2410,6 +2466,14 @@ class WorkspaceApi {
     return toRoutineItem(raw);
   }
 
+  async routineRuns(id: string): Promise<{ runs: RoutineRun[] }> {
+    return this.request(`/v1/routines/${encodeURIComponent(id)}/runs?${new URLSearchParams({network: this.workspaceId})}`);
+  }
+
+  async runRoutine(id: string): Promise<void> {
+    await this.request(`/v1/routines/${encodeURIComponent(id)}/run?${new URLSearchParams({network: this.workspaceId})}`, {method: 'POST'});
+  }
+
   async cancelRoutine(routineId: string): Promise<void> {
     await this.request<unknown>(`/v1/routines/${routineId}`, { method: 'DELETE' });
   }
@@ -2481,6 +2545,21 @@ class WorkspaceApi {
       body: JSON.stringify({ network: this.requireWorkspace(), markers }),
     });
     return raw?.markers ?? {};
+  }
+
+  /** One of the signed-in person's own settings, shared by all their
+   *  devices. `persisted` is false for token-only callers (nothing kept). */
+  async getPersonalSetting<T>(key: string): Promise<{ value: T | null; persisted: boolean }> {
+    const params = new URLSearchParams({ network: this.requireWorkspace() });
+    const raw = await this.request<{ value?: T | null; persisted?: boolean }>(`/v1/personal-settings/${encodeURIComponent(key)}?${params}`);
+    return { value: raw?.value ?? null, persisted: !!raw?.persisted };
+  }
+
+  async putPersonalSetting<T>(key: string, value: T): Promise<void> {
+    await this.request<unknown>(`/v1/personal-settings/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ network: this.requireWorkspace(), value }),
+    });
   }
 
   /** Mark the caller's unread DM / mention rows for one thread or DM read. */
@@ -2830,7 +2909,7 @@ class WorkspaceApi {
   }
 
   async resolveThreadLink(id: string): Promise<{ id: string; session_id: string }> {
-    return this.request(`/v1/thread-links/${encodeURIComponent(id)}?network=${encodeURIComponent(this.requireWorkspace())}`);
+    return this.request(`/v1/thread-links/${encodeURIComponent(id)}?network=${encodeURIComponent(this.requireWorkspace())}`, { signal: AbortSignal.timeout(8_000) });
   }
 
   async publishWebProject(body: ProjectUpload, id?: string): Promise<{id: string; revision: string}> {

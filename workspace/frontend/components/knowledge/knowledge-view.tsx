@@ -7,6 +7,10 @@ import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
 import { MarkdownContent } from '@/components/chat/markdown-content';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { WithTooltip } from '@/components/ui/with-tooltip';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia } from '@/components/ui/empty';
 import { useLayout } from '@/components/layout/layout-context';
 import { DetailHeader } from '@/components/layout/app-header';
@@ -16,6 +20,7 @@ import { cn } from '@/lib/utils';
 import { knowledgeTitle } from '@/lib/knowledge-title';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useFormatters, useT } from '@/lib/i18n';
+import { KnowledgeOverview } from './knowledge-overview';
 import { KnowledgeExport } from './knowledge-export';
 import { KnowledgeEditor } from './knowledge-editor';
 import { knowledgeAuthorName, stripLeadingTitle } from './knowledge-utils';
@@ -95,6 +100,8 @@ export function KnowledgeView() {
     }
   }, [entry, t]);
 
+  if (!entry && !selectedKnowledgeId) return <KnowledgeOverview />;
+
   if (!entry) {
     return (
       <Empty className="h-full">
@@ -134,45 +141,49 @@ export function KnowledgeView() {
       >
         <KnowledgeExport entry={{ ...entry, title: knowledgeTitle(entry.title, sessions) }} />
         <CopyResourceLink view="knowledge" id={entry.id} />
-        <ArtifactSharePopover
-          kind="knowledge"
-          id={entry.id}
-          name={knowledgeTitle(entry.title, sessions)}
-          visibility={entry.visibility}
-          effectiveVisibility={entry.effectiveVisibility}
-          canManage={entry.canManage}
-          onVisibilityChange={async (v) => { if (v) await updateKnowledge(entry.id, { visibility: v }); }}
-          trigger={
-            <Button
+        {/* Tooltip wraps the popover so its trigger can compose with the popover's. */}
+        <Tooltip>
+          <ArtifactSharePopover
+            kind="knowledge"
+            id={entry.id}
+            name={knowledgeTitle(entry.title, sessions)}
+            visibility={entry.visibility}
+            effectiveVisibility={entry.effectiveVisibility}
+            canManage={entry.canManage}
+            onVisibilityChange={async (v) => { if (v) await updateKnowledge(entry.id, { visibility: v }); }}
+            trigger={
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t('artifactAccess.share')}
+                  className="text-muted-foreground"
+                >
+                  <Share2 />
+                </Button>
+              </TooltipTrigger>
+            }
+          />
+          <TooltipContent>{t('artifactAccess.share')}</TooltipContent>
+        </Tooltip>
+        <WithTooltip label={t('knowledge.editEntry')}><Button
               variant="ghost"
               size="icon-sm"
-              aria-label={t('artifactAccess.share')}
-              title={t('artifactAccess.share')}
+              aria-label={t('knowledge.editEntry')}
+              onClick={handleEdit}
               className="text-muted-foreground"
             >
-              <Share2 />
-            </Button>
-          }
-        />
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={t('knowledge.editEntry')}
-          onClick={handleEdit}
-          className="text-muted-foreground"
-        >
-          <Pencil />
-        </Button>
+              <Pencil />
+            </Button></WithTooltip>
       </DetailHeader>
 
-      {/* The article fills the pane rather than sitting in a centred column:
-          centring bought a readable measure at the cost of a wide gutter down
-          both sides. Readability is handled per-element instead — text is
-          capped at ~70ch (see the body below) while code blocks and tables
-          take the full width they need. */}
+      {/* One centred reading column, the way docs pages lay out an article:
+          title, card, divider and body all share the same width, so a wide
+          pane splits its spare room evenly instead of leaving the text
+          left-aligned under a full-width rule with an empty right half. */}
       <div className="flex-1 overflow-y-auto">
-        <article className="w-full px-5 py-7 sm:px-8 sm:py-9">
-          <header className="max-w-[70ch]">
+        <article className="mx-auto w-full max-w-3xl px-5 py-7 sm:px-8 sm:py-9">
+          <header>
             <h1 className="text-2xl leading-snug font-semibold tracking-tight text-foreground sm:text-3xl">
               {knowledgeTitle(entry.title, sessions)}
             </h1>
@@ -194,18 +205,30 @@ export function KnowledgeView() {
                 <ArtifactVisibilityBadge kind="knowledge" visibility={entry.visibility} effectiveVisibility={entry.effectiveVisibility} />
                 <AccessExplainer compact resourceKind="knowledge" resourceId={entry.id} />
               </div>
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={handleCopyMention}
-                aria-label={t('knowledge.copyMention')}
-                title={`@knowledge:${entry.slug}`}
-                className="text-muted-foreground"
-              >
-                {copied ? <Check data-icon="inline-start" className="text-success" /> : <Copy data-icon="inline-start" />}
-                {t('knowledge.copyMention')}
-              </Button>
             </div>
+            <Card size="sm" className="mt-5">
+              <CardHeader>
+                <CardTitle>{t('knowledge.library.useTitle')}</CardTitle>
+                <CardDescription className="text-xs leading-5">{t('knowledge.library.mentionHint')}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <InputGroup>
+                  <InputGroupInput
+                    readOnly
+                    value={`@knowledge:${entry.slug}`}
+                    aria-label={t('knowledge.library.useTitle')}
+                    onFocus={(e) => e.currentTarget.select()}
+                    className="font-mono text-xs"
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupButton onClick={handleCopyMention}>
+                      {copied ? <Check className="text-success" /> : <Copy />}
+                      {t('knowledge.copyMention')}
+                    </InputGroupButton>
+                  </InputGroupAddon>
+                </InputGroup>
+              </CardContent>
+            </Card>
           </header>
 
           {/* The header renders from list data that's already loaded, so only
@@ -222,12 +245,6 @@ export function KnowledgeView() {
               <div
                 className={cn(
                   'text-sm leading-7',
-                  // Text is held to a readable measure; code blocks, tables and
-                  // diagrams (the `div` wrappers MarkdownContent emits) bleed
-                  // out to the full column so long curl lines don't need a
-                  // horizontal drag to read.
-                  '[&_.markdown-content>*]:max-w-[70ch]',
-                  '[&_.markdown-content>div]:max-w-none [&_.markdown-content>pre]:max-w-none',
                   // MarkdownContent's own scale is tuned for chat bubbles, where
                   // headings sit inside a short message. In a long reference doc
                   // an h2 at 16px against 15px body text reads as bold text, not

@@ -16,9 +16,14 @@ export function WorkspaceAgentSetup({ cloudProviders, ...props }: Omit<React.Com
   return <AgentSetup {...props} api={workspaceApi}
     contextLabel={<>{workspace?.name} · {t('connect.agentRunsOn', { device: localNodeId === props.node.nodeId ? t('nav.thisComputer') : props.node.name })}</>}
     extensions={{
+      guided: true,
       takenNames,
       renameAgent: async (name, displayName) => {
         await workspaceApi.updateMember(name, { display_name: displayName });
+        await refreshWorkspace();
+      },
+      setWorkspaceModel: async (name, model) => {
+        await workspaceApi.updateMember(name, { model });
         await refreshWorkspace();
       },
       modelAccessDialog: (dialog) => <AddModelAccessDialog providers={cloudProviders} {...dialog} />,

@@ -12,6 +12,8 @@ const WEB_ONLY = new Set([
   '/login', // the launcher signs in through central login
   '/auth/callback',
   '/auth/desktop',
+  // Erawan: the phone app's sign-in landing behind a door (auth/app/page.tsx).
+  '/auth/app',
   '/oauth/authorize', // third-party OAuth consent
   '/share/artifact/:token', // public links opened by people outside the app
   '/share/file/:token',

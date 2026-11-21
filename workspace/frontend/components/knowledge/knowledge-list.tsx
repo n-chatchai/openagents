@@ -6,9 +6,10 @@ import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia } from '@/components/ui/empty';
+import { Item, ItemContent, ItemMedia, ItemTitle } from '@/components/ui/item';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { WithTooltip } from '@/components/ui/with-tooltip';
 import { useLayout } from '@/components/layout/layout-context';
 import { ListToggleButton } from '@/components/layout/list-collapse-button';
 import { knowledgeTitle } from '@/lib/knowledge-title';
@@ -105,9 +106,7 @@ export function KnowledgeList() {
             <Plus data-icon="inline-start" />
             {t('knowledge.newEntry')}
           </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
+          <WithTooltip label={t('common.refresh')}><Button
                 variant="ghost"
                 size="icon-sm"
                 aria-label={t('knowledge.refresh')}
@@ -115,13 +114,20 @@ export function KnowledgeList() {
                 className="text-muted-foreground"
               >
                 <RefreshCw />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t('common.refresh')}</TooltipContent>
-          </Tooltip>
+              </Button></WithTooltip>
         </div>
       </div>
 
+      <div className="shrink-0 px-3 pt-3">
+        <Item variant="muted" size="xs" asChild className="flex-nowrap hover:bg-muted">
+          <button type="button" onClick={() => { setSelectedKnowledgeId(null); if (isMobile) openMobileDetail(); }}>
+            <ItemMedia variant="icon" className="text-muted-foreground"><BookOpen /></ItemMedia>
+            <ItemContent><ItemTitle className="text-xs">{t('knowledge.library.overview')}</ItemTitle></ItemContent>
+            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+          </button>
+        </Item>
+        <p className="px-1 pt-2 text-xs leading-5 text-muted-foreground">{t('knowledge.library.listHint')}</p>
+      </div>
       {/* Search */}
       <div className="shrink-0 px-3 pt-3 pb-1">
         <InputGroup className="bg-muted/30">

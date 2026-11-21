@@ -25,7 +25,7 @@ import { useDiscoveryPolling } from '@/hooks/use-discovery-polling';
 import { forgetWorkspaceSnapshot, readWorkspaceSnapshot, snapshotKey, writeWorkspaceSnapshot, type WorkspaceSnapshot } from './workspace-snapshot';
 import { groupSignals, withoutLocallyRead, type UnreadSignals } from './signals';
 import type { PendingUpload } from '@/hooks/use-upload-queue';
-import type { ApprovalRequest, BrowserPersistentContext, BrowserTab, BrowserTabLimits, DMConversation, KanbanTask, Workflow, WorkflowStep, KnowledgeEntry, NotificationItem, OnlineUser, RoutineDraft, RoutineItem, TodoItem, TrashEntry, Workspace, WorkspaceAgent, WorkspaceFile, WorkspaceIdentity, WorkspaceSession } from './types';
+import type { ApprovalRequest, BrowserPersistentContext, BrowserTab, BrowserTabLimits, DMConversation, KanbanTask, Workflow, WorkflowStep, KnowledgeEntry, NotificationItem, OnlineUser, RoutineDraft, RoutineItem, TodoItem, TrashEntry, Workspace, WorkspaceAgent, WorkspaceFile, WorkspaceFileStorage, WorkspaceIdentity, WorkspaceSession } from './types';
 
 /** Background polls refetch lists that rarely change. A new-but-equal array
  *  re-renders every consumer of this (unmemoized) context, hidden views
@@ -164,6 +164,7 @@ interface WorkspaceContextValue {
   onlineUsers: OnlineUser[];
   sessions: WorkspaceSession[];
   files: WorkspaceFile[];
+  fileStorage: WorkspaceFileStorage | null;
   selectedFileId: string | null;
   selectedKnowledgeId: string | null;
   currentFilePath: string;
@@ -194,7 +195,7 @@ interface WorkspaceContextValue {
   createSession: (opts?: { title?: string; titleManuallySet?: boolean; master?: string; participants?: string[]; humanParticipants?: string[]; resumeFrom?: string; visibility?: ChannelVisibility; directorEmail?: string; groups?: string[] }) => Promise<WorkspaceSession>;
   /** Request that a thread be opened with an agent as soon as it joins — used
    *  by guided onboarding for the user's first agent. */
-  requestFirstThread: (agentName: string) => void;
+  requestFirstThread: (agentName: string, onReady?: () => void) => void;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   updateSession: (sessionId: string, updates: { starred?: boolean; pinned?: boolean; isChannel?: boolean; status?: string }) => Promise<void>;
   addParticipant: (sessionId: string, agentName: string) => Promise<void>;
@@ -516,6 +517,7 @@ export function WorkspaceProvider({
   const [completedSessionIds, setCompletedSessionIds] = useState<Set<string>>(new Set());
   const [agentModes, setAgentModes] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const [fileStorage, setFileStorage] = useState<WorkspaceFileStorage | null>(null);
   const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
   const [pendingFolderOps, setPendingFolderOps] = useState<PendingFolderOp[]>([]);
   const folderOpIdRef = useRef(0);
@@ -525,9 +527,10 @@ export function WorkspaceProvider({
    * it's dropped instead of being allowed to flash the old folders back.
    */
   const filesEpochRef = useRef(0);
-  const commitFiles = useCallback((next: WorkspaceFile[], epoch: number) => {
+  const commitFiles = useCallback((next: WorkspaceFile[], epoch: number, storage?: WorkspaceFileStorage) => {
     if (epoch !== filesEpochRef.current) return;
     setFiles(prev => keepIfSame(prev, next));
+    setFileStorage(prev => keepIfSame(prev, storage ?? null));
   }, []);
   /** When the discovery poll last re-listed every file (see refreshDiscovery). */
   const filesPolledAtRef = useRef(0);
@@ -1130,7 +1133,7 @@ export function WorkspaceProvider({
       if (Date.now() - filesPolledAtRef.current >= FILES_POLL_INTERVAL_MS) {
         filesPolledAtRef.current = Date.now();
         const filesEpoch = filesEpochRef.current;
-        workspaceApi.listFiles().then((r) => commitFiles(r.files, filesEpoch)).catch(() => {});
+        workspaceApi.listFiles().then((r) => commitFiles(r.files, filesEpoch, r.storage)).catch(() => {});
       }
       workspaceApi.listBrowserTabs().then((r) => { setBrowserTabs(prev => keepIfSame(prev, r.tabs)); if (r.limits) setBrowserTabLimits(prev => keepIfSame(prev, r.limits!)); }).catch(() => {});
       workspaceApi.listBrowserContexts().then((r) => setBrowserContexts(prev => keepIfSame(prev, r.contexts))).catch(() => {});
@@ -1162,7 +1165,7 @@ export function WorkspaceProvider({
     const epoch = filesEpochRef.current;
     try {
       const result = await workspaceApi.listFiles();
-      commitFiles(result.files, epoch);
+      commitFiles(result.files, epoch, result.storage);
     } catch {
       // Non-critical
     }
@@ -1262,12 +1265,8 @@ export function WorkspaceProvider({
   }, [refreshWorkflows]);
 
   const refreshRoutines = useCallback(async () => {
-    try {
-      const result = await workspaceApi.listRoutines();
-      setRoutines(result.routines);
-    } catch {
-      // Non-critical
-    }
+    const result = await workspaceApi.listRoutines();
+    setRoutines(prev => keepIfSame(prev, result.routines));
   }, []);
 
   const createRoutine = useCallback(async (params: RoutineDraft) => {
@@ -1485,18 +1484,18 @@ export function WorkspaceProvider({
     try {
       await workspaceApi.purgeTrash({ trashIds });
     } finally {
-      await refreshTrash();
+      await Promise.all([refreshTrash(), refreshFiles()]);
     }
-  }, [refreshTrash]);
+  }, [refreshTrash, refreshFiles]);
 
   const emptyTrash = useCallback(async () => {
     setTrashEntries([]);
     try {
       await workspaceApi.purgeTrash({ all: true });
     } finally {
-      await refreshTrash();
+      await Promise.all([refreshTrash(), refreshFiles()]);
     }
-  }, [refreshTrash]);
+  }, [refreshTrash, refreshFiles]);
 
   /** Files as the user sees them: server truth with the in-flight folder ops
    *  already applied. Unchanged identity while nothing is pending. */
@@ -1618,6 +1617,7 @@ export function WorkspaceProvider({
       // Don't display the previous workspace's optional data while these load.
       filesEpochRef.current += 1;
       setFiles([]);
+      setFileStorage(null);
       setTrashEntries([]);
       setBrowserTabs([]);
       setSelectedBrowserTabId(null);
@@ -1679,7 +1679,7 @@ export function WorkspaceProvider({
         let requestedThread = linkedThread
           ? resolveThreadLink(threadLocation, channelSessions.map((s) => s.sessionId), myAddress(currentUserRef.current))
           : requestedDesktopThread(window.location.hash, channelSessions.map((s) => s.sessionId));
-        if (linkedThread && isOpaqueThreadId(linkedThread)) {
+        if (linkedThread && !requestedThread && isOpaqueThreadId(linkedThread)) {
           try { requestedThread = (await workspaceApi.resolveThreadLink(linkedThread)).session_id; }
           catch { /* Legacy channel IDs still use access-filtered discovery above. */ }
           if (cancelled) return;
@@ -1721,7 +1721,7 @@ export function WorkspaceProvider({
         // A slow browser or file store must not hold the full-page spinner.
         const filesEpoch = filesEpochRef.current;
         filesPolledAtRef.current = Date.now();
-        loadOptional(workspaceApi.listFiles(), (r) => commitFiles(r.files, filesEpoch));
+        loadOptional(workspaceApi.listFiles(), (r) => commitFiles(r.files, filesEpoch, r.storage));
         loadOptional(workspaceApi.listTrash(), (r) => setTrashEntries(r.entries));
         loadOptional(workspaceApi.listBrowserTabs(), (r) => { setBrowserTabs(r.tabs); if (r.limits) setBrowserTabLimits(r.limits); });
         loadOptional(workspaceApi.listBrowserContexts(), (r) => setBrowserContexts(r.contexts));
@@ -1997,22 +1997,21 @@ export function WorkspaceProvider({
   // Guided onboarding: after the user's first agent is connected, open a thread
   // with it automatically once it joins the workspace. One-shot; only ever set
   // by the onboarding flow, so it never fires when adding agents later.
-  const [firstThreadAgent, setFirstThreadAgent] = useState<string | null>(null);
-  const firstThreadFiredRef = useRef(false);
-  const requestFirstThread = useCallback((agentName: string) => {
-    firstThreadFiredRef.current = false;
-    setFirstThreadAgent(agentName);
+  const [firstThreadRequest, setFirstThreadRequest] = useState<{ name: string; onReady?: () => void } | null>(null);
+  const firedFirstThread = useRef<typeof firstThreadRequest>(null);
+  const requestFirstThread = useCallback((name: string, onReady?: () => void) => {
+    setFirstThreadRequest({ name, onReady });
   }, []);
   useEffect(() => {
-    if (!firstThreadAgent || firstThreadFiredRef.current) return;
-    if (!agents.some((a) => a.agentName === firstThreadAgent)) return;  // wait until it joins
-    firstThreadFiredRef.current = true;
-    const name = firstThreadAgent;
-    setFirstThreadAgent(null);
+    if (!firstThreadRequest || firedFirstThread.current === firstThreadRequest) return;
+    const { name, onReady } = firstThreadRequest;
+    if (!agents.some((a) => a.agentName === name && a.status === 'online')) return;
+    firedFirstThread.current = firstThreadRequest;
+    setFirstThreadRequest(null);
     // Titled explicitly — an untitled thread would show the raw channel name
     // ("channel-abc1234") to a brand-new user as their very first thread.
-    createSession({ title: `New Thread with ${name}`, master: name, participants: [name] }).catch(() => {});
-  }, [firstThreadAgent, agents, createSession]);
+    createSession({ title: `New Thread with ${name}`, master: name, participants: [name] }).then(() => onReady?.()).catch(() => {});
+  }, [firstThreadRequest, agents, createSession]);
 
   const renameWorkspace = useCallback(async (name: string) => {
     setWorkspace((prev) => (prev ? { ...prev, name } : prev));
@@ -2226,6 +2225,7 @@ export function WorkspaceProvider({
         onlineUsers,
         sessions,
         files: visibleFiles,
+        fileStorage,
         selectedFileId,
         selectedKnowledgeId,
         currentSessionId,

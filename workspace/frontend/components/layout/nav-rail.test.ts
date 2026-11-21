@@ -3,14 +3,15 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { NavRail } from './nav-rail';
+import { NavSecondary } from './nav-secondary';
 import { OnboardingSurfaceContext } from './onboarding-surface';
 
-const state = vi.hoisted(() => ({ openView: vi.fn(), unreadThreadsTotal: 0 }));
+const state = vi.hoisted(() => ({ openView: vi.fn(), unreadThreadsTotal: 0, servicesEnabled: true as boolean | undefined }));
 vi.mock('./layout-context', () => ({ useLayout: () => ({
   viewMode: 'threads', railViewMode: 'threads', openView: state.openView, isRailExpanded: true, setThreadFilter: vi.fn(),
 }), RAIL_WIDTH_COLLAPSED: 48, RAIL_WIDTH_EXPANDED: 208 }));
 vi.mock('@/lib/workspace-context', () => ({ useWorkspace: () => ({
-  unreadThreadsTotal: state.unreadThreadsTotal, workspace: { name: 'Test' }, agents: [{ agentName: 'shared', ownerEmail: 'maya@example.com', status: 'online', canStartThread: true }],
+  unreadThreadsTotal: state.unreadThreadsTotal, workspace: { name: 'Test', settings: { services_enabled: state.servicesEnabled } }, agents: [{ agentName: 'shared', ownerEmail: 'maya@example.com', status: 'online', canStartThread: true }],
   currentUser: { id: 'sam@example.com' }, tasks: [], onlineUsers: [], pendingApprovalsByAgent: {}, unreadDmCounts: {},
 }) }));
 vi.mock('@/lib/i18n', () => ({ useT: () => (key: string) => key }));
@@ -26,6 +27,7 @@ vi.mock('@/components/ui/tooltip', () => {
 });
 vi.mock('next/image', () => ({ default: () => null }));
 vi.mock('./sidebar-members', () => ({ SidebarMembers: () => null }));
+vi.mock('@/components/threads/desktop-notification-prompt', () => ({ DesktopNotificationPrompt: () => null }));
 vi.mock('./search-menu', () => ({ SearchMenu: () => null }));
 vi.mock('./user-menu', () => ({ UserMenu: () => null }));
 vi.mock('./rail-edge', () => ({ RailEdge: () => null }));
@@ -100,3 +102,68 @@ it('puts Manage Agents at the top with Inbox as the envelope beside it, as dashb
     expect(state.openView).toHaveBeenCalledWith('inbox');
   } finally { await act(async () => root.unmount()); host.remove(); }
 });
+
+it('shows an active Welcome tab only during the introduction, then selects Connect Agent', async () => {
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  const button = (label: string) => [...host.querySelectorAll('button')].find(b => b.textContent === label);
+  try {
+    await act(async () => root.render(React.createElement(OnboardingSurfaceContext.Provider,
+      { value: { active: true, welcome: true } }, React.createElement(NavRail))));
+    expect(button('nav.welcome')?.getAttribute('aria-current')).toBe('page');
+    expect(button('nav.manageAgents')?.getAttribute('data-active')).toBe('false');
+    expect(button('views.files')).toBeDefined();
+    await act(async () => root.render(React.createElement(OnboardingSurfaceContext.Provider,
+      { value: { active: true, welcome: false } }, React.createElement(NavRail))));
+    expect(button('nav.welcome')).toBeUndefined();
+    expect(button('nav.manageAgents')?.getAttribute('data-active')).toBe('true');
+  } finally { await act(async () => root.unmount()); host.remove(); }
+});
+
+it('hides Services by default and reflects the workspace toggle', async () => {
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    for (const enabled of [undefined, false, true, false]) {
+      state.servicesEnabled = enabled;
+      await act(async () => root.render(React.createElement(NavRail)));
+      expect(host.textContent?.includes('collab.viewAgents')).toBe(enabled === true);
+    }
+  } finally { state.servicesEnabled = true; await act(async () => root.unmount()); host.remove(); }
+});
+
+it('keeps Welcome accessible outside the tour until an agent is added and restores it when empty', async () => {
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  const openWelcome = vi.fn();
+  const welcome = () => [...host.querySelectorAll('button')].find(b => b.textContent === 'nav.welcome');
+  try {
+    const render = (available: boolean) => root.render(React.createElement(OnboardingSurfaceContext.Provider,
+      { value: { active: false, welcome: false, welcomeAvailable: available, onOpenWelcome: openWelcome } }, React.createElement(NavRail)));
+    await act(async () => render(true));
+    expect(welcome()?.getAttribute('data-active')).toBe('false');
+    await act(async () => welcome()!.click());
+    expect(openWelcome).toHaveBeenCalledOnce();
+    await act(async () => render(false));
+    expect(welcome()).toBeUndefined();
+    await act(async () => render(true));
+    expect(welcome()).toBeDefined();
+  } finally { await act(async () => root.unmount()); host.remove(); }
+});
+
+it.each([['desktop', NavRail], ['mobile', NavSecondary]] as const)(
+  'opens agent setup directly from Welcome in the %s navigation', async (_name, Navigation) => {
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host);
+    const openConnect = vi.fn();
+    try {
+      await act(async () => root.render(React.createElement(OnboardingSurfaceContext.Provider,
+        { value: { active: true, welcome: true, welcomeAvailable: true, onOpenConnect: openConnect } },
+        React.createElement(Navigation))));
+      const connect = [...host.querySelectorAll('button')].find(button => button.textContent === 'nav.manageAgents')!;
+      expect(connect.getAttribute('data-active')).toBe('false');
+      await act(async () => connect.click());
+      expect(openConnect).toHaveBeenCalledOnce();
+    } finally { await act(async () => root.unmount()); host.remove(); }
+  },
+);

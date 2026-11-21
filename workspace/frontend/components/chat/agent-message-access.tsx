@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { THREAD_PARTICIPANTS_CHANGED } from '@/lib/thread-participants';
+import { WithTooltip } from '@/components/ui/with-tooltip';
 
 type Access = ChannelParticipants['agents'][number];
 const Context = createContext<{ data: ChannelParticipants | null; people: number; supported: boolean; agents: Access[]; humanNames: Record<string, string>; request: (agent: Access) => Promise<void>; busy: string | null } | null>(null);
@@ -64,7 +65,7 @@ export function AgentMessageAccessProvider({ children }: { children: ReactNode }
   return <Context.Provider value={{ data, supported: !!data?.thread_access_requests_supported, people: data?.humans.length || 0, agents: data?.agents || [], humanNames, request, busy }}>{children}</Context.Provider>;
 }
 
-export function AgentOwnershipBadge({ agent, compact = false }: { agent: WorkspaceAgent; compact?: boolean }) {
+export function AgentOwnershipBadge({ agent, compact = false, model }: { agent: WorkspaceAgent; compact?: boolean; model?: string | null }) {
   const context = useContext(Context);
   const { currentUser } = useWorkspace();
   const t = useT();
@@ -78,8 +79,9 @@ export function AgentOwnershipBadge({ agent, compact = false }: { agent: Workspa
     (mine && currentUser.name !== owner ? currentUser.name : null) || owner;
   const label = `${ownerName}${mine ? ` (${t('threads.you')})` : ''}`;
   return <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground" title={t('messageAgentAccess.owner', { name: label })}>
-    {!compact && <span className="max-w-44 truncate">{t('messageAgentAccess.owner', { name: label })}</span>}
+    {!compact && !mine && <span className="max-w-44 truncate">{t('messageAgentAccess.owner', { name: label })}</span>}
     {status && <Badge variant="secondary">{status}</Badge>}
+    {mine && model && <Badge variant="secondary" className="max-w-64 font-normal text-muted-foreground" title={model}><span className="truncate">{model}</span></Badge>}
   </span>;
 }
 
@@ -88,9 +90,12 @@ export function AgentSharingAction({ agentName }: { agentName: string }) {
   const t = useT();
   const agent = context?.agents.find(item => item.agent_name === agentName);
   if (!context || context.people < 2 || !agent?.can_request_sharing || agent.request_access !== 'no') return null;
-  return <Button variant="ghost" size="xs" className="text-muted-foreground" title={context.supported ? undefined : t('messageAgentAccess.rolloutPending')} disabled={!context.supported || !!context.busy || agent.thread_access_requested} onClick={() => void context.request(agent)}>
+  const button = <Button variant="ghost" size="xs" className="text-muted-foreground" disabled={!context.supported || !!context.busy || agent.thread_access_requested} onClick={() => void context.request(agent)}>
     <UserPlus data-icon="inline-start" />{agent.thread_access_requested ? t('messageAgentAccess.requested') : t('messageAgentAccess.request')}
   </Button>;
+  // A disabled button gets no pointer events, so the rollout hint sits on a wrapper.
+  if (context.supported) return button;
+  return <WithTooltip label={t('messageAgentAccess.rolloutPending')}><span className="inline-flex">{button}</span></WithTooltip>;
 }
 
 

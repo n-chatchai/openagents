@@ -18,8 +18,12 @@ import { ShareDialog } from './share-dialog';
 import { HumanProfile } from './human-profile';
 import { arrangeQueuedMessages } from './use-queued-messages';
 import { useLayout } from '@/components/layout/layout-context';
+import { RoutineDetails } from '@/components/routines/routine-details';
+import { useRoutines } from '@/components/routines/use-routines';
+import { useRoutineNavigation } from '@/components/routines/use-routine-navigation';
 import { RoutineDialog } from '@/components/routines/routine-dialog';
 import type { RoutineItem, WorkspaceMessage } from '@/lib/types';
+import { isYumiWelcome } from '@/lib/yumi-onboarding';
 import { useT } from '@/lib/i18n';
 import { useBrief } from './work-brief';
 import { useMe } from '@/hooks/use-me';
@@ -43,14 +47,17 @@ export function ChatView() {
   const hasConnectedAgent = agents.some((agent) => !agent.builtin && agent.status === 'online');
   const needsConnection = !workspaceLoading && !workspaceLoadError && !hasConnectedAgent;
   const t = useT();
-  const [showCreateRoutine, setShowCreateRoutine] = useState(false);
   // Snapshot on open: polling replaces routine objects, and the dialog resets
   // its form whenever the routine it is given changes.
   const [editingRoutine, setEditingRoutine] = useState<RoutineItem | null>(null);
   // An open routine queue is edited right here, not only from the Routines list.
-  const currentRoutine = currentSessionId ? routines.find((r) => r.channelName === currentSessionId) ?? null : null;
+  const queueRoutines = routines.filter(r => r.channelName === currentSessionId && r.status !== 'cancelled');
+  const currentRoutine = queueRoutines.length === 1 ? queueRoutines[0] : null;
   const { agentProbes, dismissedProbes, dismissProbe, retesting, retestAgent } = useAgentProbes();
-  const { openView, viewMode, openNewThread } = useLayout();
+  const { openView, viewMode, openNewThread, selectedRoutineId, setSelectedRoutineId, isMobile } = useLayout();
+  useRoutines();
+  const { openRoutineThread, editInThread } = useRoutineNavigation();
+  const selectedRoutine = routines.find(r => r.id === selectedRoutineId && r.sourceChannelName === currentSessionId && r.status !== 'cancelled');
   const currentSessionIdRef = useSessionPrefetch(sessions, currentSessionId);
 
   // Look up cached messages for the current session (read once per session switch)
@@ -133,9 +140,12 @@ export function ChatView() {
     const dismissKey = JSON.stringify([workspaceKey, currentSessionId, entry.nodeId, name, entry.probe.at]);
     return dismissedProbes.has(dismissKey) ? [] : [{ name, entry, dismissKey }];
   });
-  // Yumi guidance — pinned above the thread when the built-in assistant is a
-  // participant; collapsible, remembered per browser.
-  const hasYumi = !isDM && agents.some((a) => a.builtin && participants.includes(a.agentName));
+  const yumi = agents.find((agent) => agent.builtin && agent.agentName === 'yumi');
+  const isYumiDm = !!yumi && isDM && dmCounterpart === `openagents:${yumi.agentName}`;
+  const hasYumi = !!yumi && (isYumiDm || (!isDM && participants.includes(yumi.agentName)));
+  const lastMessage = chatLogMessages.at(-1);
+  const hasInlineWelcome = !!lastMessage && isYumiWelcome(lastMessage, yumi);
+  const showYumiGuide = hasYumi && !loading && !hasInlineWelcome && (!isYumiDm || displayMessages.length > 0);
   const canCompose = !isDM || dmWritable;
   const appendMention = (email: string) => {
     const separator = currentDraft && !/\s$/.test(currentDraft) ? ' ' : '';
@@ -143,7 +153,7 @@ export function ChatView() {
   };
 
   return (
-    <AgentMessageAccessProvider><div data-thread-conversation className="flex h-full flex-col">
+    <AgentMessageAccessProvider><div className="flex h-full min-w-0"><div data-thread-conversation className={`min-w-0 flex-1 h-full flex-col ${selectedRoutine && isMobile ? 'hidden' : 'flex'}`}>
       <ChatViewHeader
         sessionId={currentSessionId}
         session={currentSession}
@@ -158,12 +168,12 @@ export function ChatView() {
 
       {!needsConnection && <OfflineAgentsBanner participants={participants} agents={agents} />}
       <ProbeFailureBanner failing={failingProbes} retesting={retesting} onRetest={retestAgent} onDismiss={dismissProbe} />
-      {needsConnection && !dmWithPerson && <ConnectAgentNotice onConnect={() => openView('connect')} />}
+      {needsConnection && !dmWithPerson && !hasYumi && <ConnectAgentNotice onConnect={() => openView('connect')} />}
 
       {/* Messages */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         <ThreadLiveBrowser key={`live-browser:${currentSessionId}`} messages={browserMessages} />
-        {hasYumi && <YumiGuide />}
+        {showYumiGuide && <YumiGuide showSetup={!agents.some((agent) => !agent.builtin)} canStartThread={hasConnectedAgent} />}
         {loading ? (
           <div className="flex flex-1 items-center justify-center">
             <Spinner className="size-6 text-muted-foreground" />
@@ -184,6 +194,16 @@ export function ChatView() {
               const email = message.senderType === 'agent' ? normalizeAgentAddress(message.senderAddress || message.senderName) : (message.senderAddress || '').replace(/^human:/, '');
               if (email && (message.senderType === 'agent' || email.includes('@')) && !currentDraft.includes(`@${email}`)) appendMention(email);
               focusComposer();
+            } : undefined}
+            onSaveKnowledge={canCompose ? (message) => {
+              const agentName = normalizeAgentAddress(message.senderAddress || message.senderName);
+              if (!agentName) return;
+              const excerpt = message.content.replace(/\s+/g, ' ').trim();
+              void handleSend(t('reactions.saveKnowledgePrompt', {
+                agent: agentName,
+                id: message.messageId,
+                excerpt: excerpt.length > 160 ? `${excerpt.slice(0, 160)}…` : excerpt,
+              }), [agentName], [], [], { replyTo: message });
             } : undefined}
             onMentionPerson={canCompose ? (email) => {
               appendMention(email);
@@ -213,7 +233,7 @@ export function ChatView() {
               onDraftChange={handleDraftChange}
               onFocusChange={(focused) => focused ? notifyFocus() : notifyBlur()}
               focusKey={focusKey}
-              onCreateRoutine={() => setShowCreateRoutine(true)}
+              onCreateRoutine={() => { handleDraftChange(`${currentDraft}${currentDraft ? '\n\n' : ''}${t('routineHub.newPrompt')}`); focusComposer(); }}
               hint={composerHint}
               disabled={!currentUser.name.trim()}
             />
@@ -221,18 +241,6 @@ export function ChatView() {
         )}
 
         <HumanProfile email={profileEmail} onClose={() => setProfileEmail(null)} />
-
-        <RoutineDialog
-          open={showCreateRoutine}
-          onOpenChange={setShowCreateRoutine}
-          agents={agents}
-          conversationHistory={(() => {
-            const recent = sessionMessages.filter((m) => m.messageType === 'chat').slice(-20);
-            if (!recent.length) return undefined;
-            return recent.map((m) => `${m.senderName}: ${m.content}`).join('\n');
-          })()}
-          onCreateRoutine={createRoutine}
-        />
 
         {editingRoutine && (
           <RoutineDialog
@@ -252,6 +260,6 @@ export function ChatView() {
           sessionId={currentSessionId}
         />
       </div>
-    </div></AgentMessageAccessProvider>
+    </div>{selectedRoutine && <RoutineDetails key={selectedRoutine.id} routine={selectedRoutine} onClose={() => setSelectedRoutineId(null)} onOpenThread={openRoutineThread} onEditInThread={editInThread} onLinkThread={() => {}}/>}</div></AgentMessageAccessProvider>
   );
 }

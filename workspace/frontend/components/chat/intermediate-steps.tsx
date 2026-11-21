@@ -1,20 +1,19 @@
 'use client';
 
 import { memo } from 'react';
-import { CircleCheck, LoaderCircle } from 'lucide-react';
+import { Activity, LoaderCircle } from 'lucide-react';
 import {
   Trace,
   TraceCollapsible,
   TraceCollapsibleContent,
   TraceCollapsibleTrigger,
   TraceIcon,
-  TraceLine,
-  TraceTitle,
 } from '@/components/ui/trace';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { agentLabel } from '@/lib/helpers';
 import { WorkingBubble } from './working-bubble';
-import { STEP_LINE, StepItem } from './step-item';
+import { StepItem } from './step-item';
+import type { Todo } from './todo-queue';
 import { isPlaceholderThinking, parseStepContent } from './step-parsing';
 import { isTerminalStatus } from './chat-message-groups';
 import type { WorkspaceMessage, WorkspaceAgent } from '@/lib/types';
@@ -32,117 +31,107 @@ export const IntermediateSteps = memo(function IntermediateSteps({ steps, agents
   const t = useT();
   if (steps.length === 0) return null;
   const hasTerminalStatus = steps.some(isTerminalStatus);
-  const active = isActive && !hasTerminalStatus;
+  const lastAgent = agents?.find(agent => agent.agentName === steps[steps.length - 1].senderName);
+  const active = isActive && !hasTerminalStatus && lastAgent?.status !== 'offline';
 
-  // While the agent is active its most recent status / tool step moves into
-  // the working bubble ("bubble with live status") instead of rendering as its
-  // own row. Todos and real reasoning keep their rows; a bare "thinking..."
-  // placeholder just yields the dots.
-  let bubbleStatus: string | undefined;
-  let absorbed: WorkspaceMessage | null = null;
   const lastStep = steps[steps.length - 1];
-  if (active && lastStep && lastStep.messageType === 'status') {
-    if (isPlaceholderThinking(lastStep)) {
-      absorbed = lastStep;
-    } else {
-      const parsed = parseStepContent(lastStep.content);
-      if (parsed.type === 'status') {
-        bubbleStatus = parsed.text;
-        absorbed = lastStep;
-      } else if (parsed.type === 'tool_call') {
-        bubbleStatus = parsed.summary ? `${parsed.toolDisplay} › ${parsed.summary}` : parsed.toolDisplay;
-        absorbed = lastStep;
-      } else if (parsed.type === 'compacting') {
-        bubbleStatus = t('chat.vibing');
-        absorbed = lastStep;
-      }
-    }
-  }
-
-  // Placeholder-only groups show nothing of their own; in history they vanish,
-  // while active only the bubble appears.
-  const rows = steps.filter((s) => s !== absorbed && !isPlaceholderThinking(s));
-  // The step still in progress, if the bubble did not take it (e.g. reasoning).
-  const liveStep = active && !absorbed ? lastStep : null;
+  const rows = steps.filter((step) => !isPlaceholderThinking(step));
   if (rows.length === 0 && !active) return null;
 
-  // Group consecutive steps by sender. Each todos message is a full snapshot
-  // of that agent's list, so only its latest one shows.
-  const hasMultipleAgents = (agents?.length ?? 0) > 1;
-  const senderGroups: { sender: string; steps: WorkspaceMessage[]; todos?: WorkspaceMessage }[] = [];
-  for (const step of rows) {
+  // A task message is a full snapshot. Keep only the latest per author,
+  // including when other agents spoke between two snapshots.
+  const latestTodos = new Map<string, WorkspaceMessage>();
+  for (const step of rows) if (step.messageType === 'todos') latestTodos.set(step.senderName, step);
+  const detailRows = rows.filter(step => step.messageType !== 'todos' || latestTodos.get(step.senderName) === step);
+  const senderGroups: { sender: string; steps: WorkspaceMessage[] }[] = [];
+  for (const step of detailRows) {
     let group = senderGroups[senderGroups.length - 1];
     if (!group || group.sender !== step.senderName) {
       group = { sender: step.senderName, steps: [] };
       senderGroups.push(group);
     }
-    if (step.messageType === 'todos') group.todos = step;
-    else group.steps.push(step);
+    group.steps.push(step);
+  }
+  const senders = new Set(detailRows.map(step => step.senderName));
+  const onlySender = senders.size === 1 ? detailRows[0]?.senderName : undefined;
+  const author = agents?.find(agent => agent.agentName === onlySender);
+  const taskCount = [...latestTodos.values()].reduce((count, message) =>
+    count + (Array.isArray(message.metadata?.todos) ? message.metadata.todos.length : 0), 0);
+  const stepCount = rows.filter(step => step.messageType !== 'todos').length;
+  const activeTodos = latestTodos.get(lastStep.senderName)?.metadata?.todos;
+  const currentTask = Array.isArray(activeTodos)
+    ? (activeTodos as Todo[]).find(todo => todo.status === 'in_progress')?.content
+    : undefined;
+  let latestThought: string | undefined;
+  if (active) {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const step = rows[i];
+      if (step.senderName !== lastStep.senderName || step.messageType === 'todos') continue;
+      const parsed = step.messageType === 'thinking'
+        ? { type: 'thinking', text: step.content }
+        : parseStepContent(step.content);
+      if (parsed.type === 'thinking' && parsed.text?.trim()) {
+        latestThought = parsed.text;
+        break;
+      }
+    }
+  }
+  const latestAction = active
+    ? steps.slice().reverse().find(step => step.senderName === lastStep.senderName && step.messageType !== 'todos')
+    : undefined;
+  let status = t('chat.stepsRunning');
+  if (active && latestAction) {
+    if (latestAction.messageType === 'thinking') {
+      status = t('chat.thinking');
+    } else {
+      const action = parseStepContent(latestAction.content);
+      // Some adapters emit a plain "Tool › input" line. Use the tool name
+      // alone for the live summary so commands and arguments stay in history.
+      const tool = action.toolDisplay ?? action.text?.match(/^([\w.-]+)\s+›\s+/)?.[1];
+      if (tool) status = t('chat.usingTool', { tool });
+      else if (action.type === 'thinking') status = t('chat.thinking');
+      else if (action.type === 'compacting') status = t('chat.vibing');
+    }
   }
 
   return (
     <div>
-      {rows.length > 0 && (
-        <div className="flex items-start gap-3 py-1">
-          {/* Spacer matching avatar width for alignment with chat messages */}
-          <div className="size-8 shrink-0" />
-          <div className="flex min-w-0 flex-1 flex-col gap-2">
-            {senderGroups.map((group, gi) => (
-              <div key={`${group.sender}-${gi}`} className="flex flex-col gap-1">
-                {hasMultipleAgents && (
-                  <div className="flex items-center gap-1.5">
-                    <AgentAvatar name={group.sender} size={14} />
-                    <span className="text-xs font-medium text-muted-foreground">
+      {detailRows.length > 0 && (
+        <div className="py-2 pl-11">
+          <TraceCollapsible>
+            <TraceCollapsibleTrigger className="gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-muted/60">
+              <TraceIcon>
+                {active ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <Activity />}
+              </TraceIcon>
+              <span className="min-w-0 truncate">
+                {onlySender && <span className="mr-1.5 font-medium">{author ? agentLabel(author) : onlySender}</span>}
+                {t(active ? 'chat.stepsRunning' : 'chat.activity')}
+                {stepCount > 0 && <span className="text-muted-foreground/70"> · {t('chat.activitySteps', { count: stepCount })}</span>}
+                {taskCount > 0 && <span className="text-muted-foreground/70"> · {t('chat.activityTasks', { count: taskCount })}</span>}
+              </span>
+            </TraceCollapsibleTrigger>
+            <TraceCollapsibleContent className="max-h-80 overflow-y-auto overscroll-contain py-1">
+              {senderGroups.map((group, gi) => (
+                <div key={`${group.sender}-${gi}`} className="mb-3 last:mb-0">
+                  {senders.size > 1 && (
+                    <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      <AgentAvatar name={group.sender} size={14} />
                       {(() => {
-                        const a = agents?.find((x) => x.agentName === group.sender);
-                        return a ? agentLabel(a) : group.sender;
+                        const agent = agents?.find(item => item.agentName === group.sender);
+                        return agent ? agentLabel(agent) : group.sender;
                       })()}
-                    </span>
-                  </div>
-                )}
-                <Trace>
-                  {group.steps.length > 0 && (
-                    <StepsSummary steps={group.steps} running={active && gi === senderGroups.length - 1} liveStep={liveStep} />
+                    </div>
                   )}
-                  {group.todos && <StepItem message={group.todos} running={active && gi === senderGroups.length - 1} />}
-                </Trace>
-              </div>
-            ))}
-          </div>
+                  <Trace>
+                    {group.steps.map(step => <StepItem key={step.messageId} message={step} running={active && (step === latestAction || step === latestTodos.get(lastStep.senderName))} />)}
+                  </Trace>
+                </div>
+              ))}
+            </TraceCollapsibleContent>
+          </TraceCollapsible>
         </div>
       )}
-      {active && (
-        <WorkingBubble agentName={lastStep?.senderName} agents={agents} status={bubbleStatus} />
-      )}
+      {active && <WorkingBubble key={lastStep.senderName} agentName={lastStep.senderName} agents={agents} status={status} task={currentTask} thought={latestThought} />}
     </div>
   );
 });
-
-/**
- * An agent's steps behind one summary line (shadcn AI Elements "Chain of
- * Thought"): "Working" while they run, then "Took N steps". It stays folded
- * while running too — the working bubble already shows the live step, and a
- * long run would otherwise unroll hundreds of rows.
- */
-function StepsSummary({ steps, running, liveStep }: { steps: WorkspaceMessage[]; running: boolean; liveStep: WorkspaceMessage | null }) {
-  const t = useT();
-  return (
-    <TraceCollapsible>
-      <TraceCollapsibleTrigger>
-        <TraceLine className={STEP_LINE} status={running ? 'running' : undefined}>
-          <TraceIcon>
-            {running ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <CircleCheck />}
-          </TraceIcon>
-          <TraceTitle>{running ? t('chat.stepsRunning') : t('chat.stepsDone', { count: steps.length })}</TraceTitle>
-        </TraceLine>
-      </TraceCollapsibleTrigger>
-      <TraceCollapsibleContent>
-        <Trace>
-          {steps.map((step) => (
-            <StepItem key={step.messageId} message={step} running={running && step === liveStep} />
-          ))}
-        </Trace>
-      </TraceCollapsibleContent>
-    </TraceCollapsible>
-  );
-}

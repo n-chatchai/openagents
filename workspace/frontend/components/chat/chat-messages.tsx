@@ -6,7 +6,6 @@ import { cn } from '@/lib/utils';
 import { MessageReactionsProvider } from './message-reactions';
 import { ChatMessage } from './chat-message';
 import { IntermediateSteps } from './intermediate-steps';
-import { ThinkingMessage } from './thinking-message';
 import { WorkingBubble } from './working-bubble';
 import { Button } from '@/components/ui/button';
 import { Marker, MarkerContent } from '@/components/ui/marker';
@@ -39,11 +38,13 @@ interface ChatMessagesProps {
   onSuggestion?: (text: string) => void;
   onMentionPerson?: (email: string) => void;
   onReply?: (message: WorkspaceMessage) => void;
+  /** Ask an agent to save one of its messages to the knowledge base. */
+  onSaveKnowledge?: (message: WorkspaceMessage) => void;
   /** The thread shown, when this is the main view: message links opened in-app scroll here. */
   targetSessionId?: string | null;
 }
 
-function ChatMessagesContent({ messages, agents, className, scrollKey, loadOlder, hasOlder, loadingOlder, onSuggestion, onMentionPerson, onReply, targetSessionId }: ChatMessagesProps) {
+function ChatMessagesContent({ messages, agents, className, scrollKey, loadOlder, hasOlder, loadingOlder, onSuggestion, onMentionPerson, onReply, onSaveKnowledge, targetSessionId }: ChatMessagesProps) {
   const t = useT();
   const target = useMessageTarget(targetSessionId);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -182,14 +183,8 @@ function ChatMessagesContent({ messages, agents, className, scrollKey, loadOlder
                       onSuggestion={onSuggestion}
                       onMentionPerson={onMentionPerson}
                       onReply={onReply}
+                      onSaveKnowledge={onSaveKnowledge}
                       onRecall={recall}
-                    />
-                  ) : group.type === 'thinking' ? (
-                    <ThinkingMessage
-                      sender={group.sender}
-                      messages={group.messages}
-                      agents={agents}
-                      isActive={index === groups.length - 1}
                     />
                   ) : (
                     <IntermediateSteps

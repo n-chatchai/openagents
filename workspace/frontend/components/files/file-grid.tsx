@@ -15,14 +15,15 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Table, TableBody } from '@/components/ui/table';
+import { WithTooltip } from '@/components/ui/with-tooltip';
 import { cn } from '@/lib/utils';
 import { useT, type MessageKey } from '@/lib/i18n';
 import { LoadMoreSentinel } from '@/hooks/use-incremental-list';
 import { FILE_FILTER_GROUPS, basename, type FileEntry, type FileSortKey as SortKey } from './file-utils';
 import { FilesEmptyWorkspace, FolderEmpty } from './file-grid-empty';
 import { FileGridFilters, type FileFilterCategory } from './file-grid-filters';
-import { FileGridTile, FileListRow, FolderGridTile, FolderListRow, type FileItemProps } from './file-grid-items';
+import { FileGridTile, FileListHeading, FileListRow, FolderGridTile, FolderListRow, type FileItemProps } from './file-grid-items';
 import { FileGridTrail } from './file-grid-trail';
 import { UploadRow, UploadTile } from './file-upload-items';
 import { useFileBrowse } from './use-file-browse';
@@ -30,7 +31,7 @@ import { useFileSharing } from './use-file-sharing';
 
 const SORT_LABEL_KEYS: Record<SortKey, MessageKey> = {
   name: 'files.sortName',
-  recent: 'files.lastModified',
+  recent: 'files.dateAdded',
   size: 'files.sortSize',
 };
 
@@ -59,13 +60,9 @@ export function FileGrid() {
       ? t('files.backToRecent')
       : t('files.clearFolderSelection');
 
-  /**
-   * Upload a batch into the folder on screen — the only place an upload can
-   * land now that there's no root listing. The queue draws each file into the
-   * listing right away, so there's nothing to wait for here.
-   */
+  /** An empty path uploads directly into the workspace; folders are optional. */
   const uploadInto = (list: FileList) => {
-    if (!currentPath || list.length === 0) return;
+    if (list.length === 0) return;
     enqueueUploads(Array.from(list), currentPath);
   };
 
@@ -94,18 +91,13 @@ export function FileGrid() {
     }
   };
 
-  // Drop zone handling — a drop needs a folder to land in, same as the upload
-  // button. Without one the file would silently go somewhere you can't see.
+  // Both the workspace listing and individual folders accept drops.
   const [dragOver, setDragOver] = useState(false);
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const droppedFiles = e.dataTransfer.files;
     if (!droppedFiles || droppedFiles.length === 0) return;
-    if (!currentPath) {
-      toast.error(t('files.pickFolderTitle'), { description: t('files.pickFolderBody') });
-      return;
-    }
     uploadInto(droppedFiles);
   };
 
@@ -133,7 +125,7 @@ export function FileGrid() {
 
   return (
     <div
-      className={cn('flex h-full flex-col', dragOver && hasFolder && 'bg-primary/5 ring-2 ring-primary/40 ring-inset')}
+      className={cn('@container flex h-full min-h-0 min-w-0 flex-col overflow-hidden', dragOver && 'bg-muted/50 ring-2 ring-ring ring-inset')}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
@@ -173,9 +165,7 @@ export function FileGrid() {
             about this folder, so it belongs to the recent list too. It waits
             for a listing to exist at all. */}
         {(hasFolder || !isEmpty) && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
+          <WithTooltip label={view === 'grid' ? t('files.listView') : t('files.gridView')}><Button
                 variant="ghost"
                 size="icon-sm"
                 onClick={() => setView(view === 'grid' ? 'list' : 'grid')}
@@ -183,31 +173,19 @@ export function FileGrid() {
                 className="shrink-0 text-muted-foreground"
               >
                 {view === 'grid' ? <List /> : <LayoutGrid />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{view === 'grid' ? t('files.listView') : t('files.gridView')}</TooltipContent>
-          </Tooltip>
+              </Button></WithTooltip>
         )}
 
-        {/* Upload only — creating folders belongs to the folder panel, which
-            owns the tree. An upload has to land somewhere, so it appears once
-            a folder is picked. */}
-        {hasFolder && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => fileInputRef.current?.click()}
-                aria-label={t('files.uploadFile')}
-                className="shrink-0 text-muted-foreground"
-              >
-                <Upload />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t('files.uploadTo', { path: currentPath })}</TooltipContent>
-          </Tooltip>
-        )}
+        {/* Uploads go to the selected folder, or directly to the workspace. */}
+        <WithTooltip label={hasFolder ? t('files.uploadTo', { path: currentPath }) : t('files.uploadToWorkspace')}><Button
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label={t('files.uploadFiles')}
+              className="shrink-0"
+            >
+              <Upload data-icon="inline-start" />
+              {t('files.uploadFiles')}
+            </Button></WithTooltip>
         <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleUpload} />
       </DetailHeader>
 
@@ -219,8 +197,8 @@ export function FileGrid() {
         onSearch={setSearch}
       />
 
-      {!hasFolder && allFiles.length === 0 ? (
-        <FilesEmptyWorkspace onBrowseFolders={isMobile ? openMobileList : undefined} />
+      {!hasFolder && allFiles.length === 0 && uploadsHere.length === 0 ? (
+        <FilesEmptyWorkspace onUpload={() => fileInputRef.current?.click()} onBrowseFolders={isMobile ? openMobileList : undefined} />
       ) : isEmpty ? (
         <FolderEmpty
           typeFilter={typeFilter}
@@ -235,26 +213,31 @@ export function FileGrid() {
         /* One row per item, name in full: upload names run long and look
            alike, so a dense row beats a wall of truncated tiles. Uploads lead,
            then subfolders, the way a folder listing reads everywhere else. */
-        <div className="flex-1 overflow-y-auto p-2">
-          {uploadsHere.map((upload) => (
-            <UploadRow
-              key={upload.id}
-              upload={upload}
-              onRetry={() => retryUpload(upload.id)}
-              onCancel={() => cancelUpload(upload.id)}
-            />
-          ))}
-          {folderEntries.map((folder) => (
-            <FolderListRow key={folder.path} folder={folder} onOpen={() => openFolder(folder.path)} />
-          ))}
-          {shownEntries.map((entry) => <FileListRow key={entry.file.id} {...itemProps(entry)} />)}
+        /* The table's own container scrolls sideways only; letting it overflow
+           visibly keeps this pane the scroller, so the heading can stick. */
+        <div className="flex-1 overflow-y-auto px-2 pb-2 *:data-[slot=table-container]:overflow-visible">
+          <Table>
+            <FileListHeading />
+            <TableBody>
+              {uploadsHere.map((upload) => (
+                <UploadRow
+                  key={upload.id}
+                  upload={upload}
+                  onRetry={() => retryUpload(upload.id)}
+                  onCancel={() => cancelUpload(upload.id)}
+                />
+              ))}
+              {folderEntries.map((folder) => (
+                <FolderListRow key={folder.path} folder={folder} onOpen={() => openFolder(folder.path)} />
+              ))}
+              {shownEntries.map((entry) => <FileListRow key={entry.file.id} {...itemProps(entry)} />)}
+            </TableBody>
+          </Table>
           {moreEntries && <LoadMoreSentinel onVisible={showMore} count={shownEntries.length} />}
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto p-4">
-          {/* Wider tiles: at 120px the names truncate after a few characters,
-              and these are timestamped upload names. */}
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-2">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,12rem),1fr))] gap-3">
             {uploadsHere.map((upload) => (
               <UploadTile
                 key={upload.id}

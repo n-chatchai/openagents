@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { WithTooltip } from '@/components/ui/with-tooltip';
 import { AgentAvatar } from '@/components/agents/agent-avatar';
 import { DeviceOfflineHint } from '@/components/agents/agent-roster-hints'; // v1.1 M1
 import { AgentUsabilityLine } from '@/components/sharing/agent-access-section';
@@ -56,9 +57,9 @@ export function AgentProfileHeader({ agent, canManage, refreshWorkspace }: { age
 
   const isOnline = agent.status === 'online';
   return (
-    <div className="px-5 pb-4">
+    <div className="min-w-0">
       <div className="flex items-center gap-3">
-        <AgentAvatar name={agent.agentName} size={40} status={agent.status} showStatus />
+        <AgentAvatar name={agent.agentName} size={44} status={agent.status} showStatus />
         <div className="min-w-0 flex-1">
           {editingName ? (
             <div className="flex items-center gap-1.5">
@@ -80,19 +81,18 @@ export function AgentProfileHeader({ agent, canManage, refreshWorkspace }: { age
               </Button>
             </div>
           ) : (
-            <div className="group/name flex min-w-0 items-center gap-1.5">
-              <h3 className="truncate text-sm leading-tight font-semibold">{agentLabel(agent)}</h3>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <h3 className="truncate text-lg leading-tight font-semibold">{agentLabel(agent)}</h3>
               {canManage && (
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  onClick={() => setEditingName(true)}
-                  className="text-muted-foreground opacity-0 transition-opacity group-hover/name:opacity-100 focus-visible:opacity-100"
-                  title={t('agents.editDisplayName')}
-                  aria-label={t('agents.editDisplayName')}
-                >
-                  <Pencil />
-                </Button>
+                <WithTooltip label={t('agents.editDisplayName')}><Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => setEditingName(true)}
+                      className="text-muted-foreground hover:text-foreground"
+                      aria-label={t('agents.editDisplayName')}
+                    >
+                      <Pencil />
+                    </Button></WithTooltip>
               )}
             </div>
           )}

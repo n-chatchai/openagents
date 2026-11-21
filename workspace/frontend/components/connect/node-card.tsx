@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { type AgentDraft } from '@/components/agents/agent-setup';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { useConfirm } from '@/components/ui/dialogs-provider';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import { workspaceApi } from '@/lib/api';
@@ -11,6 +12,7 @@ import { useT } from '@/lib/i18n';
 import { nodeCommandErrorKey } from '@/lib/node-command-error';
 import type { NodeAgent, WorkspaceNode } from '@/lib/types';
 import { NodeAgentItem } from './node-agent-item';
+import { NodeOfflineHelp } from './node-offline-help';
 import { NodePendingAgent } from './node-pending-agent';
 import { NodeSummary } from './node-summary';
 import { useAgentToggles } from './use-agent-toggles';
@@ -136,7 +138,7 @@ export function NodeCard({
   const hasAny = agents.length > 0 || pendingAgents.length > 0;
 
   return (
-    <div className="overflow-hidden rounded-xl border bg-background transition-shadow hover:shadow-xs">
+    <Card className="gap-0 py-0">
       <NodeSummary
         node={node}
         agents={agents}
@@ -152,15 +154,15 @@ export function NodeCard({
       {expanded && (
         <div id={`device-agents-${node.nodeId}`} className="flex flex-col gap-3 border-t bg-muted/50 p-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">{t('connect.nodeAgents')}</span>
+            <h4 className="text-sm font-medium">{t('connect.nodeAgents')}</h4>
             {hasAny && (
-              <Button size="sm" variant="outline" onClick={onAddAgent}>
+              <Button onClick={onAddAgent}>
                 <Plus data-icon="inline-start" />{t('connect.nodeAddAgent')}
               </Button>
             )}
           </div>
 
-          {!online && <p className="text-xs text-warning">{t('connect.nodeOfflineActionHint')}</p>}
+          {!online && <NodeOfflineHelp />}
 
           {!hasAny ? (
             <Empty className="p-4">
@@ -179,7 +181,9 @@ export function NodeCard({
                 <NodePendingAgent
                   key={`pending-${p.name}`}
                   pending={p}
+                  deviceOnline={online}
                   onRetry={() => onRetryPending(p)}
+                  onRecheck={onChanged}
                   onDismiss={() => onDismissPending(p.name)}
                 />
               ))}
@@ -200,6 +204,6 @@ export function NodeCard({
           )}
         </div>
       )}
-    </div>
+    </Card>
   );
 }

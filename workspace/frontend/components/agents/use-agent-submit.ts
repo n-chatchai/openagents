@@ -1,4 +1,5 @@
 'use client';
+import { encryptAgentCredentials } from './encrypt-agent-credentials';
 import { useRef } from 'react';
 import { toast } from 'sonner';
 import { useT } from '@/lib/i18n';
@@ -18,6 +19,8 @@ export function useAgentSubmit({ node, api, extensions, editAgent, onBack, onCha
     const apiKey = form.apiKey.trim();
     const baseUrl = form.baseUrl.trim();
     const workingDir = form.workingDir.trim();
+    const guided = !!extensions?.guided && !isEdit && !extensions?.compact && !extensions?.configuration;
+    const setupLater = guided && form.setupAuth === 'later';
     if (!n || !selected || submitting.current) return;
     if (!/^[a-zA-Z0-9_-]+$/.test(n)) { form.setNameError(t('connect.agentNameInvalid')); return; }
     if (!isEdit && node.agents.some((agent) => agent.name === n)) { form.setNameError(t('connect.agentNameExists')); return; }
@@ -25,7 +28,7 @@ export function useAgentSubmit({ node, api, extensions, editAgent, onBack, onCha
     form.setNameError(null);
     // A key-only agent with no key: point at the credentials, every time. A
     // sign-in not confirmed: point at it once; the next click adds anyway.
-    if (creds.keyRequired || (creds.signInUnconfirmed && !isEdit && !creds.credsError)) {
+    if (!setupLater && !guided && (creds.keyRequired || (creds.signInUnconfirmed && !isEdit && !creds.credsError))) {
       creds.setCredsError(true);
       requestAnimationFrame(() => {
         creds.credsFieldRef.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
@@ -45,7 +48,7 @@ export function useAgentSubmit({ node, api, extensions, editAgent, onBack, onCha
       form.nativeCreds.map((f) => [f.name, (form.nativeValues[f.name] || '').trim()]).filter(([, v]) => v),
     );
     const missingNative = form.nativeCreds.find((f) => !nativeConfig[f.name]);
-    if (!isEdit && form.selectedStatus !== 'ready' && missingNative) {
+    if (!isEdit && !setupLater && form.selectedStatus !== 'ready' && missingNative) {
       form.setError(t('connect.nodeNativeCredRequired', { field: missingNative.name }));
       return;
     }
@@ -59,21 +62,25 @@ export function useAgentSubmit({ node, api, extensions, editAgent, onBack, onCha
     form.setBusy(true);
     try {
       if (isEdit) {
+        const modelChanged = model !== (editAgent?.model ?? '').trim();
         await api.enqueueNodeCommand(node.nodeId, 'configure_agent', {
           name: n,
           type: selected,
           // Only a model that was changed: one this form never showed (a
           // launcher-saved CODEX_MODEL on an older device) went out blank and
           // wiped the model the agent ran on. '' still clears → Auto.
-          ...(model !== (editAgent?.model ?? '').trim() ? { model } : {}),
+          ...(modelChanged ? { model } : {}),
           currentWorkingDir: editAgent?.workingDir || '',
           ...(workingDir ? { workingDir } : {}),
           ...(apiKey ? { apiKey } : {}),
           ...(baseUrl && !detail?.provider_locked ? { baseUrl } : {}),
           ...accessArg,
-          ...(creds.signInChosen ? { authMode: 'cli_login' } : {}),
+          ...((guided ? form.setupAuth === 'subscription' || (!form.setupAuth && (form.runtimeByType[selected]?.signedIn === true || form.runtimeByType[selected]?.auth?.mode === 'subscription')) : creds.signInChosen) ? { authMode: 'cli_login' } : {}),
           ...configArg,
         });
+        // The workspace's pick outranks the device's model (see
+        // useAgentModelOptions), so it moves with the edit.
+        if (modelChanged) await extensions?.setWorkspaceModel?.(n, model);
         // After the configuration, so a label the workspace refuses (too long,
         // taken by another agent) never costs the settings saved above.
         const label = form.displayName.trim();
@@ -81,7 +88,7 @@ export function useAgentSubmit({ node, api, extensions, editAgent, onBack, onCha
           await extensions!.renameAgent!(n, label);
         }
       } else {
-        const cmd = await api.enqueueNodeCommand(node.nodeId, 'create_agent', {
+        let createArgs: Record<string, unknown> = {
           name: n,
           type: selected,
           ...(workingDir ? { workingDir } : {}),
@@ -89,9 +96,15 @@ export function useAgentSubmit({ node, api, extensions, editAgent, onBack, onCha
           ...(baseUrl && !detail?.provider_locked ? { baseUrl } : {}),
           ...(model ? { model } : {}),
           ...accessArg,
-          ...(creds.signInChosen ? { authMode: 'cli_login' } : {}),
+          ...((guided ? form.setupAuth === 'subscription' || (!form.setupAuth && (form.runtimeByType[selected]?.signedIn === true || form.runtimeByType[selected]?.auth?.mode === 'subscription')) : creds.signInChosen) ? { authMode: 'cli_login' } : {}),
           ...configArg,
-        });
+        };
+        if (guided && (apiKey || configArg.config)) {
+          try {
+            createArgs = await encryptAgentCredentials(api, node.nodeId, 'create_agent', createArgs, t('agentSetup.secureUnavailable'));
+          } catch { throw new Error(t('agentSetup.secureUnavailable')); }
+        }
+        const cmd = await api.enqueueNodeCommand(node.nodeId, 'create_agent', createArgs);
         // Optimistically show it spinning up in the node card. The commandId
         // lets the placeholder track the REAL install/config progress instead
         // of guessing from a timer.
@@ -103,12 +116,12 @@ export function useAgentSubmit({ node, api, extensions, editAgent, onBack, onCha
             draft: {
               name: n, type: selected,
               workingDir: workingDir || undefined,
-              apiKey: apiKey || undefined,
+              apiKey: guided ? undefined : apiKey || undefined,
               baseUrl: baseUrl || undefined,
               model: model || undefined,
               modelAccessId: (byok && byokState.accessId) || undefined,
               codexWireApi: creds.customCodex ? form.codexWireApi : undefined,
-              config: configArg.config,
+              config: guided ? undefined : configArg.config,
             },
           });
           toast.success(extensions?.local ? t('connect.agentAdded') : t('connect.nodeCommandQueued', { node: node.name }));

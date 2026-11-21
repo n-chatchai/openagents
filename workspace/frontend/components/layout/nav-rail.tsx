@@ -1,8 +1,6 @@
 'use client';
-import { useOnboardingSurface, useDismissOnboarding } from './onboarding-surface';
-import { FirstDeviceHint } from './first-device-hint';
+import { useOnboardingSurface, useDismissOnboarding, useWelcomeSurface, useWelcomeNavigation, useOpenConnect } from './onboarding-surface';
 import { ConnectAgentButton } from './connect-agent-button';
-import { useFirstDeviceGuide } from '@/hooks/use-first-device-guide';
 import { WorkspaceInitial } from './brand';
 
 import * as React from 'react';
@@ -23,6 +21,9 @@ SidebarMenuButton,
 SidebarMenuItem,
 } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { UnreadBadge } from '@/components/ui/unread-badge';
+import { WithTooltip } from '@/components/ui/with-tooltip';
  // v1.1 M1
 import { cn } from '@/lib/utils';
 import { useWorkspace } from '@/lib/workspace-context';
@@ -31,6 +32,7 @@ import { useT } from '@/lib/i18n';
 import {
 useLayout,type ViewMode
 } from './layout-context';
+import { DesktopNotificationPrompt } from '@/components/threads/desktop-notification-prompt';
 import { SearchMenu } from './search-menu';
 import { UserMenu } from './user-menu';
 import { SidebarMembers } from './sidebar-members';
@@ -101,10 +103,11 @@ export function NavRail() {
   ];
 
   const onboarding = useOnboardingSurface();
+  const welcome = useWelcomeSurface();
+  const welcomeNavigation = useWelcomeNavigation();
+  const openConnect = useOpenConnect();
   const dismissOnboarding = useDismissOnboarding();
-  const isConnectActive = onboarding || viewMode === 'connect';
-  const setupStep = useFirstDeviceGuide();
-  const showFirstDeviceHint = !!setupStep && !isConnectActive;
+  const isConnectActive = !welcome && (onboarding || viewMode === 'connect');
   const connectLabel = hasConnectedAgents ? t('nav.manageAgents') : t('nav.connectAgent');
   const workspaceLabel = workspace?.name || t('nav.workspaceFallback');
 
@@ -168,36 +171,33 @@ export function NavRail() {
         {/* The primary action, as dashboard-01's Quick Create row: Manage
             Agents, with Inbox beside it while there is room. */}
         <SidebarGroup className="px-1.5 pb-0">
-          {showFirstDeviceHint && setupStep && <FirstDeviceHint step={setupStep} compact={!showLabels} />}
           <SidebarMenu>
             <SidebarMenuItem className="flex items-center gap-2">
               <ConnectAgentButton
                 label={connectLabel}
                 active={isConnectActive}
                 showLabels={showLabels}
-                onClick={() => openView('connect')}
+                onClick={() => openConnect ? openConnect() : openView('connect')}
               />
               {showLabels && (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="relative size-8 shrink-0"
-                  aria-label={t('views.inbox')}
-                  aria-current={inboxActive ? 'page' : undefined}
-                  title={t('views.inbox')}
-                  onClick={() => openView('inbox')}
-                >
-                  <Mail />
-                  <span className="sr-only">{t('views.inbox')}</span>
-                  {unreadNotificationCount > 0 && (
-                    <span
-                      className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-xs font-medium text-white tabular-nums"
-                      aria-label={t('nav.unreadCount', { count: unreadNotificationCount })}
+                <WithTooltip label={t('views.inbox')}><Button
+                      variant="outline"
+                      size="icon"
+                      className="relative shrink-0"
+                      aria-label={t('views.inbox')}
+                      aria-current={inboxActive ? 'page' : undefined}
+                      onClick={() => openView('inbox')}
                     >
-                      {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
-                    </span>
-                  )}
-                </Button>
+                      <Mail />
+                      {unreadNotificationCount > 0 && (
+                        <UnreadBadge
+                          count={unreadNotificationCount}
+                          size="corner"
+                          className="absolute -top-1 -right-1"
+                          aria-label={t('nav.unreadCount', { count: unreadNotificationCount })}
+                        />
+                      )}
+                    </Button></WithTooltip>
               )}
             </SidebarMenuItem>
           </SidebarMenu>
@@ -210,7 +210,16 @@ export function NavRail() {
           {showLabels && <SidebarGroupLabel className="px-2">{t('nav.collaboration')}</SidebarGroupLabel>}
           <SidebarGroupContent>
             <SidebarMenu className="gap-0.5">
-              {navItems.map((item) => (
+              {welcomeNavigation.available && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton isActive={welcome} aria-current={welcome ? 'page' : undefined} aria-label={t('nav.welcome')}
+                    tooltip={{ children: t('nav.welcome'), hidden: showLabels }}
+                    className={cn(!showLabels && 'justify-center!')} onClick={() => welcomeNavigation.open ? welcomeNavigation.open() : openView('connect')}>
+                    <Sparkles />{showLabels && <span>{t('nav.welcome')}</span>}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
+              {navItems.filter((item) => item.mode !== 'agents' || workspace?.settings?.services_enabled === true).map((item) => (
                 <SidebarMenuItem key={item.mode}>
                   <SidebarMenuButton
                     className={cn('relative', !showLabels && 'justify-center!')}
@@ -224,7 +233,22 @@ export function NavRail() {
                     {/* Collapsed, the badge sits inside the button's corner: the button
                         (and the scrolling rail) clip overflow, so a negative
                         offset cut it in half. */}
-                    {!!item.count && <span className={cn('flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-xs font-medium tabular-nums', showLabels ? 'ml-auto' : 'absolute right-0 top-0', (item.urgent || item.mode === 'inbox' || item.mode === 'threads') ? 'bg-destructive text-white' : 'bg-muted text-foreground')} aria-label={t('nav.unreadCount', { count: item.count })}>{item.count > 99 ? '99+' : item.count}</span>}
+                    {!!item.count && ((item.urgent || item.mode === 'inbox' || item.mode === 'threads') ? (
+                      <UnreadBadge
+                        count={item.count}
+                        size={showLabels ? 'default' : 'corner'}
+                        className={showLabels ? 'ml-auto' : 'absolute right-0 top-0'}
+                        aria-label={t('nav.unreadCount', { count: item.count })}
+                      />
+                    ) : (
+                      <Badge
+                        variant="secondary"
+                        className={cn('justify-center tabular-nums', showLabels ? 'ml-auto h-4 min-w-4 px-1' : 'absolute right-0 top-0 h-3.5 min-w-3.5 px-0.5 leading-none')}
+                        aria-label={t('nav.unreadCount', { count: item.count })}
+                      >
+                        {item.count > 99 ? '99+' : item.count}
+                      </Badge>
+                    ))}
 
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -238,19 +262,16 @@ export function NavRail() {
         <SidebarMembers showLabels={showLabels} />
       </SidebarContent>
 
-      {/* Global tools. No bell or invite here: Inbox already sits beside
-          Manage Agents (or on the collapsed rail), and inviting is the
-          Members header's "+". */}
-      <SidebarFooter className="gap-1 px-1.5 pb-3">
-        <div
-          className={cn(
-            'flex gap-0.5',
-            showLabels ? 'flex-row items-center justify-between px-1' : 'flex-col items-center',
-          )}
-        >
-          <SearchMenu iconOnly />
-          <UserMenu side="right" align="end" />
-        </div>
+      {/* Notification permission stays inside the rail, above the global tools. */}
+      <SidebarFooter className={cn('gap-1 px-1.5 pb-3', !showLabels && 'items-center')}>
+        <DesktopNotificationPrompt hidden={!showLabels} />
+        {/* dashboard-01's footer: secondary nav (Search) above the NavUser row
+            — avatar, name and email, opening the account menu. Collapsed,
+            both shrink to their icons. */}
+        <SidebarMenu>
+          <SearchMenu iconOnly={!showLabels} />
+        </SidebarMenu>
+        <UserMenu variant={showLabels ? 'row' : 'icon'} side="right" align="end" />
 
       </SidebarFooter>
 

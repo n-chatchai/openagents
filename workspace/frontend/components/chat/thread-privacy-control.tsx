@@ -7,7 +7,7 @@
 // has not joined shows a Join button (POST /channels/{name}/join). Legacy
 // 'workspace' visibility reads as Public (permission-model-v1.md §2).
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Globe, Lock, LogIn } from 'lucide-react';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from 'sonner';
@@ -19,11 +19,13 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { WithTooltip } from '@/components/ui/with-tooltip';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useMe } from '@/hooks/use-me';
 import { useThreadAccess } from '@/hooks/use-thread-access';
 import { THREAD_PARTICIPANTS_CHANGED } from '@/lib/thread-participants';
 import { workspaceApi } from '@/lib/api';
+import { loadChannelParticipants } from '@/lib/channel-participants-store';
 import { apiErrorStatus, displayNameFromEmail } from '@/lib/collab';
 import {
   canManageThread,
@@ -33,7 +35,6 @@ import {
   type ThreadVisibility,
 } from '@/lib/access-ui';
 import { useT } from '@/lib/i18n';
-import type { ChannelParticipants } from '@/lib/types';
 
 /** DMs and routine runs have no ACL of their own — only real channels do. */
 export function threadPrivacyApplies(channelName: string | null | undefined): boolean {
@@ -50,34 +51,20 @@ export function ThreadPrivacyControl({ channelName, className, inDialog = false,
   const hasSession = !!session;
   const visibility: ThreadVisibility = normalizeThreadVisibility(session?.visibility);
 
-  const [participants, setParticipants] = useState<ChannelParticipants | null>(null);
+  // The shared roster (useThreadAccess) also drives the owner's display name
+  // and the "have I joined?" check.
+  const participants = access;
   const [busy, setBusy] = useState(false);
   const [joining, setJoining] = useState(false);
 
-  // Participants drive the owner's display name and the
-  // "have I joined?" check; fetched when the thread or its visibility
-  // changes, never on every discovery poll.
-  const loadParticipants = useCallback(async () => {
-    try {
-      const p = await workspaceApi.getChannelParticipants(channelName);
-      setParticipants(p);
-    } catch {
-      /* Keep the last known participant details when refreshing fails. */
-    }
-  }, [channelName]);
-
+  // Re-read it when the thread's visibility flips, not on every discovery poll.
+  const seenVisibility = useRef<string | null>(null);
   useEffect(() => {
-    setParticipants(null);
-    if (!hasSession) return;
-    let cancelled = false;
-    workspaceApi.getChannelParticipants(channelName)
-      .then((p) => {
-        if (cancelled) return;
-        setParticipants(p);
-      })
-      .catch(() => { /* see loadParticipants */ });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const seen = `${channelName}|${visibility}`;
+    if (hasSession && seenVisibility.current?.startsWith(`${channelName}|`) && seenVisibility.current !== seen) {
+      loadChannelParticipants(channelName, { force: true }).catch(() => {});
+    }
+    seenVisibility.current = seen;
   }, [channelName, visibility, hasSession]);
 
   if (!hasSession || !threadPrivacyApplies(channelName)) return null;
@@ -112,7 +99,7 @@ export function ThreadPrivacyControl({ channelName, className, inDialog = false,
     try {
       await workspaceApi.joinChannel(channelName);
       toast.success(t('threadAccess.joined'));
-      await loadParticipants();
+      // Re-reads the shared roster, so the Join button goes everywhere at once.
       window.dispatchEvent(new CustomEvent(THREAD_PARTICIPANTS_CHANGED, { detail: channelName }));
       refreshAgents().catch(() => {});
     } catch {
@@ -122,29 +109,22 @@ export function ThreadPrivacyControl({ channelName, className, inDialog = false,
     }
   };
 
-  const trigger = (
-    <button
-      type="button"
-      disabled={busy || !manage}
-      title={isPrivate ? t('threadAccess.privateHint') : t('threadAccess.publicHint')}
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1 rounded-md px-1 py-0.5 transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
-        manage && 'hover:bg-muted',
-        'disabled:opacity-100 disabled:cursor-default',
-        isPrivate && 'text-foreground/80',
-      )}
-    >
-      {isPrivate ? <Lock className="size-3" /> : <Globe className="size-3" />}
-      <span>{label}</span>
-      {manage && (busy ? <Spinner className="size-3 opacity-60" /> : <ChevronDown className="size-3 opacity-60" />)}
-    </button>
-  );
+  const hint = isPrivate ? t('threadAccess.privateHint') : t('threadAccess.publicHint');
+  const icon = isPrivate ? <Lock data-icon="inline-start" /> : <Globe data-icon="inline-start" />;
 
   return (
     <div className={cn('flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground', className)}>
       {!joinOnly && (manage ? (
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+          <WithTooltip label={hint}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="xs" disabled={busy} className={cn('shrink-0 font-normal text-muted-foreground', isPrivate && 'text-foreground/80')}>
+                {icon}
+                {label}
+                {busy ? <Spinner data-icon="inline-end" /> : <ChevronDown data-icon="inline-end" />}
+              </Button>
+            </DropdownMenuTrigger>
+          </WithTooltip>
           <DropdownMenuContent align="start" className="w-72">
             <DropdownMenuGroup>
               <DropdownMenuItem onClick={() => change('public')} disabled={!isPrivate} className="items-start">
@@ -164,7 +144,14 @@ export function ThreadPrivacyControl({ channelName, className, inDialog = false,
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-      ) : trigger)}
+      ) : (
+        <WithTooltip label={hint}>
+          <span className={cn('inline-flex shrink-0 items-center gap-1 px-1 [&_svg]:size-3', isPrivate && 'text-foreground/80')}>
+            {icon}
+            {label}
+          </span>
+        </WithTooltip>
+      ))}
 
       {!joinOnly && !inDialog && ownerName && (
         <span className="truncate" title={ownerEmail || undefined}>
@@ -174,16 +161,17 @@ export function ThreadPrivacyControl({ channelName, className, inDialog = false,
       )}
 
       {canJoin && (
-        <Button
-          variant="outline"
-          size="xs"
-          onClick={join}
-          disabled={joining}
-          title={t('threadAccess.notJoinedHint')}
-        >
-          {joining ? <Spinner data-icon="inline-start" /> : <LogIn data-icon="inline-start" />}
-          {joining ? t('threadAccess.joining') : t('threadAccess.join')}
-        </Button>
+        <WithTooltip label={t('threadAccess.notJoinedHint')}>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={join}
+            disabled={joining}
+          >
+            {joining ? <Spinner data-icon="inline-start" /> : <LogIn data-icon="inline-start" />}
+            {joining ? t('threadAccess.joining') : t('threadAccess.join')}
+          </Button>
+        </WithTooltip>
       )}
     </div>
   );

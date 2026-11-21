@@ -21,6 +21,7 @@ import { useBrowserSession } from './use-browser-session';
 import { BrowserTabStrip } from './browser-tab-strip';
 import { BrowserPlaceholder, BrowserStatusBar, BrowserToolbar, type LiveState } from './browser-chrome';
 import { BrowserViewport } from './browser-viewport';
+import { WithTooltip } from '@/components/ui/with-tooltip';
 
 /**
  * The shared browser: a tab strip, an address bar, the live page, and
@@ -199,24 +200,25 @@ export function BrowserView({ artifactTabId }: { artifactTabId?: string } = {}) 
       {!artifactTabId && <DetailHeader
         title={<>
           <Globe className={cn('size-4 shrink-0', navigating ? 'animate-pulse text-warning' : 'text-foreground/70')} />
-          <p className="truncate text-sm font-medium">{tab?.title || asleepEntry?.context.name || t('browser.cloudBrowser')}</p>
+          <p className="truncate text-sm font-medium">{t('browser.cloudBrowser')}</p>
         </>}
       >
         {!isMobile && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => void toggleFullscreen()}
-            className="text-muted-foreground"
-            aria-label={fullscreen ? t('browser.restoreSize') : t('browser.expandFullPage')}
-            title={fullscreen ? t('browser.restoreSize') : t('browser.expandFullPage')}
-          >
-            {fullscreen ? <Minimize2 /> : <Maximize2 />}
-          </Button>
+          <WithTooltip label={fullscreen ? t('browser.restoreSize') : t('browser.expandFullPage')}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => void toggleFullscreen()}
+              className="text-muted-foreground"
+              aria-label={fullscreen ? t('browser.restoreSize') : t('browser.expandFullPage')}
+            >
+              {fullscreen ? <Minimize2 /> : <Maximize2 />}
+            </Button>
+          </WithTooltip>
         )}
       </DetailHeader>}
 
-      {!artifactTabId && <FeatureTourBanner feature="browser" />}
+      {!artifactTabId && <FeatureTourBanner feature="browser" subtle />}
 
       {!artifactTabId && (
         <BrowserTabStrip

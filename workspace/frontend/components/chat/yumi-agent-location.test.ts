@@ -7,6 +7,7 @@ import { I18nProvider } from '@/lib/i18n';
 import { YumiAgentLocation } from './yumi-agent-location';
 
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/workspace-context', () => ({ useWorkspace: () => ({ workspace: { workspaceId: 'test' }, currentUser: { id: 'viewer' }, currentSessionId: null }) }));
 vi.stubGlobal('React', React);
 vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -23,7 +24,7 @@ it('opens the matching setup directly and emits a fresh request for repeated cho
   try {
     await act(async () => root.render(React.createElement(I18nProvider, { initialLocale: 'en-US', hasStoredLocale: true,
       children: React.createElement(LayoutProvider, { children: React.createElement(React.Fragment, null, React.createElement(YumiAgentLocation), React.createElement(State)) }) })));
-    expect(host.textContent).toContain('Where will your agent run?');
+    expect(host.textContent).toContain('How would you like to connect an agent?');
     await act(async () => choose('On my computer').click());
     expect(host.querySelector('output')?.textContent).toBe('connect:desktop');
     await act(async () => choose('On my computer').click());
@@ -31,5 +32,9 @@ it('opens the matching setup directly and emits a fresh request for repeated cho
     expect(requests[0]).not.toBe(requests[1]);
     await act(async () => choose('On a remote machine').click());
     expect(host.querySelector('output')?.textContent).toBe('connect:terminal');
+    await act(async () => choose('From an agent I’m already using').click());
+    expect(host.querySelector('output')?.textContent).toBe('connect:agent');
+    await act(async () => choose('Use a cloud agent').click());
+    expect(host.querySelector('output')?.textContent).toBe('connect:cloud');
   } finally { await act(async () => root.unmount()); host.remove(); }
 });

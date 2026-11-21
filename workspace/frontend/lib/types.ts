@@ -125,6 +125,8 @@ export interface NodeRuntime {
    * codex`). Absent from launchers too old to have `agn login`, and for types
    * with no sign-in of their own. */
   loginCommand?: string | null;
+  /** The device can relay its native CLI's browser sign-in. Missing on older connectors. */
+  browserLogin?: boolean;
   probe?: NodeProbe | null;
 }
 
@@ -152,6 +154,9 @@ export interface NodeCommand {
   status: 'pending' | 'running' | 'done' | 'error';
   result: { ok: boolean; message: string | null; data?: unknown } | null;
   agentName: string | null;
+  agentType?: string | null;
+  /** create_agent only: what it was submitted with, minus keys and endpoints. */
+  draft?: { name: string; type: string; workingDir?: string; model?: string; codexWireApi?: 'responses' | 'chat' };
   createdAt: string | null;
   finishedAt: string | null;
 }
@@ -373,6 +378,14 @@ export interface WorkspaceCollaborator {
   addedAt: string | null;
 }
 
+export interface WorkspaceFileStorage {
+  usedBytes: number;
+  activeBytes: number;
+  trashBytes: number;
+  /** Null when the server has no workspace storage quota. */
+  limitBytes: number | null;
+}
+
 export interface WorkspaceFile {
   id: string;
   filename: string;
@@ -572,6 +585,7 @@ export interface TimerItem {
  * Schedule is either/or: `interval_minutes`, or `hour`/`minute`/`days`.
  */
 export interface RoutineDraft {
+  source_channel?: string;
   name: string;
   message: string;
   source: string;
@@ -582,7 +596,17 @@ export interface RoutineDraft {
   conversation_history?: string;
 }
 
+export interface RoutineRun {
+  id: string;
+  started_at: number;
+  status: 'waiting' | 'responded' | 'failed' | 'unanswered';
+  summary: string | null;
+  channel_name: string;
+}
+
 export interface RoutineItem {
+  sourceChannelName?: string | null;
+  latestRun?: RoutineRun | null;
   id: string;
   name: string;
   message: string;
@@ -959,6 +983,20 @@ export interface AcentaUsage {
   agents: AcentaAgentUsage[];
   /** Acenta's dashboard, where the balance is topped up and plans are changed. */
   manageUrl: string | null;
+  /** A time-limited Acenta offer (e.g. Black Friday) while it runs. */
+  offer?: AcentaOffer | null;
+}
+
+/** A time-limited Acenta offer for new customers' first monthly agent. */
+export interface AcentaOffer {
+  name: string;
+  percentOff: number;
+  months: number;
+  tiers: string[] | null;
+  endsAt: string;
+  /** False once this user has had a monthly agent (the offer is for new customers). */
+  eligible: boolean;
+  url: string | null;
 }
 
 /** An agent whose runtime a provider hosts; it joins like any other agent. */

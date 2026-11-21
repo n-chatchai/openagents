@@ -2,14 +2,16 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { X, Plus, Globe, Folder, Monitor, UserRoundCog, Cloud, Trash2 } from 'lucide-react';
+import { Sheet, SheetBody, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { WithTooltip } from '@/components/ui/with-tooltip';
+import { X, MessageSquare, Globe, Monitor, UserRoundCog, Cloud, Trash2 } from 'lucide-react';
 import { useLayout } from '@/components/layout/layout-context';
 import { useWorkspace } from '@/lib/workspace-context';
 import { useConfirm } from '@/components/ui/dialogs-provider';
 import { AgentSharingButton } from '@/components/sharing/agent-sharing-button';
 import { workspaceApi } from '@/lib/api';
-import { cn } from '@/lib/utils';
 import { isOwnedAgent } from '@/lib/sidebar-agents';
+import { dmSessionId, myAddress } from '@/lib/dm';
 import { toast } from 'sonner';
 import type { CloudAgentConfig } from '@/lib/types';
 import { useT } from '@/lib/i18n';
@@ -19,12 +21,16 @@ import { ModelCard, ReadOnlyModelCard } from './agent-profile-model-card';
 import { InstalledSkillsCard } from './agent-profile-skills';
 import { CloudConfigCard, ConnectionDetailsCard, DangerZoneCard, type InfoItem } from './agent-profile-sections';
 import { useAgentModelOptions } from './use-agent-model-options';
+import { WorkdirCard } from './agent-profile-workdir-card';
+import { AccessCard } from './agent-profile-access-card';
+import { useHostedRuntime, useNodeAgentSettings } from './use-node-agent-settings';
 
 export function AgentProfilePanel({ docked = false }: { docked?: boolean } = {}) {
   const {
     selectedAgentName, setSelectedAgentName, isMobile, setViewMode, openMobileDetail,
   } = useLayout();
-  const { agents, refreshWorkspace, createSession, currentUser } = useWorkspace();
+  const close = useCallback(() => setSelectedAgentName(null), [setSelectedAgentName]);
+  const { agents, refreshWorkspace, setCurrentSessionId, currentUser } = useWorkspace();
   const confirm = useConfirm();
   const t = useT();
 
@@ -56,9 +62,22 @@ export function AgentProfilePanel({ docked = false }: { docked?: boolean } = {})
   const canManage = !agent?.ownerEmail || isOwnedAgent(agent, currentUser.id);
   const modelReadOnly = isManaged || !canManage;
   const models = useAgentModelOptions({ agent, isCloud, cloudConfig, setCloudConfig, refreshWorkspace });
+  // Only the device connection's owner may change its agents, and a device
+  // agent's owner is that connection's owner: the folder, key and endpoint
+  // are edited in place for agents you own.
+  const hosted = useHostedRuntime(agent?.agentName, !isCloud && !!agent);
+  const canEditDevice = !isCloud && hosted === false && canManage && !!agent?.ownerEmail && !!agent?.nodeId;
+  const nodeSettings = useNodeAgentSettings(agent, canEditDevice);
 
   const handleRemoveCloudAgent = useCallback(async () => {
     if (!agent) return;
+    const ok = await confirm({
+      title: t('agents.removeAgentTitle', { agent: agent.agentName }),
+      description: t('agents.removeCloudBody'),
+      confirmText: t('agents.remove'),
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await workspaceApi.removeCloudAgent(agent.agentName);
       toast.success(t('agents.removedCloud', { agent: agent.agentName }));
@@ -67,7 +86,7 @@ export function AgentProfilePanel({ docked = false }: { docked?: boolean } = {})
     } catch {
       toast.error(t('agents.removeCloudFailed'));
     }
-  }, [agent, setSelectedAgentName, refreshWorkspace]);
+  }, [agent, confirm, setSelectedAgentName, refreshWorkspace]);
 
   // Remove a node/local agent from the workspace (works online or offline).
   const handleRemoveAgent = useCallback(async () => {
@@ -89,16 +108,15 @@ export function AgentProfilePanel({ docked = false }: { docked?: boolean } = {})
     }
   }, [agent, confirm, t, setSelectedAgentName, refreshWorkspace]);
 
-  const handleStartThread = useCallback(async () => {
+  const handleDirectMessage = useCallback(() => {
     if (!agent) return;
-    await createSession({ master: agent.agentName, participants: [agent.agentName] });
+    setCurrentSessionId(dmSessionId(myAddress(currentUser), `openagents:${agent.agentName}`));
     setSelectedAgentName(null);
     setViewMode('threads');
     // On mobile the panel can be opened from either pane, so send the user to
-    // the detail pane explicitly — otherwise the new thread is created behind
-    // the thread list and the tap looks like it did nothing.
+    // the detail pane explicitly so the direct message is visible.
     if (isMobile) openMobileDetail();
-  }, [agent, createSession, setSelectedAgentName, setViewMode, isMobile, openMobileDetail]);
+  }, [agent, currentUser, setCurrentSessionId, setSelectedAgentName, setViewMode, isMobile, openMobileDetail]);
 
   if (!agent) return null;
 
@@ -120,81 +138,108 @@ export function AgentProfilePanel({ docked = false }: { docked?: boolean } = {})
     : [
         { icon: <Monitor className="size-3.5" />, label: t('agents.fieldType'), value: displayType },
         { icon: <Globe className="size-3.5" />, label: t('agents.fieldServer'), value: agent.serverHost || '—' },
-        { icon: <Folder className="size-3.5" />, label: t('agents.fieldFolder'), value: agent.workingDir || '—' },
         agentId,
       ];
 
-  return (
-    <>
-      {/* Backdrop — only for the slide-over form; a docked panel sits beside
-          the content (e.g. next to the agent's DM) and must not block it. */}
-      {!docked && (
-        <div
-          className="absolute inset-0 z-10 bg-black/10"
-          onClick={() => setSelectedAgentName(null)}
-        />
+  const body = (
+    <div className="flex flex-col divide-y">
+      <div className="py-5">
+        <AgentProfileHeader agent={agent} canManage={canManage} refreshWorkspace={refreshWorkspace} />
+        <div className="mt-4 flex empty:hidden [&>button]:flex-1"><AgentSharingButton agentName={agent.agentName} /></div>
+      </div>
+
+      {/* The settings people come here to change, first: the name is
+          edited in the header above, then the model and the folder. The
+          built-in assistant shows its server-set model read-only. */}
+      {modelReadOnly
+        ? <ReadOnlyModelCard model={models.currentModel} managed={isManaged} />
+        : <ModelCard m={models} />}
+      {/* A provider-hosted agent runs in the provider's sandbox: no folder of yours. */}
+      {!isCloud && hosted === false && <WorkdirCard agent={agent} canManage={canManage} settings={canEditDevice ? nodeSettings : null} />}
+      {canEditDevice && <AccessCard agentName={agent.agentName} settings={nodeSettings} />}
+
+      <AgentDescriptionCard agent={agent} canManage={canManage} refreshWorkspace={refreshWorkspace} />
+
+      {/* Cloud config management — hidden for the built-in: nothing is
+          user-configurable there (key and prompt are server-owned). */}
+      {isCloud && cloudConfig && !isManaged && canManage && (
+        <CloudConfigCard agentName={agent.agentName} config={cloudConfig} onUpdated={loadCloudConfig} />
       )}
 
-      {/* Panel — docked 20rem column beside the thread, or a slide-over
-          (full-width on mobile, 20rem on desktop). */}
-      <div className={cn(
-        'flex flex-col border-l bg-background animate-in slide-in-from-right duration-200',
-        docked
-          ? 'relative h-full w-80 shrink-0'
-          : cn('absolute top-0 right-0 bottom-0 z-20 shadow-xl', isMobile ? 'left-0 w-full' : 'w-80'),
-      )}>
-        {/* Close button */}
-        <div className="flex items-center justify-end px-3 pt-3">
-          <Button
-            onClick={() => setSelectedAgentName(null)}
-            variant="ghost" size="icon-sm" className="text-muted-foreground"
-            title={t('common.close')}
-            aria-label={t('common.close')}
-          >
-            <X />
-          </Button>
-        </div>
+      <InstalledSkillsCard agent={agent} />
 
-        <AgentProfileHeader agent={agent} canManage={canManage} refreshWorkspace={refreshWorkspace} />
+      <ConnectionDetailsCard items={infoItems} />
 
-        {/* Scrollable content */}
-        <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-3.5">
-          <AgentSharingButton agentName={agent.agentName} />
-          <AgentDescriptionCard agent={agent} canManage={canManage} refreshWorkspace={refreshWorkspace} />
-          <ConnectionDetailsCard items={infoItems} />
+      {!isCloud && canManage && <DangerZoneCard onRemove={handleRemoveAgent} />}
+    </div>
+  );
 
-          {/* The built-in assistant shows its server-set model read-only. */}
-          {modelReadOnly
-            ? <ReadOnlyModelCard model={models.currentModel} managed={isManaged} />
-            : <ModelCard m={models} />}
-
-          {/* Cloud config management — hidden for the built-in: nothing is
-              user-configurable there (key and prompt are server-owned). */}
-          {isCloud && cloudConfig && !isManaged && canManage && (
-            <CloudConfigCard agentName={agent.agentName} config={cloudConfig} onUpdated={loadCloudConfig} />
-          )}
-
-          <InstalledSkillsCard agent={agent} />
-
-          {!isCloud && canManage && <DangerZoneCard onRemove={handleRemoveAgent} />}
-        </div>
-
-        {/* Footer actions */}
-        <div className="border-t px-3.5 py-3">
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={handleStartThread}>
-              <Plus data-icon="inline-start" />
-              {t('agents.startThread')}
-            </Button>
-            {isCloud && canManage && (
-              <Button variant="destructive" onClick={handleRemoveCloudAgent} title={t('agents.removeCloud')}>
-                <Trash2 data-icon="inline-start" />
-                {t('agents.remove')}
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
+  const actions = (
+    <>
+      <Button className="flex-1" onClick={handleDirectMessage}>
+        <MessageSquare data-icon="inline-start" />
+        {t('agents.directMessage')}
+      </Button>
+      {isCloud && canManage && (
+        <Button variant="destructive" onClick={handleRemoveCloudAgent}>
+          <Trash2 data-icon="inline-start" />
+          {t('agents.remove')}
+        </Button>
+      )}
     </>
+  );
+
+  const closeButton = (
+    <WithTooltip label={t('common.close')}><Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={t('common.close')} onClick={close}>
+          <X />
+        </Button></WithTooltip>
+  );
+
+  // Docked beside the agent's DM: a plain column that must not block the
+  // thread next to it.
+  if (docked) {
+    return (
+      <aside aria-label={t('agents.panelTitle')} className="flex h-full w-90 shrink-0 flex-col border-l bg-background xl:w-96">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b py-3 pr-4 pl-6">
+          <h2 className="font-heading text-base font-medium">{t('agents.panelTitle')}</h2>
+          {closeButton}
+        </div>
+        <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-6">{body}</div>
+        <div className="flex shrink-0 gap-2 border-t px-6 py-4">{actions}</div>
+      </aside>
+    );
+  }
+
+  // Everywhere else the profile slides over the view as a sheet, full width
+  // on phones. Non-modal, like the slide-over it replaced: no page-wide
+  // overlay or focus trap, so the sidebar stays usable (picking another agent
+  // switches the profile) and a click outside still closes it.
+  return (
+    <Sheet open modal={false} onOpenChange={(open) => { if (!open) close(); }}>
+      <SheetContent
+        side="right"
+        showCloseButton={false}
+        aria-describedby={undefined}
+        // Focus the sheet itself: landing on the close button would open its
+        // tooltip the moment the profile appears.
+        onOpenAutoFocus={(event) => { event.preventDefault(); (event.currentTarget as HTMLElement).focus(); }}
+        // Clicking another agent in the sidebar switches the profile in
+        // place, and a toast is not "outside" in any useful sense: neither
+        // should close the sheet first (that remounted it and replayed its
+        // entry animation). Any other outside click still closes it.
+        onInteractOutside={(event) => {
+          const target = event.target instanceof Element ? event.target : null;
+          if (target?.closest('[data-slot="sidebar"], [data-sonner-toaster]')) event.preventDefault();
+        }}
+        className="gap-0 data-[side=right]:w-full data-[side=right]:sm:w-90 data-[side=right]:xl:w-96"
+      >
+        <SheetHeader className="flex-row items-center justify-between gap-2 border-b py-3 pr-4 pl-6">
+          <SheetTitle>{t('agents.panelTitle')}</SheetTitle>
+          {closeButton}
+        </SheetHeader>
+        <SheetBody className="overscroll-contain">{body}</SheetBody>
+        <SheetFooter className="flex-row border-t px-6 py-4">{actions}</SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import { Spinner } from '@/components/ui/spinner';
 import { useT } from '@/lib/i18n';
+import type { DeviceSetupMethod } from '@/components/layout/layout-context';
 import type { PairingCode } from '@/lib/types';
 import { OnboardingPairingPanel } from './onboarding-pairing-panel';
 import { DoorPairingPanel } from './door-pairing-panel';
@@ -19,6 +20,8 @@ export function PairAnotherDevice({
   pairingLoading,
   onBack,
   onGenerate,
+  methodRequest,
+  onMethodChange,
 }: {
   pairing: PairingCode | null;
   pairingError: boolean;
@@ -26,10 +29,12 @@ export function PairAnotherDevice({
   /** Leave for the device list, dropping the code. */
   onBack: () => void;
   onGenerate: () => void;
+  methodRequest?: { method: DeviceSetupMethod } | null;
+  onMethodChange?: (method: DeviceSetupMethod) => void;
 }) {
   const t = useT();
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 p-6">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-6 sm:px-6 sm:py-7">
       <Button variant="ghost" size="sm" disabled={pairingLoading} onClick={onBack} className="self-start text-muted-foreground">
         <ChevronLeft data-icon="inline-start" />{t('connect.nodeBack')}
       </Button>
@@ -39,6 +44,8 @@ export function PairAnotherDevice({
         ) : (
           <OnboardingPairingPanel
             pairing={pairing}
+            methodRequest={methodRequest}
+            onMethodChange={onMethodChange}
             onDismiss={onBack}
             onRegenerate={onGenerate}
             regenerating={pairingLoading}
