@@ -26,6 +26,7 @@ const { buildClaudeSystemPrompt, buildClaudeSkillMd, buildPinnedSections, worksp
 const { pinnedFingerprint, sampleRecap } = require('./decision-log');
 const { defaultAgentWorkdir, whichBinary, whereBinary } = require('../paths');
 const { isPostinstallStub } = require('../postinstall-stub');
+const { loadPolicy, agentTools } = require('../policy');
 const { claudeConfigDir, claudeProjectDir, snapshotTranscript } = require('../host-agent');
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -744,8 +745,11 @@ class ClaudeAdapter extends BaseAdapter {
   }
 
   _safeExecuteArgs(tools, skillName) {
+    // Plus the MCP tools a person at this computer let this agent call
+    // (`agn policy tools add`), by exact name.
+    const granted = agentTools(loadPolicy(this.configDir), this.agentName);
     return claudeSafeExecuteArgs({
-      tools,
+      tools: [...tools, ...granted.filter((t) => !tools.includes(t))],
       skillName,
       endpoint: this.endpoint,
       configDir: this.configDir,
