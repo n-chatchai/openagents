@@ -79,6 +79,16 @@ class Config:
     # goes through FCM like Android does, so those vars are gone: upload the
     # .p8 key to the Firebase console (Project settings → Cloud Messaging →
     # APNs Authentication Key) instead, and set FIREBASE_CREDENTIALS_JSON here.
+    #
+    # Except for apps that carry no Firebase SDK (Erawan's Pixel Team): they
+    # register the raw APNs device token with device_type "apns", and
+    # services/apns_client.py sends those straight to Apple with these four.
+    # APNS_KEY is the .p8 as it is, or base64 of it on one line. All unset
+    # means "apns" devices get nothing, and the log says so.
+    APNS_KEY: str = os.environ.get("APNS_KEY", "")
+    APNS_KEY_ID: str = os.environ.get("APNS_KEY_ID", "").strip()
+    APNS_TEAM_ID: str = os.environ.get("APNS_TEAM_ID", "").strip()
+    APNS_TOPIC: str = os.environ.get("APNS_TOPIC", "cloud.erawan.pixelteam").strip()
 
     # Identity mode: "standalone" (own agent table) or "shared" (external agent_ids)
     IDENTITY_MODE: str = os.environ.get("IDENTITY_MODE", "standalone")

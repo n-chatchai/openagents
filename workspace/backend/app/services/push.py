@@ -44,7 +44,25 @@ from sqlalchemy import or_, select
 
 from app.database import SessionLocal
 from app.models import ChannelHumanMember, DeviceToken, WorkspaceCollaborator, WorkspaceMember
+from app.services import apns_client
 from app.services.fcm_client import PushAlert, send_push
+
+# `device_type` of a registration whose token is a raw APNs device token
+# (an app with no Firebase SDK, such as Erawan's Pixel Team). Those go
+# straight to Apple; every other registration is an FCM token.
+APNS_DEVICE_TYPE = "apns"
+
+
+def send_to_devices(devices: list[DeviceToken], alert: PushAlert, data: dict) -> list[str]:
+    """Send to each device through its own transport; return the dead tokens."""
+    apns = [d.fcm_token for d in devices if (d.device_type or "") == APNS_DEVICE_TYPE]
+    fcm = [d.fcm_token for d in devices if (d.device_type or "") != APNS_DEVICE_TYPE]
+    dead: list[str] = []
+    if fcm:
+        dead += send_push(fcm, alert, data)[1]
+    if apns:
+        dead += apns_client.send_push(apns, alert, data)[1]
+    return dead
 from app.services.message_identity import human_sender_email
 
 logger = logging.getLogger(__name__)
@@ -471,6 +489,9 @@ def _fanout_impl(workspace_id: str, event: dict) -> None:
 
         alert = _build_alert(event, reason)
         data = _build_data_payload(event, reason)
+        # Which workspace (team) it belongs to: a phone signed in to several
+        # opens the right one on tap.
+        data["workspace_id"] = str(workspace_id)
 
         # firebase-admin's messaging API is synchronous. That is fine — and
         # deliberate: this function is a plain `def` handed to FastAPI
@@ -478,7 +499,7 @@ def _fanout_impl(workspace_id: str, event: dict) -> None:
         # blocking HTTP call never touches the event loop. Do not "fix"
         # this by wrapping it in asyncio.run().
         token_strings = [t.fcm_token for t in wanted]
-        _, dead = send_push(token_strings, alert, data)
+        dead = send_to_devices(wanted, alert, data)
 
         if dead:
             _prune_dead_tokens(db, wanted, dead)
@@ -559,13 +580,17 @@ def fanout_for_notification(notification: dict) -> None:
             "reason": reason,
             "channel": channel,
             "notification_id": str(notification.get("id") or ""),
+            "workspace_id": workspace_id,
+            # What the notification is about, e.g. the approval request it
+            # asks a decision on, so a tap can open that and not the inbox.
+            "action_ref": str(notification.get("action_ref") or ""),
             "event_id": "",
             "event_type": "workspace.notification",
             "source": str(notification.get("source") or ""),
         }
 
         token_strings = [t.fcm_token for t in wanted]
-        _, dead = send_push(token_strings, alert, data)
+        dead = send_to_devices(wanted, alert, data)
         if dead:
             _prune_dead_tokens(db, wanted, dead)
         logger.info(

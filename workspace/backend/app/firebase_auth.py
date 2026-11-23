@@ -93,6 +93,13 @@ def _init_firebase() -> bool:
 @request_cached
 def _verified_firebase_token(token: str) -> Optional[dict]:
     """One SDK verification supplies both email and the other identity claims."""
+    # A Firebase ID token is an identity only where this deployment names the
+    # project it trusts. FIREBASE_CREDENTIALS_JSON alone is for sending push
+    # (fcm_client): it must not, by initializing the SDK, also start
+    # accepting sign-ins from whatever project those credentials belong to.
+    # A door-login Workspace sets credentials for push and no project id.
+    if not config.FIREBASE_PROJECT_ID:
+        return None
     if not _init_firebase():
         logger.warning("firebase_auth: Firebase not initialized, cannot verify token")
         return None

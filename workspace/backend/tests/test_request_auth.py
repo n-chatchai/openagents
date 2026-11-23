@@ -14,6 +14,15 @@ from app.models import User, Workspace, WorkspaceMembership
 from app.request_auth import RequestAuthMiddleware
 
 
+@pytest.fixture(autouse=True)
+def _firebase_is_trusted(monkeypatch):
+    # These tests model a deployment that takes Firebase sign-ins, which is
+    # one that names its project (firebase_auth._verified_firebase_token).
+    from app.config import config
+
+    monkeypatch.setattr(config, "FIREBASE_PROJECT_ID", "test-project")
+
+
 async def _request(fn):
     async def app(scope, receive, send):
         await anyio.to_thread.run_sync(fn)

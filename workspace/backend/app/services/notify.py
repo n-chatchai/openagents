@@ -111,6 +111,7 @@ def notify(
         "channel_name": channel_name or "",
         "source": source,
         "reason": reason or _reason_for(priority),
+        "action_ref": getattr(record, "action_ref", None) or "",
         # Addressed notifications push only to their recipient's devices, and
         # never to the sender's own (see push.fanout_for_notification).
         "recipient_email": record.recipient_email or "",

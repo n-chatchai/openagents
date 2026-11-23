@@ -35,6 +35,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["Devices"])
 
 
+def _identity_email(token: Optional[str], authorization: Optional[str]) -> Optional[str]:
+    """The signed-in person's email when the caller presents an identity bearer.
+
+    A registration's `user_email` decides whose mentions, approvals and room
+    messages wake the device, so it must not be whatever the body says: a
+    member could otherwise register their phone under a colleague's email and
+    read that colleague's pushes. A caller signed in as a person registers
+    under their own email; only a machine (workspace token) caller, which is
+    fully trusted anyway, may still name one in the body.
+    """
+    from app.access import repeats_machine_token, verify_identity_claims, extract_bearer
+
+    if not authorization or repeats_machine_token(token, authorization):
+        return None
+    bearer = extract_bearer(authorization)
+    claims = verify_identity_claims(bearer) if bearer else None
+    email = ((claims or {}).get("email") or "").strip().lower()
+    return email or None
+
+
 class RegisterDeviceRequest(BaseModel):
     network: str
     fcm_token: str
@@ -110,7 +130,11 @@ def register_device(
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
 
-    normalized_email = (body.user_email or "").strip().lower() or None
+    normalized_email = (
+        _identity_email(x_workspace_token, authorization)
+        or (body.user_email or "").strip().lower()
+        or None
+    )
 
     if existing:
         existing.last_seen_at = now
@@ -249,7 +273,11 @@ def test_push(
         "diagnostic_id": request_id,
     }
 
-    report = send_push_diagnostic([device.fcm_token], alert, data)
+    if (device.device_type or "") == "apns":
+        from app.services import apns_client
+        report = apns_client.send_report([device.fcm_token], alert, data)
+    else:
+        report = send_push_diagnostic([device.fcm_token], alert, data)
     sent = report.sent_ok
     dead = report.dead_tokens
 

@@ -17,6 +17,8 @@ pyjwt[crypto]>=2.8.0
 boto3>=1.34.0
 python-multipart>=0.0.9
 httpx>=0.27.0
+# HTTP/2 for APNs (app/services/apns_client.py): Apple speaks nothing else.
+h2>=4.1.0
 playwright>=1.40.0
 anthropic>=0.39.0
 openai>=1.0.0
