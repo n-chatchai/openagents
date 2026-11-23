@@ -672,11 +672,30 @@ def remove_member(
     from app.services import hosted_agents
     hosted = hosted_agents.release(db, workspace.id, agent_name)
     db.delete(member)
+    _leave_every_room(db, workspace.id, agent_name)
     db.commit()
     if hosted is not None:
         hosted_agents.schedule_termination(hosted.id)
 
     return success_response({"agent_name": agent_name, "removed": True})
+
+
+def _leave_every_room(db: Session, workspace_id, agent_name: str) -> None:
+    """A bot removed from the workspace leaves its rooms too, rather than
+    staying on their rosters as a member that can never answer again."""
+    from app.models import Channel, ChannelMember
+
+    channel_ids = select(Channel.id).where(Channel.workspace_id == workspace_id)
+    db.query(ChannelMember).filter(
+        ChannelMember.channel_id.in_(channel_ids), ChannelMember.agent_name == agent_name
+    ).delete(synchronize_session=False)
+    for channel in db.execute(
+        select(Channel).where(Channel.workspace_id == workspace_id, Channel.master_agent == agent_name)
+    ).scalars():
+        channel.master_agent = db.execute(
+            select(ChannelMember.agent_name).where(ChannelMember.channel_id == channel.id)
+            .order_by(ChannelMember.agent_name).limit(1)
+        ).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------

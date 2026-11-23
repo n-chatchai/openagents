@@ -583,6 +583,8 @@ def remove_cloud_agent(
     ).scalar_one_or_none()
     if member:
         db.delete(member)
+    from app.routers.workspaces import _leave_every_room
+    _leave_every_room(db, workspace.id, agent_name)
 
     db.commit()
 
