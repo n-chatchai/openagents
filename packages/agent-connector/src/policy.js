@@ -64,8 +64,16 @@ function defaultPolicy() {
     // Agents this person allowed to run without their runtime's approval and
     // sandbox controls (`agn policy unrestricted add <agent>`).
     unrestricted: [],
+    // Tools of MCP servers this person connected (e.g. Erawan's) that one
+    // agent may call in execute mode, by exact name
+    // (`agn policy tools add <agent> mcp__<server>__<tool>`). Execute mode
+    // otherwise refuses every MCP tool but the workspace's own.
+    tools: {},
   };
 }
+
+/** `mcp__<server>__<tool>`, a whole name: no wildcard, never a built-in tool. */
+const MCP_TOOL = /^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+$/;
 
 function policyFile(configDir) {
   return path.join(configDir, 'policy.json');
@@ -100,7 +108,15 @@ function loadPolicy(configDir) {
   const unrestricted = Array.isArray(raw.unrestricted)
     ? raw.unrestricted.filter((n) => typeof n === 'string' && n)
     : [];
-  return { version: POLICY_VERSION, remote, dirs, unrestricted };
+  const tools = {};
+  if (raw.tools && typeof raw.tools === 'object' && !Array.isArray(raw.tools)) {
+    for (const [agent, names] of Object.entries(raw.tools)) {
+      if (!agent || !Array.isArray(names)) continue;
+      const kept = names.filter((n) => typeof n === 'string' && MCP_TOOL.test(n));
+      if (kept.length) tools[agent] = kept;
+    }
+  }
+  return { version: POLICY_VERSION, remote, dirs, unrestricted, tools };
 }
 
 /** Write the policy (local callers only: `agn policy`). */
@@ -151,6 +167,12 @@ function isDirAllowed(policy, configDir, dir, { managedOnly = false } = {}) {
   const roots = [managedAgentsRoot(configDir)];
   if (!managedOnly) roots.push(...((policy && policy.dirs) || []));
   return roots.some((root) => isInside(real, resolveReal(root)));
+}
+
+/** The MCP tools this person let `agentName` call in execute mode. */
+function agentTools(policy, agentName) {
+  const names = policy && policy.tools && policy.tools[agentName];
+  return Array.isArray(names) ? names.filter((n) => MCP_TOOL.test(n)) : [];
 }
 
 function isUnrestricted(policy, agentName) {
@@ -422,6 +444,8 @@ const POLICY_USAGE = [
   '  agn policy dirs remove <folder>',
   '  agn policy unrestricted add <agent>     let one agent run without its runtime\'s approvals',
   '  agn policy unrestricted remove <agent>',
+  '  agn policy tools add <agent> <mcp__server__tool>   let one agent call one tool of an MCP server you connected',
+  '  agn policy tools remove <agent> <mcp__server__tool>',
   `Operations: ${Object.keys(REMOTE_OPS).join(', ')}`,
 ];
 
@@ -480,6 +504,11 @@ function runPolicyCommand(configDir, argv = [], ctx = {}) {
     say("Unrestricted agents (run without their runtime's approvals and sandbox):");
     if (!policy.unrestricted.length) say('  none');
     for (const n of policy.unrestricted) say(`  ${n}`);
+    say('');
+    say('MCP tools agents may call (tools):');
+    const withTools = Object.entries(policy.tools || {});
+    if (!withTools.length) say('  none — only the workspace\'s own');
+    for (const [agent, names] of withTools) say(`  ${agent}: ${names.join(', ')}`);
     say('');
     say('Change it: agn policy allow|deny <op> · agn policy dirs add|remove <folder> · agn policy unrestricted add|remove <agent>');
     return done();
@@ -571,6 +600,36 @@ function runPolicyCommand(configDir, argv = [], ctx = {}) {
     return done();
   }
 
+  if (sub === 'tools') {
+    const tool = argv[3];
+    if ((a !== 'add' && a !== 'remove') || !b || !tool) { POLICY_USAGE.forEach((l) => say(l)); return done(1); }
+    if (!MCP_TOOL.test(tool)) {
+      say(`'${tool}' is not one MCP tool. Name it whole: mcp__<server>__<tool>, no wildcards.`);
+      return done(1);
+    }
+    const now = policy.tools[b] || [];
+    if (a === 'add') {
+      if (ctx.agentExists && !ctx.agentExists(b)) {
+        say(`No agent named '${b}' on this computer. Create it first; then allow it.`);
+        return done(1);
+      }
+      const refused = grantRefused(`letting '${b}' call ${tool}`);
+      if (refused) { say(refused); return done(1); }
+      if (now.includes(tool)) { say(`'${b}' may already call ${tool}.`); return done(); }
+      policy.tools[b] = [...now, tool];
+      save();
+      say(`'${b}' may call ${tool}, with whatever account that MCP server is signed in as on this computer.`);
+      say(`It takes effect the next time the agent starts. Undo with: agn policy tools remove ${b} ${tool}`);
+      return done();
+    }
+    const left = now.filter((n) => n !== tool);
+    if (left.length === now.length) { say(`'${b}' could not call ${tool}.`); return done(); }
+    if (left.length) policy.tools[b] = left; else delete policy.tools[b];
+    save();
+    say(`'${b}' can no longer call ${tool}, from its next start.`);
+    return done();
+  }
+
   POLICY_USAGE.forEach((l) => say(l));
   return done(1);
 }
@@ -588,6 +647,7 @@ module.exports = {
   isRemoteAllowed,
   isDirAllowed,
   isUnrestricted,
+  agentTools,
   isSafeAgentName,
   isSafeTypeName,
   unstorableFields,
