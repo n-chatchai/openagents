@@ -63,3 +63,25 @@ def test_no_workspace_set_is_said_plainly(client, builder, monkeypatch):
     monkeypatch.setattr(config, "ERAWAN_BUILDER_WORKSPACE", "")
     r = client.post("/v1/erawan/builder/jobs", headers=KEY, json={"job": 1, "title": "t", "text": "x"})
     assert r.status_code == 503
+
+
+def test_a_job_and_a_line_wake_the_worker_they_name(client, db, builder, monkeypatch):
+    from app.services import cloud_agent
+    seen = []
+
+    async def post(db_, ws_id, channel, agent, text, depth, explicit_targets=None, **kw):
+        seen.append((channel, agent, text, explicit_targets))
+
+    monkeypatch.setattr(cloud_agent, "_post_response", post)
+    r = client.post("/v1/erawan/builder/jobs", headers=KEY,
+                    json={"job": 7, "title": "งานเว็บ #7", "text": "@agent-alpha ทำเว็บ", "wake": ["agent-alpha"]})
+    assert r.status_code == 200, r.text
+    channel = r.json()["channel"]
+    assert seen[-1] == (channel, "agent-alpha", "@agent-alpha ทำเว็บ", ["agent-alpha"])
+    row = db.execute(select(Channel).where(Channel.name == channel[len("channel/"):])).scalar_one()
+    assert "agent-alpha" in [m.agent_name for m in (row.participants or [])]
+    client.post("/v1/erawan/builder/jobs/messages", headers=KEY, json={"channel": channel, "text": "ลูกค้า: x"})
+    assert seen[-1][3] == []
+    client.post("/v1/erawan/builder/jobs/messages", headers=KEY,
+                json={"channel": channel, "text": "@agent-alpha ลูกค้าขอแก้", "wake": ["agent-alpha"]})
+    assert seen[-1][3] == ["agent-alpha"]

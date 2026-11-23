@@ -7,18 +7,18 @@ a Mac. Nothing else in this API lets a machine open a thread — every other
 way is a person, or an agent answering in a thread it was already in — so
 this door does exactly two things, for one workspace, with one key:
 
-  POST /v1/erawan/builder/jobs            {"job": 12, "title": "...", "text": "..."}
+  POST /v1/erawan/builder/jobs            {"job": 12, "title": "...", "text": "...", "wake": ["builder-claude"]}
        → {"channel": "channel/<name>"}    a thread opened for ERAWAN_BUILDER_OWNER,
                                            with ERAWAN_BUILDER_THREAD_AGENTS in it,
                                            the brief posted by ERAWAN_BUILDER_AGENT
-  POST /v1/erawan/builder/jobs/messages   {"channel": "channel/<name>", "text": "..."}
+  POST /v1/erawan/builder/jobs/messages   {"channel": "channel/<name>", "text": "...", "wake": [...]}
        → {}                               one more line in that thread, by the same agent
 
 The thread is opened the way Yumi opens one (app/services/yumi.py): through
 this API, as the owner — so it is theirs, with the access a thread they made
 by hand would have. The lines are posted the way a cloud agent's answer is
-(cloud_agent._post_response), as the agent, waking nobody: the team decides
-who works it, by @mention. Both push to the phone as any message does.
+(cloud_agent._post_response), as the agent, waking exactly the agents in
+`wake` — the coding worker that takes the job — and nobody else. Both push to the phone as any message does.
 
 Erawan's control plane also runs Erawan Builder in these threads; that is an
 ordinary Hermes agent here (provider "hermes"), whose address is the control
@@ -49,11 +49,16 @@ class NewJob(BaseModel):
     job: int
     title: str = Field(min_length=1, max_length=160)
     text: str = Field(min_length=1, max_length=20000)
+    # Agents the brief wakes — the coding worker that takes the job. Each is
+    # put in the thread too, so it is woken where it can answer.
+    wake: list[str] = Field(default_factory=list, max_length=5)
 
 
 class JobLine(BaseModel):
     channel: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=20000)
+    # The agents this line wakes (a customer's change for the worker); none by default.
+    wake: list[str] = Field(default_factory=list, max_length=5)
 
 
 def _key(authorization: Optional[str] = Header(None)) -> None:
@@ -75,10 +80,13 @@ def _workspace(db: Session) -> Workspace:
     return ws
 
 
-async def _post(db: Session, ws: Workspace, channel: str, text: str) -> None:
+async def _post(db: Session, ws: Workspace, channel: str, text: str, wake: list[str] | None = None) -> None:
+    """A line by Erawan Builder that wakes exactly `wake` (the routing mod
+    honours explicit_targets and drops unknown names) — nobody when empty."""
     from app.services.cloud_agent import _post_response
 
-    await _post_response(db, str(ws.id), channel, config.ERAWAN_BUILDER_AGENT, text, 0, explicit_targets=[])
+    targets = [w for w in (wake or []) if w]  # the routing mod drops a self-target
+    await _post_response(db, str(ws.id), channel, config.ERAWAN_BUILDER_AGENT, text, 0, explicit_targets=targets)
 
 
 @router.post("/jobs", dependencies=[Depends(_key)])
@@ -89,6 +97,7 @@ async def open_job(body: NewJob, db: Session = Depends(get_db)) -> dict:
     agents = [a.strip() for a in config.ERAWAN_BUILDER_THREAD_AGENTS.split(",") if a.strip()]
     if config.ERAWAN_BUILDER_AGENT not in agents:
         agents.insert(0, config.ERAWAN_BUILDER_AGENT)
+    agents += [w for w in body.wake if w and w not in agents]
     api = WorkspaceApi(str(ws.id), config.ERAWAN_BUILDER_OWNER)
     made = await api.post("/v1/events", json={
         "type": "network.channel.create",
@@ -103,7 +112,7 @@ async def open_job(body: NewJob, db: Session = Depends(get_db)) -> dict:
         logger.warning("erawan_builder: job %s: no thread (%s)", body.job, made.get("error"))
         raise HTTPException(502, f"the thread was not opened: {made.get('error') or 'no name'}")
     channel = f"channel/{name}"
-    await _post(db, ws, channel, body.text)
+    await _post(db, ws, channel, body.text, body.wake)
     logger.info("erawan_builder: job %s opened %s", body.job, channel)
     return {"channel": channel}
 
@@ -117,5 +126,5 @@ async def job_line(body: JobLine, db: Session = Depends(get_db)) -> dict:
     found = db.execute(select(Channel).where(Channel.workspace_id == ws.id, Channel.name == name)).scalar_one_or_none()
     if found is None:
         raise HTTPException(404, "no such thread")
-    await _post(db, ws, body.channel, body.text)
+    await _post(db, ws, body.channel, body.text, body.wake)
     return {}
