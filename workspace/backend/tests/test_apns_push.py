@@ -127,3 +127,22 @@ class TestPushCredentialsAreNotALogin:
         monkeypatch.setattr(firebase_auth, "_init_firebase", lambda: called.append(1) or True)
         assert firebase_auth.verify_firebase_token("any.firebase.token") is None
         assert called == []
+
+
+def test_firebase_credentials_may_be_base64(monkeypatch):
+    import base64
+
+    import firebase_admin
+    from firebase_admin import credentials
+
+    from app import firebase_auth
+
+    key = {"type": "service_account", "project_id": "p"}
+    seen = {}
+    monkeypatch.setattr(config, "FIREBASE_CREDENTIALS_JSON", base64.b64encode(json.dumps(key).encode()).decode())
+    monkeypatch.setattr(firebase_auth, "_firebase_initialized", False)
+    monkeypatch.setattr(firebase_admin, "get_app", lambda: (_ for _ in ()).throw(ValueError()))
+    monkeypatch.setattr(credentials, "Certificate", lambda d: seen.setdefault("key", d))
+    monkeypatch.setattr(firebase_admin, "initialize_app", lambda *a, **k: None)
+    assert firebase_auth._init_firebase() is True
+    assert seen["key"] == key

@@ -69,7 +69,12 @@ def _init_firebase() -> bool:
             pass
 
         if config.FIREBASE_CREDENTIALS_JSON:
-            cred_dict = json.loads(config.FIREBASE_CREDENTIALS_JSON)
+            raw = config.FIREBASE_CREDENTIALS_JSON.strip()
+            if not raw.startswith("{"):
+                # base64 of the key file, one line, as a .env or secret holds it.
+                import base64
+                raw = base64.b64decode(raw).decode()
+            cred_dict = json.loads(raw)
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
         elif config.FIREBASE_PROJECT_ID:

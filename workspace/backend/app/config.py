@@ -33,7 +33,7 @@ class Config:
     FIREBASE_PROJECT_ID: str = os.environ.get("FIREBASE_PROJECT_ID", "")
 
     # Firebase service account credentials, the whole JSON key file as a
-    # single-line string. Optional for login (verifying an ID token needs only
+    # single-line string, or base64 of it. Optional for login (verifying an ID token needs only
     # FIREBASE_PROJECT_ID plus Google's public certs) but REQUIRED for mobile
     # push: services/fcm_client.py sends through Firebase Cloud Messaging,
     # which is an authenticated API call. Without it, push is silently off.
