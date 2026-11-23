@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -75,9 +76,17 @@ def _key(authorization: Optional[str] = Header(None)) -> None:
 
 
 def _workspace(db: Session) -> Workspace:
-    ref = config.ERAWAN_BUILDER_WORKSPACE
-    ws = db.execute(select(Workspace).where(or_(Workspace.id == ref, Workspace.slug == ref))).scalar_one_or_none() \
-        if ref else None
+    """ERAWAN_BUILDER_WORKSPACE is the workspace's id or its slug. A slug is
+    never compared with the id: Postgres refuses a non-UUID there (500)."""
+    ref = (config.ERAWAN_BUILDER_WORKSPACE or "").strip()
+    ws = None
+    if ref:
+        try:
+            uuid.UUID(ref)
+            match = or_(Workspace.id == ref, Workspace.slug == ref)
+        except ValueError:
+            match = Workspace.slug == ref
+        ws = db.execute(select(Workspace).where(match)).scalar_one_or_none()
     if ws is None or not config.ERAWAN_BUILDER_OWNER:
         raise HTTPException(503, "Erawan Builder has no workspace or owner set here")
     return ws

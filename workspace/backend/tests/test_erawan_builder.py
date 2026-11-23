@@ -58,6 +58,25 @@ def test_the_key_is_the_door(client, builder, monkeypatch):
     assert client.post("/v1/erawan/builder/jobs", json=body, headers=KEY).status_code == 404
 
 
+def test_the_workspace_is_named_by_slug_or_id(client, db, builder, monkeypatch):
+    from app.routers import erawan_builder
+
+    seen = []
+    real = db.execute
+
+    def spy(stmt, *a, **kw):
+        seen.append(str(stmt))
+        return real(stmt, *a, **kw)
+
+    # A slug is never compared with the id column: Postgres refuses a non-UUID
+    # there, which was a 500 on every job (SQLite here would let it pass).
+    monkeypatch.setattr(db, "execute", spy)
+    assert erawan_builder._workspace(db).id is not None
+    assert "workspaces.id" not in seen[-1].split("WHERE", 1)[1]
+    monkeypatch.setattr(config, "ERAWAN_BUILDER_WORKSPACE", str(builder["id"]))
+    assert str(erawan_builder._workspace(db).id) == str(builder["id"])
+
+
 def test_no_workspace_set_is_said_plainly(client, builder, monkeypatch):
     monkeypatch.setattr(config, "ERAWAN_BUILDER_WORKSPACE", "")
     r = client.post("/v1/erawan/builder/jobs", headers=KEY, json={"job": 1, "title": "t", "text": "x"})
