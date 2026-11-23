@@ -18,7 +18,6 @@ def builder(workspace, monkeypatch):
     monkeypatch.setattr(config, "ERAWAN_BUILDER_OWNER", "owner@team.test")
     # The workspace's starter agent stands in for Erawan Builder.
     monkeypatch.setattr(config, "ERAWAN_BUILDER_AGENT", "agent-alpha")
-    monkeypatch.setattr(config, "ERAWAN_BUILDER_THREAD_AGENTS", "")
     return workspace
 
 

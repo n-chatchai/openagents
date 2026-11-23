@@ -8,8 +8,8 @@ way is a person, or an agent answering in a thread it was already in — so
 this door does exactly three things, for one workspace, with one key:
 
   POST /v1/erawan/builder/jobs            {"job": 12, "title": "...", "text": "...", "wake": ["builder-claude"]}
-       → {"channel": "channel/<name>"}    a thread opened for ERAWAN_BUILDER_OWNER,
-                                           with ERAWAN_BUILDER_THREAD_AGENTS in it,
+       → {"channel": "channel/<name>"}    a thread opened for ERAWAN_BUILDER_OWNER, with
+                                           ERAWAN_BUILDER_AGENT and the woken worker in it,
                                            the brief posted by ERAWAN_BUILDER_AGENT
   POST /v1/erawan/builder/jobs/messages   {"channel": "channel/<name>", "text": "...", "wake": [...]}
        → {}                               one more line in that thread, by the same agent
@@ -97,9 +97,9 @@ async def open_job(body: NewJob, db: Session = Depends(get_db)) -> dict:
     from app.services.yumi import WorkspaceApi
 
     ws = _workspace(db)
-    agents = [a.strip() for a in config.ERAWAN_BUILDER_THREAD_AGENTS.split(",") if a.strip()]
-    if config.ERAWAN_BUILDER_AGENT not in agents:
-        agents.insert(0, config.ERAWAN_BUILDER_AGENT)
+    # Erawan Builder, and the one worker the job went to — never the other
+    # workers, so a line nobody is named in cannot wake a second one.
+    agents = [config.ERAWAN_BUILDER_AGENT]
     agents += [w for w in body.wake if w and w not in agents]
     api = WorkspaceApi(str(ws.id), config.ERAWAN_BUILDER_OWNER)
     made = await api.post("/v1/events", json={
