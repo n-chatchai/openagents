@@ -5,7 +5,7 @@ talks with a customer until their site's brief is right; when they confirm
 it, the job becomes a thread here, where the team hands it to Claude Code on
 a Mac. Nothing else in this API lets a machine open a thread — every other
 way is a person, or an agent answering in a thread it was already in — so
-this door does exactly two things, for one workspace, with one key:
+this door does exactly three things, for one workspace, with one key:
 
   POST /v1/erawan/builder/jobs            {"job": 12, "title": "...", "text": "...", "wake": ["builder-claude"]}
        → {"channel": "channel/<name>"}    a thread opened for ERAWAN_BUILDER_OWNER,
@@ -13,6 +13,9 @@ this door does exactly two things, for one workspace, with one key:
                                            the brief posted by ERAWAN_BUILDER_AGENT
   POST /v1/erawan/builder/jobs/messages   {"channel": "channel/<name>", "text": "...", "wake": [...]}
        → {}                               one more line in that thread, by the same agent
+  GET  /v1/erawan/builder/workers?names=builder-claude,builder-codex
+       → {"workers": [{"name": "builder-claude", "online": true}, ...]}
+                                           whether each is online, as /v1/discover sees it
 
 The thread is opened the way Yumi opens one (app/services/yumi.py): through
 this API, as the owner — so it is theirs, with the access a thread they made
@@ -128,3 +131,25 @@ async def job_line(body: JobLine, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(404, "no such thread")
     await _post(db, ws, body.channel, body.text, body.wake)
     return {}
+
+
+@router.get("/workers", dependencies=[Depends(_key)])
+def workers(names: str = "", db: Session = Depends(get_db)) -> dict:
+    """Which of the coding workers is online now: the control plane gives a
+    new job to one that is, and the customer's page says so — or that the site
+    comes within a day. The same reading /v1/discover gives."""
+    from datetime import datetime, timezone
+
+    from app.models import WorkspaceMember
+    from app.routers.network import effective_agent_status
+
+    ws = _workspace(db)
+    names = [a.strip() for a in names.split(",") if a.strip()][:10]
+    if not names:
+        return {"workers": []}
+    rows = db.execute(select(WorkspaceMember).where(
+        WorkspaceMember.workspace_id == ws.id, WorkspaceMember.agent_name.in_(names),
+        WorkspaceMember.status != "removed")).scalars().all()
+    now = datetime.now(timezone.utc)
+    seen = {m.agent_name: effective_agent_status(m, now) == "online" for m in rows}
+    return {"workers": [{"name": n, "online": bool(seen.get(n))} for n in names]}

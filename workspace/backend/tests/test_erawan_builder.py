@@ -85,3 +85,18 @@ def test_a_job_and_a_line_wake_the_worker_they_name(client, db, builder, monkeyp
     client.post("/v1/erawan/builder/jobs/messages", headers=KEY,
                 json={"channel": channel, "text": "@agent-alpha ลูกค้าขอแก้", "wake": ["agent-alpha"]})
     assert seen[-1][3] == ["agent-alpha"]
+
+
+def test_the_workers_and_whether_they_are_online(client, db, builder, monkeypatch):
+    from app.models import WorkspaceMember
+
+    q = "/v1/erawan/builder/workers?names=agent-alpha,ghost"
+    assert client.get(q).status_code == 401
+    assert client.get("/v1/erawan/builder/workers", headers=KEY).json() == {"workers": []}
+    r = client.get(q, headers=KEY).json()
+    assert [w["name"] for w in r["workers"]] == ["agent-alpha", "ghost"]
+    assert r["workers"][1]["online"] is False
+    from app.routers import network
+    monkeypatch.setattr(network, "effective_agent_status", lambda m, now=None: "online")
+    r = client.get(q, headers=KEY).json()
+    assert r["workers"][0]["online"] is True and r["workers"][1]["online"] is False
