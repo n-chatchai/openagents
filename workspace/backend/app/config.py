@@ -57,6 +57,15 @@ class Config:
     # when the backend is reachable through that proxy alone — see
     # app/routers/door_auth.py. Unset = POST /door/session is a 404.
     DOOR_EMAIL_HEADER: str = os.environ.get("DOOR_EMAIL_HEADER", "")
+    # Erawan Builder (app/routers/erawan_builder.py): the key Erawan's control
+    # plane presents to open a website job's thread, the workspace and the
+    # person the thread is opened for, the agent that posts the brief, and the
+    # agents the thread starts with. Unset key = the routes are a 404.
+    ERAWAN_BUILDER_KEY: str = os.environ.get("ERAWAN_BUILDER_KEY", "")
+    ERAWAN_BUILDER_WORKSPACE: str = os.environ.get("ERAWAN_BUILDER_WORKSPACE", "")
+    ERAWAN_BUILDER_OWNER: str = os.environ.get("ERAWAN_BUILDER_OWNER", "")
+    ERAWAN_BUILDER_AGENT: str = os.environ.get("ERAWAN_BUILDER_AGENT", "erawan-builder")
+    ERAWAN_BUILDER_THREAD_AGENTS: str = os.environ.get("ERAWAN_BUILDER_THREAD_AGENTS", "")
     WORKSPACE_SESSION_TTL_DAYS: int = int(os.environ.get("WORKSPACE_SESSION_TTL_DAYS", "30"))
     # A session can be renewed (POST /v1/auth/session/renew) for this long after
     # the sign-in that started it; past that the user signs in again. Bounds how
