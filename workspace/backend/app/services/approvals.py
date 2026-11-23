@@ -29,12 +29,13 @@ verdicts are filled in; actions not covered by a saved policy are allowed.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import config
 from app.models import ApprovalPolicy, ApprovalRequest, KanbanTask, Workspace, WorkspaceMember, WorkspaceMembership, User
 from app.services.notify import REASON_APPROVAL, notify
 from openagents.core.onm_events import Event
@@ -63,6 +64,12 @@ KIND_LABELS = {
     "other": "Anything else the agent is unsure of",
 }
 KINDS = tuple(KIND_LABELS)
+
+# Erawan's default for a kind no saved rule covers (founder, 2026-11-23): a bot
+# asks before it spends, writes to the outside world, deletes, deploys, pushes
+# code or runs commands, and when it is unsure; reading a repository goes
+# ahead. A saved rule for the kind (including "allow") always wins.
+DEFAULT_ASK_KINDS = frozenset({"deploy", "spend", "external_send", "data_delete", "repo_write", "shell", "other"})
 RISKS = ("low", "medium", "high")
 
 ALL_KINDS = KINDS
@@ -259,6 +266,11 @@ def can_resolve(approval: ApprovalRequest, actor_id: Optional[str], role: Option
       another person just because ``required_role`` is ``any``.
     """
     requirements = approval.policy_requirements or {}
+    if requirements.get("owner_only"):
+        # A bot with an owner acts with that person's accounts and money: only
+        # they decide, and no role steps in for them.
+        actor = _norm_email(actor_id)
+        return bool(actor) and actor != "token" and actor == _norm_email(approval.assignee_email)
     if requirements.get("members"):
         actor = _norm_email(actor_id)
         if not actor or actor == "token" or not role_can_resolve(role, POLICY_ANY):
@@ -437,7 +449,7 @@ def _notification_copy(a: ApprovalRequest, requester_email: Optional[str]) -> tu
     """(title, message) for the inbox card."""
     agent = a.requested_by
     via = f" (while handling a request from {requester_email})" if requester_email else ""
-    who = _who_label(a) if (a.policy_requirements or {}).get("members") else ("an Admin" if a.required_role == POLICY_ADMIN else "the Owner" if a.required_role == POLICY_OWNER else "someone")
+    who = _who_label(a) if (a.policy_requirements or {}).get("members") else "its owner" if (a.policy_requirements or {}).get("owner_only") else ("an Admin" if a.required_role == POLICY_ADMIN else "the Owner" if a.required_role == POLICY_OWNER else "someone")
     return (f"Approval requested · {a.action}", f"{agent} needs {who} to approve{via}: {a.action}")
 
 
@@ -479,8 +491,21 @@ def create_request(
     requirements = {}
     rules = effective_rules(db, ws_id, channel_name)
     policy, policy_note = evaluate_policy(rules, kind, action, details, requirements=requirements)
+    covered = policy_note is not None or any(
+        r["kind"] in (kind, "other") for r in rules if not r["kind"].startswith("custom:"))
+    if not covered and kind in DEFAULT_ASK_KINDS:
+        # Nothing the team saved speaks to this action: Erawan's default asks.
+        # A team bot's default request goes to an admin or the owner.
+        policy = POLICY_ANY if owner else POLICY_ADMIN
     if requirements.get("members"):
         assignee = requirements["members"][0] if len(requirements["members"]) == 1 else None
+    elif policy not in (POLICY_ALLOW, POLICY_BLOCK):
+        if owner:
+            # An owned bot's request goes to its owner, whoever the agent named.
+            assignee = owner
+            requirements["owner_only"] = True
+    if expires_at is None and policy not in (POLICY_ALLOW, POLICY_BLOCK):
+        expires_at = _now() + timedelta(hours=config.APPROVAL_TTL_HOURS)
 
     a = ApprovalRequest(
         workspace_id=ws_id,
@@ -536,6 +561,12 @@ def create_request(
         # Owner routing: an owned agent pages its owner (or whoever the request
         # names); an unowned agent pages the whole workspace, as before.
         recipients = set(requirements.get("members") or [assignee or owner])
+        if recipients == {None} and a.required_role in (POLICY_ADMIN, POLICY_OWNER):
+            # A team bot's request pages the people who may decide it.
+            rows = db.execute(select(User.email, WorkspaceMembership.role).join(
+                WorkspaceMembership, WorkspaceMembership.user_id == User.id).where(
+                WorkspaceMembership.workspace_id == ws_id)).all()
+            recipients = {email for email, role in rows if email and role_can_resolve(role, a.required_role)} or {None}
         if requirements.get("members") and requirements.get("role_required"):
             rows = db.execute(select(User.email, WorkspaceMembership.role).join(
                 WorkspaceMembership, WorkspaceMembership.user_id == User.id).where(
@@ -668,12 +699,13 @@ def pending_for_agent(db: Session, workspace_id: str) -> dict:
     return out
 
 
-def expire_stale(db: Session, now: Optional[datetime] = None) -> list:
+def expire_stale(db: Session, now: Optional[datetime] = None, *, tell_agents: bool = False) -> list:
     """Mark pending requests whose ``expires_at`` has passed as expired.
 
-    Returns the ids that flipped. Nothing schedules this yet — call it from a
-    sweep when one exists. Does NOT commit; parked Kanban cards are left as
-    they are (the agent still has no answer).
+    Returns the ids that flipped. With ``tell_agents`` (the timer's sweep,
+    `expire_and_tell`), each agent is told in its thread that nobody decided,
+    so it stops waiting. Does NOT commit; parked Kanban cards are left as they
+    are.
     """
     now = now or _now()
     rows = db.execute(
@@ -691,4 +723,36 @@ def expire_stale(db: Session, now: Optional[datetime] = None) -> list:
         flipped.append(a.id)
     if flipped:
         db.flush()
+    if tell_agents:
+        for a in rows:
+            workspace = db.get(Workspace, a.workspace_id)
+            if workspace is None:
+                continue
+            _emit(db, workspace, Event(
+                type="workspace.message.posted",
+                source="system:approvals",
+                target=f"channel/{a.channel_name}",
+                payload={
+                    "content": f"@{a.requested_by} ⌛ Not approved: nobody decided within "
+                               f"{config.APPROVAL_TTL_HOURS} hours, so do not do it: {a.action}",
+                    "message_type": "chat",
+                    "mentions": [a.requested_by],
+                    "approval": serialize_with_owner(db, a),
+                },
+                metadata={"approval_id": a.id, "target_agents": [a.requested_by]},
+            ))
     return flipped
+
+
+def expire_and_tell() -> int:
+    """The timer's sweep, on a session of its own. Run in a thread: the event
+    emit drives the pipeline with asyncio.run."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        flipped = expire_stale(db, tell_agents=True)
+        db.commit()
+        return len(flipped)
+    finally:
+        db.close()

@@ -25,6 +25,13 @@ def configured_review_policy(db, workspace):
 
 
 @pytest.fixture(autouse=True)
+def team_bot(db, workspace):
+    """agent-alpha is a team bot unless a test asks for `owned`."""
+    _member_row(db, workspace).owner_email = None
+    db.commit()
+
+
+@pytest.fixture(autouse=True)
 def no_background(monkeypatch):
     import app.services.notify as notify_mod
     import app.services.push as push_mod
@@ -145,15 +152,15 @@ class TestOwnerRouting:
         assert n.recipient_email == OWNER
         assert n.kind == "approval"
         assert n.action_ref == a["id"]
-        # The role floor is unchanged — routing does not widen who may approve.
         assert a["required_role"] == "admin"
         assert a["owner_email"] == OWNER
-        assert a["assignee_email"] is None
+        # An owned bot's request is its owner's to decide, whatever the rule's role.
+        assert a["assignee_email"] == OWNER
 
-    def test_explicit_assignee_wins_over_owner(self, client, workspace, db, owned):
+    def test_the_owner_wins_over_a_named_assignee(self, client, workspace, db, owned):
         a = _create(client, workspace, assignee_email="Adam@acme.test").json()["data"]
-        assert a["assignee_email"] == "adam@acme.test"
-        assert _note_for(db, workspace, a["id"]).recipient_email == "adam@acme.test"
+        assert a["assignee_email"] == OWNER
+        assert _note_for(db, workspace, a["id"]).recipient_email == OWNER
 
     def test_auto_resolved_request_files_nothing(self, client, workspace, db, owned):
         client.put('/v1/approval-policy', headers=_tok(workspace), json={
@@ -208,7 +215,7 @@ class TestAssigneeAndRequester:
         ok = client.post(f"/v1/approvals/{a['id']}/approve", json={"network": workspace["id"]}, headers=_bearer("olivia"))
         assert ok.json()["data"]["status"] == "approved"
 
-    def test_token_still_resolves_on_legacy_open_workspace(self, client, workspace, db, owned):
+    def test_token_still_resolves_on_legacy_open_workspace(self, client, workspace, db, people):
         from app.models import Workspace
         ws = db.execute(select(Workspace).where(Workspace.id == workspace["id"])).scalar_one()
         ws.require_login = False
@@ -243,7 +250,7 @@ class TestAssigneeAndRequester:
 class TestListFilters:
     def test_assignee_me_and_kind(self, client, workspace, owned):
         mine = _create(client, workspace, assignee_email=OWNER).json()["data"]
-        _create(client, workspace, assignee_email="adam@acme.test")
+        _create(client, workspace, source="openagents:agent-beta", assignee_email="adam@acme.test")
         _create(client, workspace, source="openagents:agent-beta")  # unowned → no assignee
 
         me = client.get(f"/v1/approvals?network={workspace['id']}&assignee=me", headers=_bearer("mia")).json()["data"]
@@ -280,7 +287,7 @@ class TestExpireStale:
         fresh = _create(client, workspace, action="New").json()["data"]
         never = _create(client, workspace).json()["data"]
         done = _create(client, workspace, action="Done").json()["data"]
-        client.post(f"/v1/approvals/{done['id']}/approve", json={"network": workspace["id"]}, headers=_bearer("adam"))
+        client.post(f"/v1/approvals/{done['id']}/approve", json={"network": workspace["id"]}, headers=_bearer("mia"))
 
         now = datetime.now(timezone.utc)
         rows = {a.id: a for a in db.execute(select(ApprovalRequest)).scalars().all()}

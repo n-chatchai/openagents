@@ -25,6 +25,23 @@ from sqlalchemy import select
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+def _set_owner(db, workspace, email):
+    from app.models import WorkspaceMember
+    m = db.execute(select(WorkspaceMember).where(
+        WorkspaceMember.workspace_id == workspace["id"],
+        WorkspaceMember.agent_name == "agent-alpha")).scalar_one()
+    m.owner_email = email
+    db.commit()
+
+
+@pytest.fixture(autouse=True)
+def team_bot(request, db):
+    """Most tests here are about roles, which decide a team bot's requests.
+    An owned bot's requests go to its owner only (TestOwnedBot)."""
+    if "workspace" in request.fixturenames:
+        _set_owner(db, request.getfixturevalue("workspace"), None)
+
+
 @pytest.fixture(autouse=True)
 def no_push(monkeypatch):
     import app.services.notify as notify_mod
@@ -432,7 +449,7 @@ class TestPolicy:
         assert ok.json()["data"]["saved"] == [{"kind": "deploy", "policy": "allow"}]
 
     def test_records_survive_in_table(self, client, workspace, db):
-        _request(client, workspace)
+        _request(client, workspace, kind="repo_read")
         rows = db.execute(select(ApprovalRequest).where(ApprovalRequest.workspace_id == workspace["id"])).scalars().all()
         assert len(rows) == 1 and rows[0].status == "approved"
 
@@ -555,11 +572,64 @@ def test_policy_classifier_malformed_response_retains_safeguards(monkeypatch):
         assert svc._match_custom_rules([{'kind': '0', 'description': 'Secrets'}], 'Read files', None) == {}
 
 
-@pytest.mark.parametrize('kind', ['deploy', 'spend', 'repo_read', 'data_delete'])
-def test_no_implicit_category_policy(client, workspace, kind):
+@pytest.mark.parametrize('kind', ['deploy', 'spend', 'external_send', 'data_delete', 'repo_write', 'shell', 'other'])
+def test_risky_kinds_ask_by_default(client, workspace, kind):
+    # Erawan's default with no saved rule: a team bot asks an admin.
     a = _request(client, workspace, kind=kind).json()['data']
+    assert a['status'] == 'pending'
+    assert a['required_role'] == 'admin'
+    assert a['expires_at']
+
+
+def test_reading_goes_ahead_by_default(client, workspace):
+    a = _request(client, workspace, kind='repo_read').json()['data']
     assert a['status'] == 'approved'
     assert a['resolved_by'] == 'policy'
+
+
+def test_a_saved_allow_beats_the_default(client, workspace):
+    client.put('/v1/approval-policy', headers=_tok(workspace), json={
+        'network': workspace['id'], 'rules': [{'kind': 'spend', 'policy': 'allow'}]})
+    assert _request(client, workspace, kind='spend').json()['data']['status'] == 'approved'
+
+
+class TestOwnedBot:
+    """A bot someone brought: it acts with their accounts, so only they decide."""
+
+    def test_only_the_owner_decides_and_only_they_are_paged(self, client, workspace, people, db):
+        _set_owner(db, workspace, "mia@acme.test")
+        a = _request(client, workspace, kind='spend', assignee_email='adam@acme.test').json()['data']
+        assert a['status'] == 'pending'
+        assert a['assignee_email'] == 'mia@acme.test'
+        for headers in (_bearer('adam'), _bearer('olivia'), _tok(workspace)):
+            r = client.post(f"/v1/approvals/{a['id']}/approve", headers=headers, json={'network': workspace['id']})
+            assert r.status_code == 403, r.text
+        rows = db.execute(select(NotificationRecord).where(NotificationRecord.workspace_id == workspace['id'])).scalars().all()
+        assert {r.recipient_email for r in rows} == {'mia@acme.test'}
+        ok = client.post(f"/v1/approvals/{a['id']}/approve", headers=_bearer('mia'), json={'network': workspace['id']})
+        assert ok.json()['data']['status'] == 'approved'
+
+    def test_a_team_rule_still_goes_to_the_owner(self, client, workspace, people, db, configured_legacy_policies):
+        _set_owner(db, workspace, "mia@acme.test")
+        a = _request(client, workspace, kind='deploy').json()['data']  # saved rule: admin
+        assert a['status'] == 'pending'
+        assert client.post(f"/v1/approvals/{a['id']}/approve", headers=_bearer('adam'), json={'network': workspace['id']}).status_code == 403
+        assert client.post(f"/v1/approvals/{a['id']}/approve", headers=_bearer('mia'), json={'network': workspace['id']}).status_code == 200
+
+
+def test_nobody_deciding_expires_it_and_tells_the_agent(client, workspace, db):
+    from datetime import datetime, timedelta, timezone
+    from app.services import approvals as svc
+    a = _request(client, workspace, kind='spend').json()['data']
+    row = db.get(ApprovalRequest, a['id'])
+    row.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+    assert svc.expire_stale(db, tell_agents=True) == [a['id']]
+    db.commit()
+    assert db.get(ApprovalRequest, a['id']).status == 'expired'
+    told = [e for e in _channel_events(db, workspace) if e.source == 'system:approvals']
+    assert told and '@agent-alpha' in told[-1].payload['content']
+    assert (told[-1].metadata_ or {}).get('target_agents') == ['agent-alpha']
 
 
 @pytest.mark.parametrize('classification,status', [('match','approved'), ('uncertain','approved'), ('no_match','approved')])
@@ -633,6 +703,6 @@ class TestSpecificMemberPolicy:
         from app.services import approvals as svc
         monkeypatch.setattr(svc, '_match_custom_rules', lambda *args: {'0': 'no_match'})
         self.save(client, workspace, people, [{'kind': 'custom:m', 'description': 'Deploy app', 'policy': 'member', 'approver_email': 'mia@acme.test'}])
-        a = _request(client, workspace).json()['data']
+        a = _request(client, workspace, kind='repo_read').json()['data']
         assert a['status'] == 'approved'
         assert a['policy_requirements'] is None

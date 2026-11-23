@@ -387,6 +387,13 @@ async def _fire_due_in_thread():
         except Exception:
             logger.exception("Watch expiry failed")
 
+        # ── Expire approval requests nobody decided; tell their agents ──
+        try:
+            from app.services.approvals import expire_and_tell
+            await asyncio.to_thread(expire_and_tell)
+        except Exception:
+            logger.exception("Approval expiry failed")
+
         db.commit()
     finally:
         db.close()

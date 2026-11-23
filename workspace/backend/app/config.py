@@ -99,6 +99,10 @@ class Config:
     APNS_TEAM_ID: str = os.environ.get("APNS_TEAM_ID", "").strip()
     APNS_TOPIC: str = os.environ.get("APNS_TOPIC", "cloud.erawan.pixelteam").strip()
 
+    # How long a bot's approval request waits for its person before it
+    # expires and the bot is told not to go ahead (services/approvals.py).
+    APPROVAL_TTL_HOURS: int = int(os.environ.get("APPROVAL_TTL_HOURS", "24"))
+
     # Identity mode: "standalone" (own agent table) or "shared" (external agent_ids)
     IDENTITY_MODE: str = os.environ.get("IDENTITY_MODE", "standalone")
 
