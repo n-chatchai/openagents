@@ -118,3 +118,28 @@ def test_the_workers_and_whether_they_are_online(client, db, builder, monkeypatc
     monkeypatch.setattr(network, "effective_agent_status", lambda m, now=None: "online")
     r = client.get(q, headers=KEY).json()
     assert r["workers"][0]["online"] is True and r["workers"][1]["online"] is False
+
+
+def test_a_workers_progress_line_is_sent_on_and_nothing_else(client, db, builder, monkeypatch):
+    from app.routers import erawan_builder
+
+    sent = []
+    monkeypatch.setattr(config, "ERAWAN_BUILDER_PROGRESS_URL", "http://cp.test/progress")
+    import httpx
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: sent.append((url, kw["json"], kw["headers"])))
+
+    def event(**kw):
+        base = {"type": "workspace.message.posted", "source": "openagents:builder-claude", "target": "channel/job-1",
+                "payload": {"message_type": "status", "content": "ความคืบหน้า: วางแบบเสร็จ"}}
+        base.update(kw)
+        return base
+
+    erawan_builder.forward_progress(str(builder["id"]), event())
+    assert sent == [("http://cp.test/progress", {"channel": "channel/job-1", "agent": "builder-claude", "text": "วางแบบเสร็จ"},
+                     {"Authorization": "Bearer builder-key"})]
+    # Other status lines, chat lines, people, other workspaces: nothing.
+    erawan_builder.forward_progress(str(builder["id"]), event(payload={"message_type": "status", "content": "Thinking…"}))
+    erawan_builder.forward_progress(str(builder["id"]), event(payload={"message_type": "chat", "content": "ความคืบหน้า: x"}))
+    erawan_builder.forward_progress(str(builder["id"]), event(source="human:a@b.c"))
+    erawan_builder.forward_progress("another-workspace", event())
+    assert len(sent) == 1
