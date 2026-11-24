@@ -558,6 +558,9 @@ def send_event(
     if result.type == "workspace.message.posted":
         from app.services.cloud_agent import invoke_cloud_agents
         background_tasks.add_task(invoke_cloud_agents, str(workspace.id), event_snapshot)
+        # Erawan Builder: a coding worker's progress line reaches the customer's page.
+        from app.routers.erawan_builder import forward_progress
+        background_tasks.add_task(forward_progress, str(workspace.id), event_snapshot)
         # Drive any workflow run bound to this channel (advance to the next step).
         from app.services.workflow import advance_workflow
         background_tasks.add_task(advance_workflow, str(workspace.id), event_snapshot)

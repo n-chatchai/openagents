@@ -17,6 +17,12 @@ this door does exactly three things, for one workspace, with one key:
        → {"workers": [{"name": "builder-claude", "online": true}, ...]}
                                            whether each is online, as /v1/discover sees it
 
+And one thing out: a coding worker's status line that starts "ความคืบหน้า:"
+(posted with the connector's workspace_status, message_type "status") is
+sent to ERAWAN_BUILDER_PROGRESS_URL with the same key, so the customer's page
+can show where their site is (`forward_progress`). Every other status line
+stays here.
+
 The thread is opened the way Yumi opens one (app/services/yumi.py): through
 this API, as the owner — so it is theirs, with the access a thread they made
 by hand would have. The lines are posted the way a cloud agent's answer is
@@ -162,3 +168,33 @@ def workers(names: str = "", db: Session = Depends(get_db)) -> dict:
     now = datetime.now(timezone.utc)
     seen = {m.agent_name: effective_agent_status(m, now) == "online" for m in rows}
     return {"workers": [{"name": n, "online": bool(seen.get(n))} for n in names]}
+
+
+PROGRESS = "ความคืบหน้า:"
+
+
+def forward_progress(workspace_id: str, event: dict) -> None:
+    """A worker's progress line in this workspace, to Erawan's control plane
+    as {"channel", "agent", "text"}. Runs after the response; never raises."""
+    import httpx
+
+    from app.database import SessionLocal
+
+    payload = event.get("payload") or {}
+    source, target = event.get("source") or "", event.get("target") or ""
+    content = str(payload.get("content") or "").strip()
+    if (not config.ERAWAN_BUILDER_PROGRESS_URL or not config.ERAWAN_BUILDER_KEY
+            or event.get("type") != "workspace.message.posted" or payload.get("message_type") != "status"
+            or not source.startswith("openagents:") or not target.startswith("channel/")
+            or not content.startswith(PROGRESS)):
+        return
+    try:
+        with SessionLocal() as db:
+            if str(_workspace(db).id) != str(workspace_id):
+                return
+        httpx.post(config.ERAWAN_BUILDER_PROGRESS_URL, timeout=5.0,
+                   headers={"Authorization": f"Bearer {config.ERAWAN_BUILDER_KEY}"},
+                   json={"channel": target, "agent": source[len("openagents:"):],
+                         "text": content[len(PROGRESS):].strip()[:200]})
+    except Exception as exc:  # noqa: BLE001 — the page just ticks later
+        logger.warning("erawan_builder: progress for %s not sent (%s)", target, exc)

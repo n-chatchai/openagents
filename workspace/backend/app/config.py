@@ -66,6 +66,9 @@ class Config:
     ERAWAN_BUILDER_WORKSPACE: str = os.environ.get("ERAWAN_BUILDER_WORKSPACE", "")
     ERAWAN_BUILDER_OWNER: str = os.environ.get("ERAWAN_BUILDER_OWNER", "")
     ERAWAN_BUILDER_AGENT: str = os.environ.get("ERAWAN_BUILDER_AGENT", "erawan-builder")
+    # Where a coding worker's "ความคืบหน้า: …" status line is sent on (Erawan's
+    # control plane, internal port); unset, nothing is sent.
+    ERAWAN_BUILDER_PROGRESS_URL: str = os.environ.get("ERAWAN_BUILDER_PROGRESS_URL", "")
     WORKSPACE_SESSION_TTL_DAYS: int = int(os.environ.get("WORKSPACE_SESSION_TTL_DAYS", "30"))
     # A session can be renewed (POST /v1/auth/session/renew) for this long after
     # the sign-in that started it; past that the user signs in again. Bounds how
