@@ -143,3 +143,30 @@ def test_a_workers_progress_line_is_sent_on_and_nothing_else(client, db, builder
     erawan_builder.forward_progress(str(builder["id"]), event(source="human:a@b.c"))
     erawan_builder.forward_progress("another-workspace", event())
     assert len(sent) == 1
+
+
+def test_erawan_builders_empty_answer_posts_nothing_and_others_still_say_so(workspace, db, monkeypatch):
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    from app.services import cloud_agent, hermes_agent
+
+    posted = []
+
+    async def fake_run(target, text, session_key, event_id, notes):
+        return ""
+
+    async def fake_post(db_, ws, channel, agent, text, depth, **_k):
+        posted.append((agent, text))
+
+    monkeypatch.setattr(hermes_agent, "_run", fake_run)
+    monkeypatch.setattr(cloud_agent, "_post_response", fake_post)
+    monkeypatch.setattr(config, "ERAWAN_BUILDER_AGENT", "erawan-builder")
+    event = {"id": "evt-1", "source": "openagents:builder-claude", "target": "channel/job-1", "metadata": {},
+             "payload": {"content": "เว็บขึ้นแล้ว version 4"}, "timestamp": int(time.time() * 1000)}
+    target = hermes_agent.RunTarget(root="https://hermes.test/v1", api_key="k")
+    asyncio.run(hermes_agent.invoke_run_agent(db, workspace["id"], event, SimpleNamespace(agent_name="erawan-builder"), 0, target))
+    assert posted == []
+    asyncio.run(hermes_agent.invoke_run_agent(db, workspace["id"], event, SimpleNamespace(agent_name="nok"), 0, target))
+    assert len(posted) == 1 and "without a reply" in posted[0][1]

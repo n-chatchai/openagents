@@ -40,6 +40,8 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from app.config import config
+
 logger = logging.getLogger(__name__)
 
 HERMES_PROVIDER = "hermes"
@@ -153,6 +155,11 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
     answer = await _run(target, text, session_key, event_data.get("id"), notes)
     if notes:
         answer = (answer + "\n\n" if answer else "") + "\n".join(notes)
+    # Erawan Builder answers a coding agent's line that is not a command with
+    # nothing (Erawan's builder.team_command): nothing is posted, rather than
+    # the "finished without a reply" line every other agent gets.
+    if not (answer or "").strip() and agent_name == config.ERAWAN_BUILDER_AGENT:
+        return
 
     await _post_response(
         db, workspace_id, channel_target, agent_name,
