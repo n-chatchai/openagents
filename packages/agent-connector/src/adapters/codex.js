@@ -27,6 +27,7 @@ const https = require('https');
 
 const { whereBinary } = require('../paths');
 const BaseAdapter = require('./base');
+const { pendingImport } = require('../session-imports');
 const { redactSecrets, formatAttachmentsForPrompt, decodeConsoleOutput, BENIGN_CLI_OUTPUT, networkErrorText } = require('./utils');
 const { buildOpenclawSystemPrompt } = require('./workspace-prompt');
 
@@ -71,6 +72,15 @@ const CODEX_SIDE_NOTE = /^warning:/i;
 // the field they came first in stderr and were quoted as the reason a run
 // failed. Quoted only when nothing else was logged.
 const CODEX_SIDE_ERROR = /\brmcp::|failed to load skill\b/;
+// A Node exception from Codex's npm launcher (bin/codex.js), thrown before the
+// native binary ever ran: its headline ("Error: Missing optional dependency
+// @openai/codex-win32-x64. Reinstall Codex: …") and then a stack. The last
+// five lines of that were all stack frames, so the channel read "> at
+// file:///…/codex.js:113:20 at ModuleJob.run" on every message of one user's
+// agents (daily errors dashboard, 2026-11-25). With a stack present, the
+// headline is the reason.
+const NODE_STACK_FRAME = /^at\s+(?:async\s+)?(?:\S+\s+\()?(?:file:|node:|[A-Za-z]:\\|\/)\S*:\d+:\d+\)?$/;
+const NODE_ERROR_HEADLINE = /^(?:[A-Z][\w$]*)?Error(?: \[[A-Z0-9_]+\])?: \S/;
 // Codex's wording when the model service could not be reached or the stream
 // dropped. Seen in the field from devices that cannot reach OpenAI, and
 // reproduced against codex-cli 0.160 behind a dead proxy: the run then fails
@@ -198,6 +208,44 @@ class CodexAdapter extends BaseAdapter {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(this._sessionsFile, JSON.stringify(this._channelThreads));
     } catch {}
+  }
+
+  /**
+   * A channel that is an imported local Codex session (src/session-imports.js)
+   * continues it from its first turn. `codex exec resume <id>` appends to the
+   * rollout it resumes, so the user's own file is copied first under a new id
+   * (the id rewritten in its name and records) into the CODEX_HOME this agent
+   * runs with, and the copy is what the channel resumes. A rollout that is
+   * gone leaves the channel to start fresh with the imported thread history.
+   */
+  _adoptImportedThread(msgChannel) {
+    if (Object.prototype.hasOwnProperty.call(this._channelThreads, msgChannel)) return;
+    // Once per channel: a copy that later fails to resume is dropped like any
+    // stale thread, and the channel goes on fresh rather than re-importing.
+    this._adoptedImports = this._adoptedImports || new Set();
+    if (this._adoptedImports.has(msgChannel)) return;
+    const entry = pendingImport(this.workspaceId, this.agentName, msgChannel, 'codex');
+    if (!entry || !entry.file) return;
+    this._adoptedImports.add(msgChannel);
+    try {
+      const env = this.agentEnv || process.env;
+      const home = env.CODEX_HOME || path.join(os.homedir(), '.codex');
+      const text = fs.readFileSync(entry.file, 'utf-8');
+      const complete = text.slice(0, text.lastIndexOf('\n') + 1);
+      const newId = require('crypto').randomUUID();
+      const now = new Date();
+      const pad = (v) => String(v).padStart(2, '0');
+      const dir = path.join(home, 'sessions', String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()));
+      const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(dir, `rollout-${stamp}-${newId}.jsonl`), complete.split(entry.session_id).join(newId), { mode: 0o600 });
+      this._channelThreads[msgChannel] = newId;
+      try { require('../session-imports').recordCopy(newId); } catch { /* only hides it from the import picker */ }
+      this._saveSessions();
+      this._log(`Channel ${msgChannel} continues imported Codex session ${entry.session_id} as ${newId}`);
+    } catch (e) {
+      this._log(`Imported session ${entry.session_id} unavailable for ${msgChannel} (${e.message}); starting fresh`);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -499,6 +547,7 @@ class CodexAdapter extends BaseAdapter {
     const context = this._buildSystemContext(msgChannel);
     const fullPrompt = `${context}\n\n---\n\nUser message:\n${content}${this._attachmentInstructions(attachments)}`;
 
+    this._adoptImportedThread(msgChannel);
     // Plan/execute and the local opt-in, re-read for this turn. Nothing the
     // workspace sends reaches the sandbox flags.
     const posture = this._approvalGate();
@@ -1076,7 +1125,9 @@ class CodexAdapter extends BaseAdapter {
         (CODEX_SIDE_NOTE.test(line) ? notes : said).push(line);
       }
     }
-    const picked = said.length ? said : errors.length ? errors : notes;
+    const headlines = said.some((l) => NODE_STACK_FRAME.test(l))
+      ? said.filter((l) => NODE_ERROR_HEADLINE.test(l)) : [];
+    const picked = headlines.length ? headlines : said.length ? said : errors.length ? errors : notes;
     const text = picked.slice(-5).join('\n');
     return text.length > FAILURE_DETAIL_CAP ? `…${text.slice(-(FAILURE_DETAIL_CAP - 1))}` : text;
   }
