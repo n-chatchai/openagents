@@ -22,7 +22,9 @@ class ReactionInput(BaseModel):
 
 
 def _visible(db, ctx, event):
-    if not event or event.network_id != ctx.wid or event.type != 'workspace.message.posted' or not event.source.startswith('human:') or (event.payload or {}).get('message_type','chat') != 'chat':
+    # People react to people's messages and to bots' answers (Pixel Team's
+    # long press); a reaction is stored apart and never wakes an agent.
+    if not event or event.network_id != ctx.wid or event.type != 'workspace.message.posted' or not event.source.startswith(('human:', 'openagents:')) or (event.payload or {}).get('message_type','chat') != 'chat':
         return False
     if event.target.startswith('channel/'):
         channel=db.execute(select(Channel).where(Channel.workspace_id==ctx.wid,Channel.name==event.target[8:],Channel.status!='deleted')).scalar_one_or_none()
