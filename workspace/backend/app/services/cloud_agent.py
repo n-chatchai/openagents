@@ -201,6 +201,7 @@ async def _invoke_single(
         CHANGBOT_PROVIDER, ERAWANOPS_PROVIDER, invoke_changbot_agent, invoke_erawanops_agent,
     )
     from app.services.grokbot_agent import GROKBOT_PROVIDER, invoke_grokbot_agent
+    from app.services.dots_agent import DOTS_PROVIDER, invoke_dots_agent
     if cloud_config.provider == YUMI_PROVIDER and not may_invoke(db, workspace_id, event_data):
         logger.info("Yumi: ignoring invocation outside a personal conversation")
         return
@@ -212,6 +213,8 @@ async def _invoke_single(
         await invoke_erawanops_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == GROKBOT_PROVIDER:
         await invoke_grokbot_agent(db, workspace_id, event_data, cloud_config, depth)
+    elif cloud_config.provider == DOTS_PROVIDER:
+        await invoke_dots_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.provider == YUMI_PROVIDER or cloud_config.category == "assistant":
         await _invoke_assistant_agent(db, workspace_id, event_data, cloud_config, depth)
     elif cloud_config.category == "image":

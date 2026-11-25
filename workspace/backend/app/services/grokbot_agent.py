@@ -137,8 +137,8 @@ def connection_key(workspace_id: str, owner_email: Optional[str]) -> str:
     return _KEY_PREFIX + _sign("grokbot-key", {"w": str(workspace_id), "o": _owner(owner_email)})
 
 
-def agents_of(db, link: Link) -> list:
-    """The Grok Bot agents this person has in this workspace."""
+def agents_of(db, link: Link, provider: str = GROKBOT_PROVIDER) -> list:
+    """The Grok Bot (or other outside-bot ``provider``) agents this person has here."""
     from app.models import CloudAgentConfig, WorkspaceMember
 
     return list(db.execute(
@@ -149,7 +149,7 @@ def agents_of(db, link: Link) -> list:
         ))
         .where(
             CloudAgentConfig.workspace_id == link.workspace_id,
-            CloudAgentConfig.provider == GROKBOT_PROVIDER,
+            CloudAgentConfig.provider == provider,
             CloudAgentConfig.status == "active",
             WorkspaceMember.status != "removed",
             func.lower(func.coalesce(WorkspaceMember.owner_email, "")) == link.owner,
@@ -436,13 +436,17 @@ _STALE = "This reference is not yours or has expired. Wait for the next wake."
 
 
 def _read_thread(db, link: Link, reference) -> dict:
-    from app.models import EventRecord
-    from app.services.cloud_agent import _build_conversation_context, speaker_label
-
     found = _reference(db, link, reference)
     if not found:
         return _tool_text(_STALE, error=True)
-    cfg, fields = found
+    return _tool_text(thread_text(db, *found))
+
+
+def thread_text(db, cfg, fields: dict) -> str:
+    """The thread a wake points at, as the bot reads it (Grok Bot, ChatGPT dots)."""
+    from app.models import EventRecord
+    from app.services.cloud_agent import _build_conversation_context, speaker_label
+
     history = _build_conversation_context(
         db, cfg.workspace_id, fields["c"], cfg.agent_name,
         conversation_source=fields.get("s") or None,
@@ -473,16 +477,20 @@ def _read_thread(db, link: Link, reference) -> dict:
     if addressed:
         text += "\n\nThe message addressed to you:\n" + addressed
     text += "\n\nAnswer with workspace_post_reply and this same reference."
-    return _tool_text(text)
+    return text
 
 
 async def _post_reply(db, link: Link, reference, text) -> dict:
-    from app.services.cloud_agent import _post_response
-
     found = _reference(db, link, reference)
     if not found:
         return _tool_text(_STALE, error=True)
-    cfg, fields = found
+    return await post_text(db, *found, text)
+
+
+async def post_text(db, cfg, fields: dict, text) -> dict:
+    """Post a bot's answer where a wake points (Grok Bot, ChatGPT dots)."""
+    from app.services.cloud_agent import _post_response
+
     text = (text or "").strip() if isinstance(text, str) else ""
     if not text:
         return _tool_text("Nothing to post: text is empty.", error=True)

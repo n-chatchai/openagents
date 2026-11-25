@@ -31,6 +31,7 @@ from app.services.changbot_agent import (
     CHANGBOT_PROVIDER, ERAWANOPS_PROVIDER, probe as changbot_probe, probe_ops as erawanops_probe,
 )
 from app.services.grokbot_agent import GROKBOT_PROVIDER
+from app.services.dots_agent import DOTS_PROVIDER
 from app.services.yumi import (
     YUMI_CATEGORY,
     YUMI_KEY_PLACEHOLDER,
@@ -239,6 +240,15 @@ def add_cloud_agent(
         effective_key = ""
         body.base_url = None
         member_description = "Grok Bot (bring your own)"
+    # Somebody's own ChatGPT dot (app/services/dots_agent.py): it joins first;
+    # the dot subscribes to the workspace's event from its own chat after
+    # (routers/dots.py).
+    if body.provider == DOTS_PROVIDER:
+        if not config.WORKSPACE_SESSION_SECRET:
+            return json_response(ResponseCode.BAD_REQUEST, "A ChatGPT dot needs WORKSPACE_SESSION_SECRET on this server")
+        effective_key = ""
+        body.base_url = None
+        member_description = "ChatGPT dot (bring your own)"
 
     # Namespace lock BEFORE the membership read: a concurrent create/rename
     # could otherwise invalidate what we read before we write.

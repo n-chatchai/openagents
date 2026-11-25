@@ -1,0 +1,15 @@
+{
+  "name": "dots",
+  "label": "ChatGPT dot",
+  "description": "Your ChatGPT dot: add this workspace as a plugin, then subscribe the dot to its message event so it answers when someone @mentions it",
+  "description_zh": "你的 ChatGPT dot：把此工作区添加为插件，再让 dot 订阅其消息事件，有人 @ 它时就会回答",
+  "base_url": null,
+  "order": 206,
+  "models": [
+    {
+      "id": "dots",
+      "category": "chat",
+      "label": "ChatGPT dot"
+    }
+  ]
+}
