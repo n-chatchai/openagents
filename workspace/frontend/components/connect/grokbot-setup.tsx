@@ -289,7 +289,7 @@ export function GrokBotSetup({ onAdded, onDone }: { onAdded: () => void; onDone:
                 id="grok-webhook-url"
                 value={webhookUrl}
                 onChange={(e) => setWebhookUrl(e.target.value)}
-                placeholder="https://api2.cursor.sh/automations/webhook/…"
+                placeholder="https://…"
                 className="text-sm font-mono h-9"
               />
             </div>

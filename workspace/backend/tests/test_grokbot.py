@@ -165,7 +165,10 @@ def test_a_plugin_call_without_a_reference_is_nobodys_contact(client, workspace)
 
 @pytest.mark.parametrize("url", [
     "http://api2.cursor.sh/automations/webhook/x",
-    "https://evil.example/automations/webhook/x",
+    "https://10.0.0.5/automations/webhook/x",
+    "https://localhost/automations/webhook/x",
+    "https://erawan-api.erawan.svc.cluster.local/x",
+    "https://[::1]/automations/webhook/x",
     "https://user:pw@api2.cursor.sh/automations/webhook/x",
     "",
 ])
@@ -175,6 +178,34 @@ def test_only_a_grok_routine_webhook_is_taken(client, workspace, url):
         "network": workspace["id"], "webhook_url": url, "webhook_key": "crsr_abc",
     })
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize("url", [
+    "https://api.x.ai/v1/routines/r-1/webhook",
+    "https://hooks.grok.com/routine/r-1",
+])
+def test_a_routine_webhook_on_any_public_host_is_taken(client, workspace, monkeypatch, url):
+    # xAI's docs never name the "POST to" host, so none is assumed.
+    _add_grok(client, workspace)
+
+    async def fake_wake(url, key, body):
+        return None
+
+    monkeypatch.setattr(grok, "_wake", fake_wake)
+    r = client.put("/v1/grokbot/grok/routine", headers=_headers(workspace), json={
+        "network": workspace["id"], "webhook_url": url, "webhook_key": "crsr_abc",
+    })
+    assert r.status_code == 200 and r.json()["data"]["webhookSet"] is True
+
+
+@pytest.mark.parametrize("addrs", [["127.0.0.1"], ["10.1.2.3"], ["93.184.216.34", "192.168.1.9"], []])
+def test_a_wake_never_goes_to_a_name_that_resolves_inside(monkeypatch, addrs):
+    async def fake_resolve(host):
+        return set(addrs)
+
+    monkeypatch.setattr(grok, "_resolve", fake_resolve)
+    with pytest.raises(AgentRunError, match="isn't a public one"):
+        asyncio.run(grok._wake("https://sneaky.example/hook", "crsr_abc", {}))
 
 
 def test_saving_the_routine_wakes_it_with_a_challenge_it_can_hand_back(client, workspace, monkeypatch):

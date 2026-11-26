@@ -34,10 +34,12 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -70,13 +72,18 @@ _REFERENCE_AGE = 2 * 3600
 _CHALLENGE_AGE = 15 * 60
 _CONTEXT_CHARS = int(os.environ.get("GROKBOT_CONTEXT_CHARS", "12000"))
 _REPLY_CHARS = 16000
-# Where a routine's webhook may point. The room POSTs a key there, so only
-# Grok Bot's own host, never an address somebody typed.
+# Where a routine's webhook may point. xAI's docs show the "POST to" address
+# only in the routine itself, never its host, so any public https address is
+# taken; the room POSTs the owner's own key there and nothing more. An
+# address inside this server's network never is (check_webhook_url, and
+# _public_address at wake time). GROKBOT_WEBHOOK_HOSTS, when set, narrows it
+# to those hosts once Grok Bot's real one is known.
 _WEBHOOK_HOSTS = {
     h.strip().lower()
-    for h in os.environ.get("GROKBOT_WEBHOOK_HOSTS", "api2.cursor.sh").split(",")
+    for h in os.environ.get("GROKBOT_WEBHOOK_HOSTS", "").split(",")
     if h.strip()
 }
+_INTERNAL_SUFFIXES = (".local", ".internal", ".localhost", ".svc", ".cluster.local", ".lan", ".home.arpa")
 
 NOT_SET_UP = "Grok Bot isn't connected yet. Finish its setup in Connect Agent (the routine's webhook)."
 
@@ -189,9 +196,39 @@ def check_webhook_url(url: str) -> Optional[str]:
     parts = urlsplit(url)
     if parts.scheme != "https" or parts.username or parts.password or parts.fragment:
         return "The routine's Webhook URL must be a plain https:// address."
-    if (parts.hostname or "").lower() not in _WEBHOOK_HOSTS:
-        return f"That isn't a Grok Bot routine webhook (expected {', '.join(sorted(_WEBHOOK_HOSTS))})."
+    host = (parts.hostname or "").lower().rstrip(".")
+    if _WEBHOOK_HOSTS:
+        if host not in _WEBHOOK_HOSTS:
+            return f"That isn't a Grok Bot routine webhook (expected {', '.join(sorted(_WEBHOOK_HOSTS))})."
+        return None
+    if not _public_name(host):
+        return "That isn't a Grok Bot routine webhook (it points inside a private network)."
     return None
+
+
+def _public_name(host: str) -> bool:
+    """A host name that could be on the internet: no IP literal, no local name."""
+    if not host or "." not in host or host == "localhost" or host.endswith(_INTERNAL_SUFFIXES):
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        return True
+
+
+async def _resolve(host: str) -> set:
+    infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    return {info[4][0] for info in infos}
+
+
+async def _public_address(host: str) -> bool:
+    """True when every address ``host`` resolves to is a public one."""
+    try:
+        addrs = await _resolve(host)
+    except OSError:
+        return False
+    return bool(addrs) and all(ipaddress.ip_address(a.split("%")[0]).is_global for a in addrs)
 
 
 def check_webhook_key(key: str) -> Optional[str]:
@@ -226,6 +263,8 @@ async def _wake(webhook_url: str, webhook_key: str, body: dict) -> None:
     problem = check_webhook_url(webhook_url)
     if problem:
         raise AgentRunError(problem)
+    if not _WEBHOOK_HOSTS and not await _public_address(urlsplit(webhook_url.strip()).hostname or ""):
+        raise AgentRunError("Could not reach Grok Bot's routine webhook (its address isn't a public one).")
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), follow_redirects=False) as http:
             r = await http.post(
