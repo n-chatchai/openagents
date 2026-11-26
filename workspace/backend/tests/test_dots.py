@@ -142,7 +142,8 @@ def test_mcp_advertises_events_and_tools_for_the_right_key_only(client, workspac
     init = _mcp(client, key, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}}).json()
     assert init["result"]["capabilities"] == {"tools": {"listChanged": False}, "events": {}}
     tools = {t["name"] for t in _mcp(client, key, "tools/list").json()["result"]["tools"]}
-    assert tools == {"workspace_read_thread", "workspace_post_reply", "workspace_ack"}
+    assert tools == {"workspace_read_thread", "workspace_post_reply", "workspace_ack",
+                     "workspace_search_knowledge", "workspace_read_knowledge"}
     (event,) = _mcp(client, key, "events/list").json()["result"]["events"]
     assert event["name"] == "message.created" and event["delivery"] == ["webhook"]
     assert event["inputSchema"]["required"] == ["bot"]

@@ -85,7 +85,8 @@ def test_mcp_lists_its_tools_for_the_right_key_only(client, workspace):
     r = _mcp(client, key, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
     assert r.json()["result"]["capabilities"] == {"tools": {"listChanged": False}}
     names = {t["name"] for t in _mcp(client, key, "tools/list").json()["result"]["tools"]}
-    assert names == {"workspace_read_thread", "workspace_post_reply", "workspace_ack"}
+    assert names == {"workspace_read_thread", "workspace_post_reply", "workspace_ack",
+                     "workspace_search_knowledge", "workspace_read_knowledge"}
     # A notification has no answer.
     note = client.post("/v1/mcp/grok", headers={grok.KEY_HEADER: key},
                        json={"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -315,3 +316,92 @@ def test_routine_refusals_are_worded_for_the_room():
     assert "switched off" in grok._refusal(r(400, {"success": False, "error": "Automation abc is disabled"}))
     assert "too many" in grok._refusal(r(400, {"error": "Automation run rate limit exceeded"}))
     assert "routine key" in grok._refusal(r(401, {"code": "error", "message": "Invalid API key"}))
+
+
+# ---------------------------------------------------------------------------
+# The team's knowledge base, read-only (app/services/bot_knowledge.py)
+# ---------------------------------------------------------------------------
+
+OWNER = "founder@pace6.tech"
+
+
+def _entry(db, ws, title, text, visibility="public", owner=None):
+    from app.models import KnowledgeEntry
+    from app.storage import get_file_store
+
+    entry_id = str(uuid.uuid4())
+    key = get_file_store().save(ws["id"], entry_id, f"{entry_id}.md", text.encode())
+    db.add(KnowledgeEntry(id=entry_id, workspace_id=ws["id"], slug=entry_id, title=title, storage_key=key,
+                          created_by=owner or "human:someone@pace6.tech", owner=owner, visibility=visibility))
+    db.commit()
+    return entry_id
+
+
+def _grant(db, ws, kind, rid, grantee_kind, grantee_id, rights=("read", "act")):
+    from app.models import ResourceGrant
+
+    db.add(ResourceGrant(workspace_id=ws["id"], resource_kind=kind, resource_id=rid,
+                         grantee_kind=grantee_kind, grantee_id=grantee_id, rights=list(rights)))
+    db.commit()
+
+
+def _knowledge_setup(client, ws, db, monkeypatch):
+    _add_grok(client, ws)
+    member = db.execute(select(WorkspaceMember).where(WorkspaceMember.agent_name == "grok")).scalar_one()
+    member.owner_email = OWNER
+    db.commit()
+    ids = {
+        "public": _entry(db, ws, "Refund policy", "Refunds within 14 days, with the receipt."),
+        "owners": _entry(db, ws, "Salary bands", "Band C pays 80k.", "private", f"human:{OWNER}"),
+        "bots": _entry(db, ws, "Price list", "Hobby is 249 baht.", "private", "human:someone@pace6.tech"),
+        "others": _entry(db, ws, "Board notes", "Raise in March.", "private", "human:someone@pace6.tech"),
+    }
+    _grant(db, ws, "knowledge", ids["bots"], "agent", "grok", ("read",))
+    wake = _wake_for(db, ws, _route(db, "grok"), monkeypatch)
+    key = _setup(client, ws)["connectionKey"]
+    return ids, wake, key
+
+
+def _found(client, key, wake, query=""):
+    got = _call(client, key, "workspace_search_knowledge", {"reference": wake["reference"], "query": query})
+    assert got["isError"] is False
+    return got["content"][0]["text"]
+
+
+def test_a_bot_only_its_owner_calls_reads_what_its_owner_may(client, workspace, db, monkeypatch):
+    ids, wake, key = _knowledge_setup(client, workspace, db, monkeypatch)
+    listed = _found(client, key, wake)
+    assert "Refund policy" in listed and "Salary bands" in listed and "Price list" in listed
+    assert "Board notes" not in listed
+    # Found by what the document says, not only its title.
+    assert "Refund policy" in _found(client, key, wake, "receipt")
+    read = _call(client, key, "workspace_read_knowledge", {"reference": wake["reference"], "id": ids["owners"]})
+    assert read["isError"] is False and "Band C pays 80k." in read["content"][0]["text"]
+    hidden = _call(client, key, "workspace_read_knowledge", {"reference": wake["reference"], "id": ids["others"]})
+    assert hidden["isError"] is True
+
+
+def test_a_bot_others_may_call_does_not_read_its_owners_private_entries(client, workspace, db, monkeypatch):
+    ids, wake, key = _knowledge_setup(client, workspace, db, monkeypatch)
+    # Anyone in the room may call it now.
+    _grant(db, workspace, "agent", "grok", "human", "teammate@pace6.tech")
+    listed = _found(client, key, wake)
+    assert "Refund policy" in listed and "Price list" in listed
+    assert "Salary bands" not in listed
+    read = _call(client, key, "workspace_read_knowledge", {"reference": wake["reference"], "id": ids["owners"]})
+    assert read["isError"] is True
+    shared = _call(client, key, "workspace_read_knowledge", {"reference": wake["reference"], "id": ids["bots"]})
+    assert shared["isError"] is False and "Hobby is 249 baht." in shared["content"][0]["text"]
+
+
+def test_knowledge_needs_a_fresh_reference_of_your_own(client, workspace, db, monkeypatch):
+    ids, wake, key = _knowledge_setup(client, workspace, db, monkeypatch)
+    stale = _call(client, key, "workspace_search_knowledge", {"reference": "nope", "query": ""})
+    assert stale["isError"] is True
+    _add_grok(client, workspace, "their-grok")
+    member = db.execute(select(WorkspaceMember).where(WorkspaceMember.agent_name == "their-grok")).scalar_one()
+    member.owner_email = "someone-else@pace6.tech"
+    db.commit()
+    theirs = _setup(client, workspace, "their-grok")["connectionKey"]
+    stolen = _call(client, theirs, "workspace_read_knowledge", {"reference": wake["reference"], "id": ids["public"]})
+    assert stolen["isError"] is True
