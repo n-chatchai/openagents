@@ -31,9 +31,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Request
+import httpx
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy.orm import Session
 
 from app.config import config
+from app.database import get_db
 from app.firebase_auth import mint_workspace_session, workspace_session_enabled
 from app.response import ResponseCode, json_response, success_response
 
@@ -41,9 +44,52 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/door", tags=["Auth"])
 
+# The door's Google access token (oauth2-proxy --pass-access-token), asked
+# for the person's name and photo once, at sign-in. Read only from the door,
+# which strips a client's own copy like X-Forwarded-Email's; and believed only
+# for the address the door vouches for.
+ACCESS_TOKEN_HEADER = "X-Forwarded-Access-Token"
+USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+
+
+def _google_profile(token: str, email: str) -> dict:
+    """{display_name, avatar_url} from Google for this person, or {} on anything off."""
+    try:
+        r = httpx.get(USERINFO_URL, headers={"Authorization": f"Bearer {token}"}, timeout=4.0)
+        info = r.json() if r.status_code == 200 else {}
+    except (httpx.HTTPError, ValueError):
+        return {}
+    if not isinstance(info, dict) or (info.get("email") or "").strip().lower() != email or info.get("email_verified") is False:
+        return {}
+    out = {}
+    name = info.get("name")
+    if isinstance(name, str) and 0 < len(name.strip()) <= 200:
+        out["display_name"] = name.strip()
+    picture = info.get("picture")
+    if isinstance(picture, str) and picture.startswith("https://") and len(picture) <= 5000:
+        out["avatar_url"] = picture
+    return out
+
+
+def _keep_google_profile(request: Request, db: Session, email: str) -> None:
+    """Name and photo from the same Google sign-in, kept only where the person
+    has none yet: a photo saved in their profile always wins
+    (access.get_or_create_user). Any failure leaves sign-in as it was."""
+    access_token = (request.headers.get(ACCESS_TOKEN_HEADER) or "").strip()
+    profile = _google_profile(access_token, email) if access_token else {}
+    if not profile:
+        return
+    from app.access import get_or_create_user
+    try:
+        get_or_create_user(db, {"email": email, "email_verified": True, **profile})
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("door_auth: could not keep the Google profile for %s", email, exc_info=True)
+
 
 @router.post("/session")
-def create_door_session(request: Request):
+def create_door_session(request: Request, db: Session = Depends(get_db)):
     """Mint a workspace session for the email the door vouches for.
 
     Responses:
@@ -68,6 +114,7 @@ def create_door_session(request: Request):
 
     # The door verified the address with Google before it let the request in.
     claims = {"email": email, "display_name": None, "email_verified": True}
+    _keep_google_profile(request, db, email)
     token, exp = mint_workspace_session(claims)
     logger.info("door_auth: issued workspace session for %s", email)
     return success_response({
@@ -157,7 +204,7 @@ class AppCodeRequest(BaseModel):
 
 
 @router.post("/app-code")
-def create_app_code(body: AppCodeRequest, request: Request):
+def create_app_code(body: AppCodeRequest, request: Request, db: Session = Depends(get_db)):
     """A two-minute code for the phone app, for the person the door signed in.
 
     Responses:
@@ -179,6 +226,7 @@ def create_app_code(body: AppCodeRequest, request: Request):
     if not email or "@" not in email:
         return json_response(ResponseCode.UNAUTHORIZED, "Not signed in at the door")
     logger.info("door_auth: app code for %s", email)
+    _keep_google_profile(request, db, email)
     return success_response({"code": sign_app_code(email, body.challenge), "expires_in": APP_CODE_TTL})
 
 
@@ -186,7 +234,7 @@ APP_RETURN = "pixelteam://auth"
 
 
 @router.get("/app-start")
-def app_start(request: Request, challenge: str = ""):
+def app_start(request: Request, challenge: str = "", db: Session = Depends(get_db)):
     """The phone app's sign-in, straight back to the app: no page of ours between.
 
     The app opens the door's own sign-in, /oauth2/start?rd=/door/app-start?challenge=…,
@@ -209,6 +257,7 @@ def app_start(request: Request, challenge: str = ""):
     if not email or "@" not in email:
         return back(error="not_signed_in")
     logger.info("door_auth: app sign-in for %s", email)
+    _keep_google_profile(request, db, email)
     return back(code=sign_app_code(email, challenge))
 
 

@@ -79,3 +79,68 @@ def test_app_start_says_why_to_the_app_rather_than_to_a_page(client, monkeypatch
     assert where(params={"challenge": "x"}, headers=DOOR) == "pixelteam://auth?error=bad_request"
     monkeypatch.setattr(config, "DOOR_EMAIL_HEADER", "")
     assert where(params={"challenge": CHALLENGE}, headers=DOOR) == "pixelteam://auth?error=no_door"
+
+
+
+# Name and photo from the door's Google sign-in (oauth2-proxy --pass-access-token)
+
+def _google(monkeypatch, info, status=200):
+    asked = []
+
+    class Answer:
+        status_code = status
+
+        def json(self):
+            return info
+
+    def fake_get(url, headers=None, timeout=None):
+        asked.append((url, headers))
+        return Answer()
+
+    monkeypatch.setattr(door_auth.httpx, "get", fake_get)
+    return asked
+
+
+def _profile(db, email="somchai@team.test"):
+    from sqlalchemy import select
+    from app.models import User
+    db.expire_all()
+    return db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+
+
+def test_sign_in_keeps_the_google_name_and_photo(client, db, monkeypatch):
+    asked = _google(monkeypatch, {"email": "somchai@team.test", "email_verified": True,
+                                  "name": "Somchai Jaidee", "picture": "https://lh3.googleusercontent.com/a/x"})
+    r = client.post("/door/app-code", json={"challenge": CHALLENGE}, headers={**DOOR, "X-Forwarded-Access-Token": "ya29.t"})
+    assert r.status_code == 200, r.text
+    assert asked[0][1] == {"Authorization": "Bearer ya29.t"}
+    user = _profile(db)
+    assert user.display_name == "Somchai Jaidee"
+    assert user.avatar_url == "https://lh3.googleusercontent.com/a/x"
+
+
+def test_a_photo_of_your_own_is_never_replaced(client, db, monkeypatch):
+    from app.access import get_or_create_user
+    get_or_create_user(db, {"email": "somchai@team.test", "email_verified": True,
+                            "avatar_url": "data:image/jpeg;base64,AAAA"})
+    db.commit()
+    _google(monkeypatch, {"email": "somchai@team.test", "email_verified": True, "picture": "https://lh3.googleusercontent.com/a/x"})
+    client.post("/door/session", headers={**DOOR, "X-Forwarded-Access-Token": "ya29.t"})
+    assert _profile(db).avatar_url == "data:image/jpeg;base64,AAAA"
+
+
+def test_a_token_for_somebody_else_keeps_nothing(client, db, monkeypatch):
+    _google(monkeypatch, {"email": "mallory@team.test", "email_verified": True, "picture": "https://evil.example/p"})
+    r = client.post("/door/session", headers={**DOOR, "X-Forwarded-Access-Token": "ya29.t"})
+    assert r.status_code == 200, r.text
+    user = _profile(db)
+    assert user is None or user.avatar_url is None
+
+
+def test_google_down_does_not_stop_sign_in(client, monkeypatch):
+    def broken(*_a, **_k):
+        raise door_auth.httpx.ConnectError("down")
+
+    monkeypatch.setattr(door_auth.httpx, "get", broken)
+    r = client.post("/door/app-code", json={"challenge": CHALLENGE}, headers={**DOOR, "X-Forwarded-Access-Token": "ya29.t"})
+    assert r.status_code == 200, r.text
