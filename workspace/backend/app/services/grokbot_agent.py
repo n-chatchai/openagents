@@ -525,6 +525,12 @@ def thread_text(db, cfg, fields: dict) -> str:
         if room:
             text += "\n\n" + room
     if addressed:
+        # What of the team's knowledge base bears on it, so the answer does not
+        # hang on the bot choosing to search (app/services/bot_knowledge.py).
+        knowledge = bot_knowledge.context_for(db, cfg.workspace_id, cfg.agent_name,
+                                              (trigger.payload or {}).get("content", "") if trigger is not None else "")
+        if knowledge:
+            text += "\n\n" + knowledge
         text += "\n\nThe message addressed to you:\n" + addressed
     text += "\n\nAnswer with workspace_post_reply and this same reference."
     return text

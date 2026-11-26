@@ -141,12 +141,19 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
         from app.services.room_roster import safe_room_facts
         target.room = safe_room_facts(db, workspace_id, channel_target, agent_name,
                                       event_data.get("source"), event_data.get("metadata"))
+    # The team's knowledge base, what of it this bot may read and bears on the
+    # message (app/services/bot_knowledge.py): Pixel Bot and Hermes call no
+    # tools of ours, so it goes with the work.
+    from app.services.bot_knowledge import context_for
+    knowledge = context_for(db, workspace_id, agent_name, content)
     # Release the DB connection for the length of the run (see _invoke_chat_agent).
     db.rollback()
 
     text = _compose_input(history, speaker_label(event_data.get("source") or "", payload), content)
     if room:
         text = room + "\n\n" + text
+    if knowledge:
+        text = knowledge + "\n\n" + text
     session_key = f"openagents:{workspace_id}:{channel_target}"
     logger.info("hermes_agent: %s run for %s on %s in %s at %s", target.label, agent_name,
                 event_data.get("id"), channel_target, target.root)
