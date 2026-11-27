@@ -460,6 +460,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("LIFESPAN: database import failed: %s", e)
 
+    # A bot the workspace runs is "working" only while its run is open; a
+    # restart ends every run (app/services/bot_presence.py).
+    try:
+        from app.services.bot_presence import clear_cloud
+        await asyncio.to_thread(clear_cloud)
+    except Exception as e:
+        logger.error("LIFESPAN: bot presence clear failed: %s", e)
+
     # Sync the curated Skill catalog once at boot, never from anonymous GET
     # requests. The bootstrap takes a PostgreSQL advisory transaction lock, so
     # rolling deploys and multi-worker startup cannot race on unique slugs.

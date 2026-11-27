@@ -163,7 +163,10 @@ async def _invoke_cloud_agents(workspace_id: str, event_data: dict) -> None:
                 continue
 
             try:
-                await _invoke_single(db, workspace_id, event_data, cloud_config, depth)
+                # Working in this room while the run is open (Pixel Team shows it).
+                from app.services.bot_presence import running
+                async with running(workspace_id, agent_name, event_data.get("target", "")):
+                    await _invoke_single(db, workspace_id, event_data, cloud_config, depth)
             except Exception as exc:
                 logger.exception(
                     "cloud_agent: failed to invoke %s (%s/%s)",
