@@ -106,11 +106,13 @@ def create_issue(db, workspace_id: str, agent_name: str, channel_target: str, ar
     # Consecutive numbers, as the issues API takes them (routers/issues.py).
     db.execute(select(Workspace.id).where(Workspace.id == wid).with_for_update())
     number = (db.execute(select(func.max(Issue.number)).where(Issue.workspace_id == wid)).scalar() or 0) + 1
+    shown = member.display_name if member and member.display_name else agent_name
     issue = Issue(
         number=number, board_id=board_id, workspace_id=wid,
         title=title[:240], description=description[:50000],
-        created_by=f"openagents:{agent_name}",
-        created_by_name=(member.display_name if member and member.display_name else agent_name),
+        created_by=f"openagents:{agent_name}", created_by_name=shown,
+        # On the issue, so "@<bot>" in a comment hands it more work (routers/issues.py).
+        participants=[{"source": f"openagents:{agent_name}", "name": shown}],
     )
     db.add(issue)
     db.flush()

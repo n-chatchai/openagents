@@ -463,6 +463,7 @@ def test_a_bot_opens_an_issue_on_the_team_board_linked_to_the_thread(client, wor
     db.expire_all()
     issue = db.execute(select(Issue).where(Issue.workspace_id == workspace["id"])).scalar_one()
     assert issue.board_id is None and issue.created_by == "openagents:grok" and issue.number == 1
+    assert issue.participants == [{"source": "openagents:grok", "name": "grok"}] or issue.participants[0]["source"] == "openagents:grok"
     assert db.execute(select(IssueThread).where(IssueThread.issue_id == issue.id)).scalar_one_or_none() is not None
 
 
