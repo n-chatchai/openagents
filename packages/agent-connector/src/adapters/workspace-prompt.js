@@ -308,6 +308,7 @@ function buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channel
   if (!disabled.has('search')) caps.push('search the web for images and post them into the chat');
   if (!disabled.has('browser')) caps.push('browse websites in a shared browser');
   if (!disabled.has('knowledge')) caps.push('create and access a shared knowledge base');
+  if (!disabled.has('issues')) caps.push('open issues on the team\'s boards');
   caps.push('discover other agents in the workspace');
 
   sections.push(
@@ -693,6 +694,23 @@ function buildApiSkillsPrompt({ endpoint, workspaceId, token, agentName, channel
           'The response is a pending approval. STOP and tell the user it awaits approval; do not claim ' +
           'a link exists. When approved, the link arrives as a message in this thread @mentioning you.\n'
         : '')
+    );
+  }
+
+  // Issues
+  if (!isPlan && !disabled.has('issues')) {
+    sections.push(
+      '\n### Issues\n\n' +
+      'When someone asks you to file work as an issue, open it on a board, linked to this thread. ' +
+      'Name the board (leave it out for "Team issues"); with `"create_board": true` a board of that name is made when there is none. ' +
+      '`"assignee": "asker"` gives it to the person who asked you (pass their email as `requester`). Say the issue\'s number (#12) in your reply.\n\n' +
+      '**Open an issue:**\n' +
+      `\`${curl} -s -X POST -H "${h}" -H "Content-Type: application/json" ` +
+      `"${baseUrl}/v1/bot-tools/agent?network=${workspaceId}" -d '{"agent_name":"${agentName}","channel":"${channelName}",` +
+      `"requester":"ASKER_EMAIL","tool":"workspace_create_issue","args":{"title":"...","description":"...","board":"Marketing","create_board":true,"assignee":"asker"}}'\`\n\n` +
+      '**List the boards:**\n' +
+      `\`${curl} -s -X POST -H "${h}" -H "Content-Type: application/json" ` +
+      `"${baseUrl}/v1/bot-tools/agent?network=${workspaceId}" -d '{"agent_name":"${agentName}","channel":"${channelName}","tool":"workspace_list_boards"}'\`\n`
     );
   }
 

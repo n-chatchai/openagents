@@ -15,14 +15,21 @@ an assignee.
 
 Like the thread tools, each call carries the wake's reference, so the tools
 only act as the bot a wake was meant for, in the thread it was called in.
+
+Bots the workspace runs (Hermes, Pixel Bot) call none of our MCP servers: each
+run carries a reference of its own and a note saying how to use it, and the
+bot posts it to /v1/bot-tools (routers/bot_tools.py). Agents through the
+connector call the same tools with their machine token, naming the thread.
+Founder, 2026-11-27: "ทำ 1", every kind of bot opens issues.
 """
 
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import func, select
 
-from app.models import Channel, Issue, IssueBoard, Workspace, WorkspaceMember
+from app.models import Channel, CloudAgentConfig, Issue, IssueBoard, Workspace, WorkspaceMember
 
 TEAM_NAME = "Team issues"
 
@@ -154,3 +161,47 @@ def call(db, name: str, cfg, fields: dict, args: dict) -> dict:
     if name == "workspace_list_boards":
         return _text(list_boards(db, cfg.workspace_id))
     return create_issue(db, cfg.workspace_id, cfg.agent_name, fields.get("c") or "", args, fields.get("s") or "")
+
+
+# ---------------------------------------------------------------------------
+# A run's own reference (Hermes, Pixel Bot)
+# ---------------------------------------------------------------------------
+
+RUN_PURPOSE = "workspace-run"
+# As long as a run may take (hermes_agent._RUN_TIMEOUT), and a little more.
+RUN_AGE = 35 * 60
+BOT_TOOLS_PATH = "/v1/bot-tools"
+
+
+def run_reference(cfg, channel_target: str, source: str) -> str:
+    """What a run of the bot `cfg` in this thread, for this message, may use the tools with."""
+    from app.services.grokbot_agent import _sign
+    return _sign(RUN_PURPOSE, {"a": cfg.id, "c": channel_target, "s": source or "", "t": int(time.time())})
+
+
+def run_note(reference: str) -> str:
+    """The lines a run's input carries: how to open an issue from this message."""
+    from app.config import config
+    url = f"{config.PUBLIC_API_BASE.rstrip('/')}{BOT_TOOLS_PATH}"
+    return (
+        "[Workspace issues] When asked to file work as an issue, POST " + url + " with JSON "
+        '{"reference": "' + reference + '", "tool": "workspace_create_issue", "args": {"title": "...", '
+        '"description": "...", "board": "<board name, optional>", "create_board": false, "assignee": "asker"}}. '
+        'tool "workspace_list_boards" (args {}) names the boards. "assignee": "asker" gives it to the person '
+        "who asked you; leave it out for no one. Say the issue's number (#12) in your reply. "
+        "The reference works for this message only."
+    )
+
+
+def call_with_reference(db, reference: str, name: str, args: dict) -> dict:
+    """A tool for the run a reference names, if it is fresh and its bot is still in the team."""
+    from app.services.grokbot_agent import _unsign
+    fields = _unsign(RUN_PURPOSE, reference if isinstance(reference, str) else "", RUN_AGE)
+    if not fields or not isinstance(fields.get("c"), str) or name not in NAMES:
+        return _text("This reference has expired or the tool is unknown. Ask again in the thread.", error=True)
+    cfg = db.get(CloudAgentConfig, fields.get("a"))
+    member = db.get(WorkspaceMember, (str(cfg.workspace_id), cfg.agent_name)) if cfg else None
+    if cfg is None or member is None or member.status == "removed":
+        return _text("This bot is no longer in the team.", error=True)
+    return call(db, name, cfg, fields, args if isinstance(args, dict) else {})
+

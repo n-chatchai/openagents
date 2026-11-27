@@ -1,0 +1,133 @@
+"""Issues for bots that call no MCP server of ours (routers/bot_tools.py, services/bot_issues.py)."""
+
+import asyncio
+import re
+import time
+import uuid
+
+from sqlalchemy import select
+
+from app.models import Channel, CloudAgentConfig, Issue, IssueBoard, Node, User, WorkspaceMember, WorkspaceMembership
+from app.services import bot_issues
+
+import pytest
+
+ASKER = "somchai@team.test"
+
+
+@pytest.fixture(autouse=True)
+def _secret(monkeypatch):
+    from app.config import config
+    monkeypatch.setattr(config, "WORKSPACE_SESSION_SECRET", "test-session-secret-at-least-32-bytes")
+
+
+def _team(db, ws, provider="changbot"):
+    db.add(WorkspaceMember(workspace_id=ws["id"], agent_name="nok", owner_email=ASKER, status="online", display_name="นก"))
+    cfg = CloudAgentConfig(id=str(uuid.uuid4()), workspace_id=ws["id"], agent_name="nok", provider=provider, model=provider, api_key="k")
+    db.add(cfg)
+    if not db.execute(select(Channel).where(Channel.workspace_id == ws["id"], Channel.name == "general")).scalar_one_or_none():
+        db.add(Channel(id=str(uuid.uuid4()), workspace_id=ws["id"], name="general", title="general"))
+    user = User(email=ASKER)
+    db.add(user)
+    db.flush()
+    db.add(WorkspaceMembership(workspace_id=ws["id"], user_id=user.id, role="member"))
+    db.commit()
+    return cfg
+
+
+def _post(client, body):
+    return client.post("/v1/bot-tools", json=body).json()["data"]
+
+
+def test_a_run_carries_a_note_with_its_own_reference(workspace, db, monkeypatch):
+    from app.services import cloud_agent, hermes_agent
+    cfg = _team(db, workspace)
+    sent = []
+
+    async def fake_run(target, text, session_key, event_id, notes):
+        sent.append(text)
+        return "ok"
+
+    async def fake_post(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(hermes_agent, "_run", fake_run)
+    monkeypatch.setattr(cloud_agent, "_post_response", fake_post)
+    event = {"id": "evt-1", "source": f"human:{ASKER}", "target": "channel/general", "metadata": {},
+             "payload": {"content": "@nok เปิด issue ให้หน่อย"}, "timestamp": int(time.time() * 1000)}
+    target = hermes_agent.RunTarget(root="https://hermes.test/v1", api_key="k")
+    asyncio.run(hermes_agent.invoke_run_agent(db, workspace["id"], event, cfg, 0, target))
+    (text,) = sent
+    assert "/v1/bot-tools" in text and text.rstrip().endswith("@nok เปิด issue ให้หน่อย")
+    reference = re.search(r'"reference": "([^"]+)"', text).group(1)
+    from app.services.grokbot_agent import _unsign
+    assert _unsign(bot_issues.RUN_PURPOSE, reference)["a"] == cfg.id
+
+
+def test_a_run_opens_an_issue_for_the_asker_on_a_board_it_makes(client, workspace, db):
+    cfg = _team(db, workspace)
+    ref = bot_issues.run_reference(cfg, "channel/general", f"human:{ASKER}")
+    got = _post(client, {"reference": ref, "tool": "workspace_create_issue",
+                         "args": {"title": "ยอดตก", "board": "ขาย", "create_board": True, "assignee": "asker"}})
+    assert got["ok"] is True and "#1" in got["text"]
+    db.expire_all()
+    issue = db.execute(select(Issue).where(Issue.workspace_id == workspace["id"])).scalar_one()
+    board = db.execute(select(IssueBoard).where(IssueBoard.workspace_id == workspace["id"])).scalar_one()
+    assert issue.created_by == "openagents:nok" and issue.assignee == f"human:{ASKER}" and issue.board_id == board.id
+    listed = _post(client, {"reference": ref, "tool": "workspace_list_boards", "args": {}})
+    assert "ขาย" in listed["text"]
+
+
+def test_a_forged_or_stale_reference_does_nothing(client, workspace, db, monkeypatch):
+    cfg = _team(db, workspace)
+    assert _post(client, {"reference": "x.y", "tool": "workspace_list_boards"})["ok"] is False
+    ref = bot_issues.run_reference(cfg, "channel/general", "")
+    from app.services import grokbot_agent
+    real = time.time
+    monkeypatch.setattr(grokbot_agent.time, "time", lambda: real() + bot_issues.RUN_AGE + 60)
+    assert _post(client, {"reference": ref, "tool": "workspace_list_boards"})["ok"] is False
+
+
+def test_a_removed_bot_cannot_use_its_reference(client, workspace, db):
+    cfg = _team(db, workspace)
+    ref = bot_issues.run_reference(cfg, "channel/general", "")
+    db.get(WorkspaceMember, (workspace["id"], "nok")).status = "removed"
+    db.commit()
+    assert _post(client, {"reference": ref, "tool": "workspace_list_boards"})["ok"] is False
+
+
+def test_without_a_secret_a_run_goes_on_without_the_note(workspace, db, monkeypatch):
+    from app.config import config
+    from app.services import cloud_agent, hermes_agent
+    cfg = _team(db, workspace)
+    monkeypatch.setattr(config, "WORKSPACE_SESSION_SECRET", "")
+    sent = []
+
+    async def fake_run(target, text, session_key, event_id, notes):
+        sent.append(text)
+        return "ok"
+
+    async def fake_post(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(hermes_agent, "_run", fake_run)
+    monkeypatch.setattr(cloud_agent, "_post_response", fake_post)
+    event = {"id": "evt-2", "source": f"human:{ASKER}", "target": "channel/general", "metadata": {},
+             "payload": {"content": "@nok hi"}, "timestamp": int(time.time() * 1000)}
+    asyncio.run(hermes_agent.invoke_run_agent(db, workspace["id"], event, cfg, 0, hermes_agent.RunTarget(root="https://h.test/v1", api_key="k")))
+    assert sent and "/v1/bot-tools" not in sent[0]
+
+
+def test_a_connector_agent_opens_one_with_its_token(client, workspace, db):
+    _team(db, workspace)
+    h = {"X-Workspace-Token": workspace["token"]}
+    got = client.post(f"/v1/bot-tools/agent?network={workspace['id']}", headers=h, json={
+        "agent_name": "nok", "channel": "general", "requester": ASKER, "tool": "workspace_create_issue",
+        "args": {"title": "ตรวจสต็อก", "assignee": "asker"}}).json()["data"]
+    assert got["ok"] is True
+    db.expire_all()
+    assert db.execute(select(Issue.assignee).where(Issue.workspace_id == workspace["id"])).scalar_one() == f"human:{ASKER}"
+    assert client.post(f"/v1/bot-tools/agent?network={workspace['id']}", json={
+        "agent_name": "nok", "channel": "general", "tool": "workspace_list_boards"}).status_code == 403
+    assert client.post(f"/v1/bot-tools/agent?network={workspace['id']}", headers=h, json={
+        "agent_name": "ghost", "channel": "general", "tool": "workspace_list_boards"}).status_code == 404

@@ -553,6 +553,33 @@ function buildToolDefs(disabledModules) {
     },
   );
 
+  // -- Issues: open one on a board, linked to this thread --
+  if (!disabledModules.has('issues')) {
+    tools.push(
+      {
+        name: 'workspace_list_boards',
+        description: 'The team\'s issue boards, by name. "Team issues" is always there.',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'workspace_create_issue',
+        description: 'Open an issue on a board, linked to the current thread, when asked to file work. Name the board; with create_board true, ' +
+          'a board of that name is made when there is none. Without a board it goes to "Team issues". Say the issue\'s number (#12) in your reply.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'A short title.' },
+            description: { type: 'string', description: 'What is to be done, in Markdown.' },
+            board: { type: 'string', description: 'The board\'s name; leave out for "Team issues".' },
+            create_board: { type: 'boolean', description: 'Make the board when no board has this name.' },
+            assignee: { type: 'string', description: '"asker" for the person who asked you, or a team member\'s email. Leave out for no one.' },
+          },
+          required: ['title'],
+        },
+      },
+    );
+  }
+
   // -- Knowledge Base --
   if (!disabledModules.has('knowledge')) {
     tools.push(
@@ -1303,6 +1330,17 @@ class McpServer {
       case 'workspace_check_approval': {
         const approval = await this.ws.getApproval(this.workspaceId, this.token, args.approval_id);
         return text(formatApproval(approval));
+      }
+
+      // ── Issues ──
+
+      case 'workspace_list_boards':
+      case 'workspace_create_issue': {
+        const channel = this.channelName && !this.channelName.startsWith('dm:') ? this.channelName : '';
+        const data = await this.ws.issueTool(this.workspaceId, this.token, {
+          agentName: this.agentName, channel, requester: this.requesterEmail, tool: name, args,
+        });
+        return data && data.ok === false ? { content: [{ type: 'text', text: data.text }], isError: true } : text((data && data.text) || 'Done.');
       }
 
       // ── Knowledge Base ──

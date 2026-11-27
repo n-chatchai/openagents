@@ -146,6 +146,15 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
     # tools of ours, so it goes with the work.
     from app.services.bot_knowledge import context_for
     knowledge = context_for(db, workspace_id, agent_name, content)
+    # How this run may open an issue: a reference for this message alone
+    # (app/services/bot_issues.py, routers/bot_tools.py). Erawan Builder files none.
+    tools = None
+    if agent_name != config.ERAWAN_BUILDER_AGENT and getattr(cloud_config, "id", None):
+        from app.services.bot_issues import run_note, run_reference
+        try:
+            tools = run_note(run_reference(cloud_config, channel_target, event_data.get("source") or ""))
+        except RuntimeError:  # no WORKSPACE_SESSION_SECRET to sign with: the run goes without
+            tools = None
     # Release the DB connection for the length of the run (see _invoke_chat_agent).
     db.rollback()
 
@@ -154,6 +163,8 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
         text = room + "\n\n" + text
     if knowledge:
         text = knowledge + "\n\n" + text
+    if tools:
+        text = tools + "\n\n" + text
     session_key = f"openagents:{workspace_id}:{channel_target}"
     logger.info("hermes_agent: %s run for %s on %s in %s at %s", target.label, agent_name,
                 event_data.get("id"), channel_target, target.root)

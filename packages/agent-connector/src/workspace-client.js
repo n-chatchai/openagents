@@ -1184,6 +1184,15 @@ class WorkspaceClient {
     return data.data || data;
   }
 
+  // ── Issues (the workspace's /v1/bot-tools/agent) ──
+
+  async issueTool(workspaceId, token, { agentName, channel, requester, tool, args } = {}) {
+    const params = new URLSearchParams({ network: workspaceId });
+    const body = { agent_name: agentName, channel, requester: requester || null, tool, args: args || {} };
+    const data = await this._post(`/v1/bot-tools/agent?${params}`, body, this._wsHeaders(token));
+    return data.data || data;
+  }
+
   // ── Knowledge Base ──
 
   async listKnowledge(workspaceId, token, { limit = 100, timeout } = {}) {
