@@ -290,7 +290,11 @@ async def _invoke_chat_agent(
     )
 
     if content:
-        messages.append({"role": "user", "content": content})
+        # The files attached to the trigger, which this path cannot fetch itself
+        # (app/services/message_attachments.py).
+        from app.services.message_attachments import attachments_note
+        files = attachments_note(db, workspace_id, event_data)
+        messages.append({"role": "user", "content": content + ("\n\n" + files if files else "")})
 
     if not messages:
         return

@@ -124,10 +124,39 @@ export function useChatSend({ currentSessionId, currentSession, currentUser, age
       setScrollKey((k) => k + 1);
 
       try {
+        // Upload files first, then send the message with attachment metadata.
+        // A DM has no thread to inherit access from (a `dm:` channel name
+        // would leave the file open to everyone), so the file stays the
+        // sender's and the one person or agent on the other side is granted
+        // read: an agent opens it with workspace_read_file, and bots run on
+        // the server get its text with the message (message_attachments.py).
+        let attachments: { fileId: string; filename: string; contentType: string; url: string }[] | undefined;
+        if (files.length > 0) {
+          const uploaded = await Promise.all(
+            files.map((pf) => workspaceApi.uploadFile(pf.file, isDM ? undefined : currentSessionId))
+          );
+          if (isDM && dmCounterpart) {
+            const agent = dmCounterpart.startsWith('openagents:');
+            await Promise.all(uploaded.map((f) => workspaceApi.createGrant({
+              resource_kind: 'file', resource_id: f.id,
+              grantee_kind: agent ? 'agent' : 'human',
+              grantee_id: dmCounterpart.replace(/^(openagents|human):/, ''),
+              rights: ['read'],
+            }).catch(() => undefined)));
+          }
+          attachments = uploaded.map((f) => ({
+            fileId: f.id,
+            filename: f.filename,
+            contentType: f.contentType,
+            url: workspaceApi.storedFileUrl(f.id),
+          }));
+        }
+        const text = content || (attachments ? attachments.map((a) => a.filename).join(', ') : '');
+
         if (isDM && dmCounterpart) {
           // Direct message — targeted at the counterpart address, not a
-          // channel. Attachments/mentions aren't supported in DMs yet.
-          const sent = await workspaceApi.sendDirectMessage(dmCounterpart, content, currentUser.name, currentUser.id, myAddr, replyingTo?.messageId);
+          // channel. Mentions aren't supported in DMs yet.
+          const sent = await workspaceApi.sendDirectMessage(dmCounterpart, text, currentUser.name, currentUser.id, myAddr, replyingTo?.messageId, attachments);
           setOptimisticMessages(prev => acknowledgeMessage(prev, userOptimisticMsg.messageId, loadingOptimisticMsg.messageId, sent, loadingOptimisticMsg));
           // A legacy `human:user` conversation: the new message is stored under
           // the viewer's own address, so follow it to the canonical session.
@@ -141,20 +170,6 @@ export function useChatSend({ currentSessionId, currentSession, currentUser, age
           return;
         }
 
-        // Upload files first, then send message with attachment metadata
-        let attachments: { fileId: string; filename: string; contentType: string; url: string }[] | undefined;
-        if (files.length > 0) {
-          const uploaded = await Promise.all(
-            files.map((pf) => workspaceApi.uploadFile(pf.file, currentSessionId))
-          );
-          attachments = uploaded.map((f) => ({
-            fileId: f.id,
-            filename: f.filename,
-            contentType: f.contentType,
-            url: workspaceApi.getFileUrl(f.id),
-          }));
-        }
-
         // Uploading is separate from classification. Start routing feedback
         // only when the message is ready to reach the router.
         if (routingPending && files.length) setOptimisticMessages(previous => previous.map(message =>
@@ -162,7 +177,7 @@ export function useChatSend({ currentSessionId, currentSession, currentUser, age
             ? { ...message, metadata: { ...message.metadata, _routingPending: true } } : message));
         const sent = await workspaceApi.sendMessage(
           currentSessionId,
-          content || (attachments ? attachments.map((a) => a.filename).join(', ') : ''),
+          text,
           currentUser.name,
           mentions.length > 0 ? mentions : undefined,
           attachments,

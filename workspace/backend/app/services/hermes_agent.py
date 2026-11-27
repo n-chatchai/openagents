@@ -160,10 +160,16 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
                              tool_only=target.issue_tool)
         except RuntimeError:  # no WORKSPACE_SESSION_SECRET to sign with: the run goes without
             tools = None
+    # The files attached to the message: this bot has no file tool of ours
+    # (app/services/message_attachments.py).
+    from app.services.message_attachments import attachments_note
+    files = attachments_note(db, workspace_id, event_data)
     # Release the DB connection for the length of the run (see _invoke_chat_agent).
     db.rollback()
 
     text = _compose_input(history, speaker_label(event_data.get("source") or "", payload), content)
+    if files:
+        text = text + "\n\n" + files
     if room:
         text = room + "\n\n" + text
     if knowledge:
