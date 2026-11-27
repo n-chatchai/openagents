@@ -380,6 +380,8 @@ def list_participants(
             "agent_name": name,
             "display_name": m.display_name if m else None,
             "owner_email": m.owner_email if m else None,
+            # What kind of bot (cloud:grokbot, cloud:changbot, …): Pixel Team says what each can do.
+            "agent_type": m.agent_type if m else None,
             "visibility": legacy_agent_visibility(usable.get(name, {})),
             "usable_by": usable.get(name),
             "owner_display_name": owner_names.get(_norm(m.owner_email)) if m else None,
