@@ -78,6 +78,18 @@ def test_a_run_opens_an_issue_for_the_asker_on_a_board_it_makes(client, workspac
     assert "ขาย" in listed["text"]
 
 
+def test_a_bot_with_the_tool_is_told_the_tool_alone_never_a_url_to_post():
+    note = bot_issues.run_note("ref", tool_only=True)
+    assert "workspace_issue tool" in note and "workspace_list_issues" in note and "ref" in note
+    assert "POST" not in note and "Never curl" in note
+    assert "POST" in bot_issues.run_note("ref")
+
+
+def test_pixel_bot_runs_carry_the_tool_only_note():
+    from app.services.changbot_agent import _pixelbot_target
+    assert _pixelbot_target("tok").issue_tool is True
+
+
 def test_a_run_lists_the_issues_open_ones_first_by_board_and_by_asker(client, workspace, db):
     cfg = _team(db, workspace)
     ref = bot_issues.run_reference(cfg, "channel/general", f"human:{ASKER}")

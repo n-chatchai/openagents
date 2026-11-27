@@ -57,7 +57,7 @@ def is_ops_key(token: Optional[str]) -> bool:
 
 def _pixelbot_target(token: str) -> RunTarget:
     return RunTarget(root=_root(), api_key=token, label=_LABEL, session_in_body=True,
-                     approvals="owner", own_errors=True, room_facts=True)
+                     approvals="owner", own_errors=True, room_facts=True, issue_tool=True)
 
 
 def _ops_target(token: str) -> RunTarget:

@@ -250,10 +250,26 @@ def run_reference(cfg, channel_target: str, source: str) -> str:
     return _sign(RUN_PURPOSE, {"a": cfg.id, "c": channel_target, "s": source or "", "t": int(time.time())})
 
 
-def run_note(reference: str) -> str:
-    """The lines a run's input carries: how to open an issue from this message."""
+def run_note(reference: str, tool_only: bool = False) -> str:
+    """The lines a run's input carries: how to open an issue from this message.
+
+    `tool_only`: the bot has a workspace_issue tool and its computer cannot
+    reach the URL (Pixel Bot). Told how to POST it as well, it wrote scripts
+    to the URL and waited out their timeouts instead of calling the tool
+    (2026-11-27), so it is told the tool alone.
+    """
     from app.config import config
     url = f"{config.PUBLIC_API_BASE.rstrip('/')}{BOT_TOOLS_PATH}"
+    if tool_only:
+        return (
+            "[Workspace issues] Your workspace_issue tool is the only way to this Workspace's issues: call it "
+            "with url " + url + " and reference " + reference + ". Never curl, fetch or script that URL; your "
+            'computer cannot reach it. tool "workspace_list_issues" lists the issues (board, status '
+            'active|open|in_progress|paused|closed|all, assignee asker|<email>|none, limit); '
+            '"workspace_create_issue" opens one (title, description, board, create_board, assignee "asker"); '
+            '"workspace_list_boards" names the boards. Say an issue\'s number (#12) in your reply. These three '
+            "are all there is: for anything else about issues, say so. The reference works for this message only."
+        )
     return (
         "[Workspace issues] When asked to file work as an issue: with a workspace_issue tool, call it with url "
         + url + " and reference " + reference + "; otherwise POST " + url + " with JSON "

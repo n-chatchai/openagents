@@ -78,6 +78,10 @@ class RunTarget:
     session_in_body: bool = False
     approvals: str = "deny"
     headers: dict = field(default_factory=dict)
+    # The bot has a tool of its own for the issue tools (Pixel Bot's
+    # workspace_issue, through its gateway) and its computer cannot reach our
+    # URL: the note names the tool only, never a URL to POST (bot_issues.run_note).
+    issue_tool: bool = False
     # The far side words its refusals and failures for the room (the Pixel Bot
     # gateway, in Thai): show them as they are, without the room's own frame.
     own_errors: bool = False
@@ -152,7 +156,8 @@ async def invoke_run_agent(db, workspace_id: str, event_data: dict, cloud_config
     if agent_name != config.ERAWAN_BUILDER_AGENT and getattr(cloud_config, "id", None):
         from app.services.bot_issues import run_note, run_reference
         try:
-            tools = run_note(run_reference(cloud_config, channel_target, event_data.get("source") or ""))
+            tools = run_note(run_reference(cloud_config, channel_target, event_data.get("source") or ""),
+                             tool_only=target.issue_tool)
         except RuntimeError:  # no WORKSPACE_SESSION_SECRET to sign with: the run goes without
             tools = None
     # Release the DB connection for the length of the run (see _invoke_chat_agent).
