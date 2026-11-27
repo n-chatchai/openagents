@@ -164,6 +164,9 @@ class Config:
     MESSAGE_ROUTER_MODEL: str = os.environ.get("MESSAGE_ROUTER_MODEL", "")
     MESSAGE_ROUTER_BASE_URL: str = os.environ.get("MESSAGE_ROUTER_BASE_URL", "")
     MESSAGE_ROUTER_API_KEY: str = os.environ.get("MESSAGE_ROUTER_API_KEY", "")
+    # "chat" (OpenAI-compatible chat model) or "decisions" (a decisions model such as
+    # TypeSafe Jev behind OpenRouter's /api/alpha/decisions; base URL then ends in /api/alpha).
+    MESSAGE_ROUTER_API: str = os.environ.get("MESSAGE_ROUTER_API", "chat").strip().lower()
     # Consecutive agent-to-agent chat DMs (with no person messaging either
     # agent) after which further DMs stop waking the recipient. 0 disables.
     AGENT_DM_LOOP_LIMIT: int = int(os.environ.get("AGENT_DM_LOOP_LIMIT", "20"))

@@ -93,11 +93,16 @@ def _probe(role):
     prompt = [{"role": "user", "content": "Reply with the single word: stop"}]
     if role == "message":
         from app.config import config
-        from app.services.message_router import get_client
-        client = get_client(config.MESSAGE_ROUTER_BASE_URL, config.MESSAGE_ROUTER_API_KEY).with_options(
-            timeout=PROBE_TIMEOUT_SECONDS, max_retries=0)
+        from app.services import message_router
         model = config.MESSAGE_ROUTER_MODEL
-        call = lambda: client.chat.completions.create(model=model, max_tokens=5, temperature=0, messages=prompt)  # noqa: E731
+        if message_router.uses_decisions():
+            call = lambda: message_router.decide(  # noqa: E731
+                config.MESSAGE_ROUTER_BASE_URL, config.MESSAGE_ROUTER_API_KEY, model, "ok",
+                {"stop": "Nothing to do.", "ask": "Unclear."}, "Pick one.", timeout=PROBE_TIMEOUT_SECONDS)
+        else:
+            client = message_router.get_client(config.MESSAGE_ROUTER_BASE_URL, config.MESSAGE_ROUTER_API_KEY).with_options(
+                timeout=PROBE_TIMEOUT_SECONDS, max_retries=0)
+            call = lambda: client.chat.completions.create(model=model, max_tokens=5, temperature=0, messages=prompt)  # noqa: E731
     else:
         from app.mods.workspace_mod import _get_llm_client
         client, provider = _get_llm_client()

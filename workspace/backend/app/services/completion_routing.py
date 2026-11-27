@@ -78,7 +78,9 @@ async def decide(context):
     from app.mods.workspace_mod import (
         _anthropic_text, _get_llm_client, _get_router_model, _get_router_api_key,
     )
-    dedicated = bool(config.MESSAGE_ROUTER_MODEL)
+    from app.services.message_router import uses_decisions
+    # A decisions model answers a choice, not this JSON: handoffs use ROUTER_LLM.
+    dedicated = bool(config.MESSAGE_ROUTER_MODEL) and not uses_decisions()
     if not config.ROUTER_LLM_ENABLED or not (
             (dedicated and config.MESSAGE_ROUTER_API_KEY) or _get_router_api_key()):
         return {'action': 'wait', 'reason': 'Automatic continuation is unavailable.'}

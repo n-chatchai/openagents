@@ -884,3 +884,75 @@ def test_anthropic_backup(db, multi_agent_workspace, classifier_clients, monkeyp
     assert backup.messages.create.call_args.kwargs['model'] == 'claude-haiku'
     assert 'extra_body' not in backup.messages.create.call_args.kwargs
     backup.chat.completions.create.assert_not_called()
+
+
+@pytest.fixture
+def decisions_router(monkeypatch, classifier_clients):
+    """MESSAGE_ROUTER_API=decisions with a decisions model in front of the chat backup."""
+    from app.config import config
+    from app.services import message_router
+    monkeypatch.setattr(config, 'MESSAGE_ROUTER_API', 'decisions')
+    monkeypatch.setattr(config, 'MESSAGE_ROUTER_MODEL', '~typesafe/jev-latest')
+    monkeypatch.setattr(config, 'MESSAGE_ROUTER_BASE_URL', 'https://openrouter.example/api/alpha')
+    decide = MagicMock(return_value='agent-worker')
+    monkeypatch.setattr(message_router, 'decide', decide)
+    return decide, classifier_clients
+
+
+def test_decisions_model_picks_the_recipient(db, multi_agent_workspace, decisions_router):
+    decide, (primary, backup, factory, _) = decisions_router
+    result, event = classify_human(db, multi_agent_workspace)
+    assert result == ['agent-worker']
+    backup.chat.completions.create.assert_not_called()
+    factory.assert_not_called()
+    base_url, key, model, state, criteria, instructions = decide.call_args.args
+    assert (base_url, key, model) == ('https://openrouter.example/api/alpha', 'dedicated-key', '~typesafe/jev-latest')
+    assert set(criteria) == {'agent-worker', 'stop', 'ask'}
+    assert 'LATEST message from HUMAN' in state and 'Please open the page' in state
+
+
+@pytest.mark.parametrize('choice', ['stop', 'ask'])
+def test_decisions_model_can_hold_the_message(db, multi_agent_workspace, decisions_router, choice):
+    decide, (_, backup, _, _) = decisions_router
+    decide.return_value = choice
+    result, event = classify_human(db, multi_agent_workspace)
+    assert result == []
+    assert event.metadata['routing_decision'] == choice
+    backup.chat.completions.create.assert_not_called()
+
+
+def test_decisions_failure_falls_back_to_general_router(db, multi_agent_workspace, decisions_router):
+    decide, (_, backup, _, _) = decisions_router
+    decide.side_effect = ValueError('Decisions model returned no usable choice')
+    result, _ = classify_human(db, multi_agent_workspace)
+    assert result == ['agent-worker']
+    backup.chat.completions.create.assert_called_once()
+
+
+def test_decide_reads_the_choice(monkeypatch):
+    import httpx
+    from app.services import message_router
+    sent = {}
+
+    def post(url, headers, json, timeout):
+        sent.update(url=url, auth=headers['Authorization'], body=json)
+        return httpx.Response(200, json={'answers': {'recipient': {
+            'type': 'choice', 'choice': 'grok', 'probabilities': {'grok': 0.9, 'stop': 0.1}, 'confidence': 0.9}}},
+            request=httpx.Request('POST', url))
+    monkeypatch.setattr(httpx, 'post', post)
+    got = message_router.decide('https://openrouter.ai/api/alpha/', 'k', '~typesafe/jev-latest', 'state',
+                                {'grok': 'news', 'stop': 'none'}, 'Who?')
+    assert got == 'grok'
+    assert sent['url'] == 'https://openrouter.ai/api/alpha/decisions'
+    assert sent['auth'] == 'Bearer k'
+    assert sent['body']['questions']['recipient']['type'] == 'choice'
+
+
+@pytest.mark.parametrize('answer', [{'type': 'refusal'}, {'type': 'choice', 'choice': 'someone-else'}, None])
+def test_decide_refuses_unusable_answers(monkeypatch, answer):
+    import httpx
+    from app.services import message_router
+    body = {'answers': {'recipient': answer}} if answer else {'answers': {}}
+    monkeypatch.setattr(httpx, 'post', lambda url, **kw: httpx.Response(200, json=body, request=httpx.Request('POST', url)))
+    with pytest.raises(ValueError):
+        message_router.decide('https://x/api/alpha', 'k', 'm', 's', {'grok': 'news', 'stop': 'none'}, 'Who?')

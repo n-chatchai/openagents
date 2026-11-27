@@ -1272,6 +1272,34 @@ Decision (next:<agent_name>, stop, or ask):
 """
 
 
+_DECISION_INSTRUCTIONS = (
+    "Who should respond to the LATEST human message? Pick the agent the message asks to act, "
+    "or the agent whose task it continues (a follow-up, an answer to that agent's question, a revision). "
+    "An agent only referred to as a source is not the recipient."
+)
+
+
+def _decide_recipient(candidate_names, participant_lines, people, plan, history, sender, content):
+    """The human-message decision from a decisions model (MESSAGE_ROUTER_API=decisions),
+    in the chat router's words: next:<agent>, stop or ask."""
+    from app.config import config
+    from app.services import message_router
+
+    state = "\n".join(filter(None, [
+        "Team chat room. Agents in the room:", *participant_lines,
+        f"Human participants (NOT agents): {people}", plan,
+        "Conversation evidence (chronological):", str(history), "",
+        f"LATEST message from HUMAN {sender}:", content,
+    ]))
+    criteria = {name: line.strip().removeprefix("- ") for name, line in zip(candidate_names, participant_lines)}
+    criteria["stop"] = ("No agent should respond: the message is for a human, an acknowledgement, "
+                        "small talk, or a cancellation.")
+    criteria["ask"] = "The person wants agent help but which agent is unclear."
+    choice = message_router.decide(config.MESSAGE_ROUTER_BASE_URL, config.MESSAGE_ROUTER_API_KEY,
+                                   config.MESSAGE_ROUTER_MODEL, state, criteria, _DECISION_INSTRUCTIONS)
+    return choice if choice in ("stop", "ask") else f"next:{choice}"
+
+
 def _routing_choice(event, candidates):
     """Persist a pending choice on the original message; no agent is woken."""
     from app.services.message_identity import human_sender_email
@@ -1669,10 +1697,15 @@ async def _route_with_llm(
     try:
         if dedicated_classifier:
             try:
-                from app.services.message_router import get_client
-                client = get_client(config.MESSAGE_ROUTER_BASE_URL, config.MESSAGE_ROUTER_API_KEY)
-                provider, model = "openai", config.MESSAGE_ROUTER_MODEL
-                raw_result = router_health.timed("message", lambda: classify(client, provider, model, 500))
+                from app.services import message_router
+                if message_router.uses_decisions():
+                    provider, model = "decisions", config.MESSAGE_ROUTER_MODEL
+                    raw_result = router_health.timed("message", lambda: _decide_recipient(
+                        candidate_names, participant_lines, people_text, plan, history, sender, content))
+                else:
+                    client = message_router.get_client(config.MESSAGE_ROUTER_BASE_URL, config.MESSAGE_ROUTER_API_KEY)
+                    provider, model = "openai", config.MESSAGE_ROUTER_MODEL
+                    raw_result = router_health.timed("message", lambda: classify(client, provider, model, 500))
                 valid_targets = {f"next:{name.lower()}" for name in candidate_names}
                 if raw_result.lower() not in {"stop", "ask"} | valid_targets:
                     raise ValueError("Classifier returned an invalid routing decision")
