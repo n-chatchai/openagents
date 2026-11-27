@@ -965,6 +965,7 @@ async def _post_response(
     status_kind: str = "completed",
     in_reply_to: Optional[str] = None,
     trigger_source: Optional[str] = None,
+    extra_metadata: Optional[dict] = None,
 ) -> None:
     """Post the cloud agent's response back through the event pipeline.
 
@@ -1003,6 +1004,9 @@ async def _post_response(
         metadata["in_reply_to"] = in_reply_to
     if explicit_targets is not None:
         metadata["explicit_targets"] = list(explicit_targets)
+    if extra_metadata:
+        # Stored with the message, for the caller to find it again (bot_post's retry key).
+        metadata.update({k: v for k, v in extra_metadata.items() if k not in metadata})
     if reply_visibility == "direct" and reply_target.startswith("openagents:"):
         # A DM reply to another agent must not wake it. The DM routing branch
         # would otherwise target the recipient, whose own reply comes straight

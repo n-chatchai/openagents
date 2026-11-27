@@ -144,7 +144,8 @@ def test_mcp_advertises_events_and_tools_for_the_right_key_only(client, workspac
     tools = {t["name"] for t in _mcp(client, key, "tools/list").json()["result"]["tools"]}
     assert tools == {"workspace_read_thread", "workspace_post_reply", "workspace_ack",
                      "workspace_search_knowledge", "workspace_read_knowledge",
-                     "workspace_list_boards", "workspace_list_issues", "workspace_update_issue", "workspace_create_issue"}
+                     "workspace_list_boards", "workspace_list_issues", "workspace_update_issue", "workspace_create_issue",
+                     "workspace_list_rooms", "workspace_post_message"}
     (event,) = _mcp(client, key, "events/list").json()["result"]["events"]
     assert event["name"] == "message.created" and event["delivery"] == ["webhook"]
     assert event["inputSchema"]["required"] == ["bot"]
@@ -301,3 +302,81 @@ def test_signature_is_standard_webhooks():
         hmac.new(b"k" * 32, b"evt_1.1700000000." + body, hashlib.sha256).digest()
     ).decode()
     assert sig == "v1," + expected
+
+
+# ── A new post in a room, not an answer (Pace6 issue #7) ─────────────────────
+
+def _room(db, ws, name="general", title="Bug Report", bots=("dot",)):
+    from app.models import Channel, ChannelMember
+
+    channel = Channel(workspace_id=ws["id"], name=name, title=title, status="active")
+    db.add(channel)
+    db.flush()
+    for bot in bots:
+        db.add(ChannelMember(channel_id=channel.id, agent_name=bot))
+    db.commit()
+    return channel
+
+
+def _posts(db, source="openagents:dot", target=CHANNEL):
+    db.expire_all()
+    return db.execute(
+        select(EventRecord).where(EventRecord.source == source, EventRecord.target == target)
+    ).scalars().all()
+
+
+def test_a_dot_posts_a_new_message_in_a_room_it_is_in(client, workspace, db):
+    _add_dot(client, workspace)
+    key = _key(_setup(client, workspace))
+    _room(db, workspace, bots=("dot", "golf"))
+
+    rooms = _call(client, key, "workspace_list_rooms", {})
+    assert rooms["isError"] is False and "#Bug Report (general)" in rooms["content"][0]["text"]
+
+    posted = _call(client, key, "workspace_post_message",
+                   {"room": "#bug report", "text": "Nightly report: 2 failures. @golf look?", "key": "r-1"})
+    assert posted["isError"] is False, posted
+    (msg,) = _posts(db)
+    assert msg.payload["content"].startswith("Nightly report")
+    meta = msg.metadata_ or {}
+    assert meta.get("explicit_targets") == ["golf"] and meta.get("post_key") == "r-1"
+    assert "in_reply_to" not in meta
+
+
+def test_a_retry_with_the_same_key_posts_once(client, workspace, db):
+    _add_dot(client, workspace)
+    key = _key(_setup(client, workspace))
+    _room(db, workspace)
+    args = {"room": "general", "text": "Done.", "key": "same"}
+    _call(client, key, "workspace_post_message", args)
+    again = _call(client, key, "workspace_post_message", args)
+    assert again["isError"] is False and "not posted again" in again["content"][0]["text"]
+    assert len(_posts(db)) == 1
+    # No key: every call is a new message, and nobody is woken by it.
+    _call(client, key, "workspace_post_message", {"room": "general", "text": "One."})
+    _call(client, key, "workspace_post_message", {"room": "general", "text": "One."})
+    posts = _posts(db)
+    assert len(posts) == 3 and all((p.metadata_ or {}).get("explicit_targets") == [] for p in posts)
+
+
+def test_a_dot_cannot_post_in_a_room_it_is_not_in(client, workspace, db):
+    _add_dot(client, workspace)
+    key = _key(_setup(client, workspace))
+    _room(db, workspace, name="secret", title="Board", bots=())
+    refused = _call(client, key, "workspace_post_message", {"room": "Board", "text": "hi"})
+    assert refused["isError"] is True and "not in a room" in refused["content"][0]["text"]
+    assert _posts(db, target="channel/secret") == []
+
+
+def test_with_two_dots_the_post_names_which(client, workspace, db):
+    _add_dot(client, workspace, "dot")
+    _add_dot(client, workspace, "golf")
+    key = _key(_setup(client, workspace))
+    _room(db, workspace, bots=("dot", "golf"))
+    unsure = _call(client, key, "workspace_post_message", {"room": "general", "text": "hi"})
+    assert unsure["isError"] is True and "@dot" in unsure["content"][0]["text"]
+    ok = _call(client, key, "workspace_post_message", {"bot": "@golf", "room": "general", "text": "hi"})
+    assert ok["isError"] is False
+    assert len(_posts(db, source="openagents:golf")) == 1
+    other = _call(client, key, "workspace_post_message", {"bot": "someone", "room": "general", "text": "hi"})
+    assert other["isError"] is True
