@@ -54,5 +54,7 @@ it('allows wheel and touch scrolling in the portaled picker while keeping the di
   await act(async () => (document.querySelector('[cmdk-item][data-value="human:person19@test.example"]') as HTMLElement).click());
   expect(onChange).toHaveBeenCalledWith([{ kind: 'human', id: 'person19@test.example', label: 'Person 19' }]);
   expect(document.querySelector('[data-slot="dialog-content"]')).not.toBeNull();
-  expect(document.querySelector('[cmdk-list]')).not.toBeNull();
+  // A pick closes the picker: left open, its modal layer swallowed the next
+  // press on the dialog (the first "Grant access" did nothing).
+  expect(document.querySelector('[cmdk-list]')).toBeNull();
 });

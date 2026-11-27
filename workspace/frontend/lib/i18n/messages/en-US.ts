@@ -3446,7 +3446,7 @@ export const messages = {
     kindGroups: 'Groups',
     pickerPlaceholder: 'Add people, agents or groups…',
     pickerSearch: 'Search…',
-    pickerNoResults: 'No matches',
+    pickerNoResults: 'No matches. Only people already in this workspace can be picked; invite them from Members first.',
     pickerLoadFailed: 'Could not load the list.',
     addedBy: 'Added by {name}',
   },

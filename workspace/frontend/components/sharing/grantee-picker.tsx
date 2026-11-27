@@ -146,7 +146,12 @@ export function GranteePicker({
 
   const toggle = (c: Candidate) => {
     const g: Grantee = { kind: c.kind, id: c.id, label: c.label };
-    onChange(selectedKeys.has(granteeKey(g)) ? removeGrantee(value, g) : mergeGrantees(value, [g]));
+    const wasPicked = selectedKeys.has(granteeKey(g));
+    onChange(wasPicked ? removeGrantee(value, g) : mergeGrantees(value, [g]));
+    // The popover is modal, so while it stays open the next press outside it
+    // only closes it: the first press of the dialog's "Grant access" / "Share"
+    // button did nothing. Close on a pick; the chip shows it, reopen to add more.
+    if (!wasPicked) setOpen(false);
   };
 
   const visibleKinds = kindFilter ? offered.filter((k) => k === kindFilter) : offered;

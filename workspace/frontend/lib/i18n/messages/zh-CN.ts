@@ -3396,7 +3396,7 @@ export const messages: Messages = {
     kindGroups: '安全组',
     pickerPlaceholder: '添加成员、智能体或安全组…',
     pickerSearch: '搜索…',
-    pickerNoResults: '没有匹配结果',
+    pickerNoResults: '没有匹配结果。只能选择已在此工作区的成员；请先在成员中邀请。',
     pickerLoadFailed: '无法加载列表。',
     addedBy: '由 {name} 添加',
   },
