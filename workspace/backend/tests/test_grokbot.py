@@ -86,7 +86,8 @@ def test_mcp_lists_its_tools_for_the_right_key_only(client, workspace):
     assert r.json()["result"]["capabilities"] == {"tools": {"listChanged": False}}
     names = {t["name"] for t in _mcp(client, key, "tools/list").json()["result"]["tools"]}
     assert names == {"workspace_read_thread", "workspace_post_reply", "workspace_ack",
-                     "workspace_search_knowledge", "workspace_read_knowledge"}
+                     "workspace_search_knowledge", "workspace_read_knowledge",
+                     "workspace_list_boards", "workspace_create_issue"}
     # A notification has no answer.
     note = client.post("/v1/mcp/grok", headers={grok.KEY_HEADER: key},
                        json={"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -436,3 +437,54 @@ def test_knowledge_needs_a_fresh_reference_of_your_own(client, workspace, db, mo
     theirs = _setup(client, workspace, "their-grok")["connectionKey"]
     stolen = _call(client, theirs, "workspace_read_knowledge", {"reference": wake["reference"], "id": ids["public"]})
     assert stolen["isError"] is True
+
+
+# ---------------------------------------------------------------------------
+# Issues (app/services/bot_issues.py)
+# ---------------------------------------------------------------------------
+
+def _issue_setup(client, ws, db, monkeypatch):
+    from app.models import Channel
+    _add_grok(client, ws)
+    member = db.execute(select(WorkspaceMember).where(WorkspaceMember.agent_name == "grok")).scalar_one()
+    member.owner_email = OWNER
+    if not db.execute(select(Channel).where(Channel.workspace_id == ws["id"], Channel.name == "general")).scalar_one_or_none():
+        db.add(Channel(id=str(uuid.uuid4()), workspace_id=ws["id"], name="general", title="general"))
+    db.commit()
+    wake = _wake_for(db, ws, _route(db, "grok"), monkeypatch)
+    return wake, _setup(client, ws)["connectionKey"]
+
+
+def test_a_bot_opens_an_issue_on_the_team_board_linked_to_the_thread(client, workspace, db, monkeypatch):
+    from app.models import Issue, IssueThread
+    wake, key = _issue_setup(client, workspace, db, monkeypatch)
+    got = _call(client, key, "workspace_create_issue", {"reference": wake["reference"], "title": "ยอดขายตก", "description": "ดูช่อง Shopee"})
+    assert got["isError"] is False and "#1" in got["content"][0]["text"]
+    db.expire_all()
+    issue = db.execute(select(Issue).where(Issue.workspace_id == workspace["id"])).scalar_one()
+    assert issue.board_id is None and issue.created_by == "openagents:grok" and issue.number == 1
+    assert db.execute(select(IssueThread).where(IssueThread.issue_id == issue.id)).scalar_one_or_none() is not None
+
+
+def test_a_board_is_named_and_made_only_when_asked(client, workspace, db, monkeypatch):
+    from app.models import Issue, IssueBoard
+    wake, key = _issue_setup(client, workspace, db, monkeypatch)
+    missing = _call(client, key, "workspace_create_issue", {"reference": wake["reference"], "title": "a", "board": "Marketing"})
+    assert missing["isError"] is True and "create_board" in missing["content"][0]["text"]
+    made = _call(client, key, "workspace_create_issue",
+                 {"reference": wake["reference"], "title": "a", "board": "Marketing", "create_board": True})
+    assert made["isError"] is False and "new board" in made["content"][0]["text"]
+    again = _call(client, key, "workspace_create_issue", {"reference": wake["reference"], "title": "b", "board": "marketing"})
+    assert again["isError"] is False
+    db.expire_all()
+    (board,) = db.execute(select(IssueBoard).where(IssueBoard.workspace_id == workspace["id"])).scalars().all()
+    assert board.name == "Marketing" and board.created_by == f"human:{OWNER}"
+    numbers = sorted(i.number for i in db.execute(select(Issue).where(Issue.board_id == board.id)).scalars())
+    assert numbers == [1, 2]
+    listed = _call(client, key, "workspace_list_boards", {"reference": wake["reference"]})
+    assert "Team issues" in listed["content"][0]["text"] and "Marketing" in listed["content"][0]["text"]
+
+
+def test_issue_tools_need_a_fresh_reference(client, workspace, db, monkeypatch):
+    _wake, key = _issue_setup(client, workspace, db, monkeypatch)
+    assert _call(client, key, "workspace_create_issue", {"reference": "nope", "title": "x"})["isError"] is True
