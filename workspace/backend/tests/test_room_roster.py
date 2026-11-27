@@ -130,6 +130,7 @@ def test_facts_for_erawans_own_platform_carry_verified_addresses(workspace, db):
     _room(db, workspace)
     facts = room_facts(db, workspace["id"], "channel/sales", "nok", *_human(SOMYING))
     assert facts["room"] == "sales" and facts["workspace"] == workspace["id"]
+    assert facts["room_title"] == "ยอดขาย" and facts["agent_display"] == "นก"
     assert facts["requester_email"] == SOMYING and facts["owner_email"] == SOMCHAI
     assert set(facts["people"]) == {SOMCHAI, SOMYING}
     # An unstamped sender is nobody the platform may trust.

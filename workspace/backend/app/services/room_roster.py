@@ -194,6 +194,11 @@ def room_facts(db, workspace_id: str, channel_target: str, agent_name: str,
         "requester_bot": asking_bot,
         "people": _room_people(db, str(workspace_id), channel, limit=None),
         "owner_email": _norm(me.owner_email) if me is not None else None,
+        # Names as people see them, so the bot's side can show its owner which
+        # room a conversation is and what the bot is called here (Pixel Bot's
+        # page for the bot). Never used to decide anything.
+        "room_title": _flat(channel.title or "") or channel.name,
+        "agent_display": (_flat(me.display_name or "") if me is not None else "") or agent_name,
     }
 
 
