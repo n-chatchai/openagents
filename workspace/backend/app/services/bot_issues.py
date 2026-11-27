@@ -9,6 +9,9 @@ to the thread the bot was called in, so it shows there. A board a bot makes
 belongs to the bot's owner, the person who may rename or delete it, as if
 they had made it. The board is named; an unknown name makes it, when the
 call asks to. "Team issues", the workspace's own board, is always there.
+An issue may go to a person of the team: the one who called the bot
+("asker", the wake's source) or one named by email, told as the web tells
+an assignee.
 
 Like the thread tools, each call carries the wake's reference, so the tools
 only act as the bot a wake was meant for, in the thread it was called in.
@@ -49,6 +52,7 @@ TOOLS = [
                 "description": {"type": "string", "description": "What is to be done, in Markdown."},
                 "board": {"type": "string", "description": "The board's name; leave out for \"Team issues\"."},
                 "create_board": {"type": "boolean", "description": "Make the board when no board has this name."},
+                "assignee": {"type": "string", "description": "Who it goes to: \"asker\" for the person who called you, or a team member's email. Leave out for no one."},
             },
             "required": ["reference", "title"],
             "additionalProperties": False,
@@ -78,8 +82,10 @@ def _owner_of(db, workspace_id: str, agent_name: str) -> Optional[str]:
     return (m.owner_email or "").strip().lower() or None if m else None
 
 
-def create_issue(db, workspace_id: str, agent_name: str, channel_target: str, args: dict) -> dict:
-    from app.routers.issues import _link_thread
+def create_issue(db, workspace_id: str, agent_name: str, channel_target: str, args: dict, asker: str = "") -> dict:
+    from fastapi import HTTPException
+
+    from app.routers.issues import _link_thread, _resolve_assignee, _signal_people, _snippet_of
 
     title = (args.get("title") or "").strip() if isinstance(args.get("title"), str) else ""
     if not title:
@@ -87,6 +93,19 @@ def create_issue(db, workspace_id: str, agent_name: str, channel_target: str, ar
     description = (args.get("description") or "").strip() if isinstance(args.get("description"), str) else ""
     board_name = (args.get("board") or "").strip() if isinstance(args.get("board"), str) else ""
     wid = str(workspace_id)
+    workspace = db.get(Workspace, wid)
+    actor = f"openagents:{agent_name}"
+
+    wanted = (args.get("assignee") or "").strip() if isinstance(args.get("assignee"), str) else ""
+    assignee = assignee_name = None
+    if wanted:
+        email = asker.removeprefix("human:") if wanted.casefold() == "asker" and asker.startswith("human:") else wanted.removeprefix("human:")
+        try:
+            assignee, assignee_name = _resolve_assignee(db, workspace, actor, f"human:{email}") if "@" in email else (None, None)
+        except HTTPException:
+            assignee = None
+        if not assignee:
+            return _text(f'"{wanted}" is not a person of this team. Use "asker", a team member\'s email, or leave assignee out.', error=True)
 
     board_id, board_label, made = None, TEAM_NAME, False
     if board_name and board_name.casefold() not in (TEAM_NAME.casefold(), "team"):
@@ -110,9 +129,9 @@ def create_issue(db, workspace_id: str, agent_name: str, channel_target: str, ar
     issue = Issue(
         number=number, board_id=board_id, workspace_id=wid,
         title=title[:240], description=description[:50000],
-        created_by=f"openagents:{agent_name}", created_by_name=shown,
+        created_by=actor, created_by_name=shown, assignee=assignee, assignee_name=assignee_name,
         # On the issue, so "@<bot>" in a comment hands it more work (routers/issues.py).
-        participants=[{"source": f"openagents:{agent_name}", "name": shown}],
+        participants=[{"source": actor, "name": shown}] + ([{"source": assignee, "name": assignee_name}] if assignee else []),
     )
     db.add(issue)
     db.flush()
@@ -120,14 +139,18 @@ def create_issue(db, workspace_id: str, agent_name: str, channel_target: str, ar
     channel = db.execute(select(Channel).where(Channel.workspace_id == wid, Channel.name == name)).scalar_one_or_none() if name else None
     if channel is not None:
         _link_thread(db, issue, channel)
+    if assignee:
+        _signal_people(db, workspace, issue, actor, {assignee.removeprefix("human:")}, "issue",
+                       f"{shown} assigned you {issue.title}", _snippet_of(issue.description))
     issue.updated_at = datetime.now(timezone.utc)
     db.commit()
     where = f'on the new board "{board_label}"' if made else f'on "{board_label}"'
-    return _text(f"Opened issue #{issue.number} \"{issue.title}\" {where}, linked to this thread. Say #{issue.number} in your reply.")
+    given = f", given to {assignee_name}" if assignee else ""
+    return _text(f"Opened issue #{issue.number} \"{issue.title}\" {where}{given}, linked to this thread. Say #{issue.number} in your reply.")
 
 
 def call(db, name: str, cfg, fields: dict, args: dict) -> dict:
     """One of the tools for the bot `cfg` (a CloudAgentConfig) on the thread a wake named."""
     if name == "workspace_list_boards":
         return _text(list_boards(db, cfg.workspace_id))
-    return create_issue(db, cfg.workspace_id, cfg.agent_name, fields.get("c") or "", args)
+    return create_issue(db, cfg.workspace_id, cfg.agent_name, fields.get("c") or "", args, fields.get("s") or "")

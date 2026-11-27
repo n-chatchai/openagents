@@ -486,6 +486,24 @@ def test_a_board_is_named_and_made_only_when_asked(client, workspace, db, monkey
     assert "Team issues" in listed["content"][0]["text"] and "Marketing" in listed["content"][0]["text"]
 
 
+def test_a_bot_gives_the_issue_to_the_person_who_asked(client, workspace, db, monkeypatch):
+    from app.models import Issue, User, WorkspaceMembership
+    wake, key = _issue_setup(client, workspace, db, monkeypatch)
+    user = db.execute(select(User).where(User.email == OWNER)).scalar_one_or_none() or User(email=OWNER)
+    db.add(user)
+    db.flush()
+    db.add(WorkspaceMembership(workspace_id=workspace["id"], user_id=user.id, role="member"))
+    db.commit()
+    nobody = _call(client, key, "workspace_create_issue", {"reference": wake["reference"], "title": "a", "assignee": "nobody@else.test"})
+    assert nobody["isError"] is True
+    got = _call(client, key, "workspace_create_issue", {"reference": wake["reference"], "title": "a", "assignee": "asker"})
+    assert got["isError"] is False, got
+    db.expire_all()
+    issue = db.execute(select(Issue).where(Issue.workspace_id == workspace["id"])).scalar_one()
+    assert issue.assignee == f"human:{OWNER}"
+    assert {p["source"] for p in issue.participants} == {"openagents:grok", issue.assignee}
+
+
 def test_issue_tools_need_a_fresh_reference(client, workspace, db, monkeypatch):
     _wake, key = _issue_setup(client, workspace, db, monkeypatch)
     assert _call(client, key, "workspace_create_issue", {"reference": "nope", "title": "x"})["isError"] is True
