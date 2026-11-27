@@ -184,7 +184,8 @@ def run_note(reference: str) -> str:
     from app.config import config
     url = f"{config.PUBLIC_API_BASE.rstrip('/')}{BOT_TOOLS_PATH}"
     return (
-        "[Workspace issues] When asked to file work as an issue, POST " + url + " with JSON "
+        "[Workspace issues] When asked to file work as an issue: with a workspace_issue tool, call it with url "
+        + url + " and reference " + reference + "; otherwise POST " + url + " with JSON "
         '{"reference": "' + reference + '", "tool": "workspace_create_issue", "args": {"title": "...", '
         '"description": "...", "board": "<board name, optional>", "create_board": false, "assignee": "asker"}}. '
         'tool "workspace_list_boards" (args {}) names the boards. "assignee": "asker" gives it to the person '
