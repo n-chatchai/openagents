@@ -45,6 +45,26 @@ TOOLS = [
         },
     },
     {
+        "name": "workspace_list_issues",
+        "description": (
+            "The team's issues, newest change first: number, title, status, board, who has it. "
+            "Open and in-progress ones unless status says otherwise."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reference": {"type": "string", "description": "The wake payload's reference, exactly as received."},
+                "board": {"type": "string", "description": "Only this board's issues, by name."},
+                "status": {"type": "string", "enum": ["active", "open", "in_progress", "paused", "closed", "all"],
+                           "description": "\"active\" (open and in progress) unless asked otherwise."},
+                "assignee": {"type": "string", "description": "\"asker\" for the person who called you, a team member's email, or \"none\" for no one."},
+                "limit": {"type": "integer", "description": "How many, 20 unless asked; at most 50."},
+            },
+            "required": ["reference"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "workspace_create_issue",
         "description": (
             "Open an issue on a board, linked to this thread. Name the board; with create_board true, "
@@ -82,6 +102,55 @@ def _boards(db, workspace_id: str) -> list:
 def list_boards(db, workspace_id: str) -> str:
     names = [TEAM_NAME] + [b.name for b in _boards(db, workspace_id)]
     return "Boards: " + "; ".join(names)
+
+
+_STATUSES = {"open", "in_progress", "paused", "closed"}
+
+
+def list_issues(db, workspace_id: str, args: dict, asker: str = "") -> dict:
+    """What the team's people see on the Issues page, as lines a bot can read back."""
+    wid = str(workspace_id)
+    query = select(Issue).where(Issue.workspace_id == wid)
+    boards = {b.id: b.name for b in _boards(db, wid)}
+    board_name = args.get("board").strip() if isinstance(args.get("board"), str) else ""
+    if board_name:
+        if board_name.casefold() in (TEAM_NAME.casefold(), "team"):
+            query = query.where(Issue.board_id.is_(None))
+        else:
+            board_id = next((i for i, n in boards.items() if n.casefold() == board_name.casefold()), None)
+            if board_id is None:
+                return _text(f'No board is named "{board_name}". {list_boards(db, wid)}', error=True)
+            query = query.where(Issue.board_id == board_id)
+    status = args.get("status") if isinstance(args.get("status"), str) else ""
+    status = status.strip().lower() or "active"
+    if status == "active":
+        query = query.where(Issue.status.in_(("open", "in_progress")))
+    elif status in _STATUSES:
+        query = query.where(Issue.status == status)
+    elif status != "all":
+        return _text('status is one of active, open, in_progress, paused, closed, all.', error=True)
+    wanted = args.get("assignee").strip() if isinstance(args.get("assignee"), str) else ""
+    if wanted.casefold() == "none":
+        query = query.where((Issue.assignee.is_(None)) | (Issue.assignee == ""))
+    elif wanted:
+        email = asker.removeprefix("human:") if wanted.casefold() == "asker" else wanted.removeprefix("human:")
+        if "@" not in email:
+            return _text(f'"{wanted}" is not a person. Use "asker", a team member\'s email, or "none".', error=True)
+        query = query.where(func.lower(Issue.assignee) == f"human:{email.lower()}")
+    limit = args.get("limit")
+    limit = max(1, min(50, limit)) if isinstance(limit, int) and not isinstance(limit, bool) else 20
+    total = db.execute(select(func.count()).select_from(query.subquery())).scalar() or 0
+    rows = db.execute(query.order_by(Issue.updated_at.desc()).limit(limit)).scalars().all()
+    if not rows:
+        return _text("No issues match." + ("" if status == "all" else f" (status {status})"))
+    lines = [
+        f"#{i.number} {i.title} | {i.status} | {boards.get(i.board_id, TEAM_NAME)} | "
+        f"{i.assignee_name or (i.assignee or '').removeprefix('human:') or 'no one'} | "
+        f"updated {i.updated_at.strftime('%Y-%m-%d') if i.updated_at else '-'}"
+        for i in rows
+    ]
+    more = f" Showing the newest {len(rows)} of {total}." if total > len(rows) else ""
+    return _text(f"Issues ({status}){more}\n" + "\n".join(lines))
 
 
 def _owner_of(db, workspace_id: str, agent_name: str) -> Optional[str]:
@@ -160,6 +229,8 @@ def call(db, name: str, cfg, fields: dict, args: dict) -> dict:
     """One of the tools for the bot `cfg` (a CloudAgentConfig) on the thread a wake named."""
     if name == "workspace_list_boards":
         return _text(list_boards(db, cfg.workspace_id))
+    if name == "workspace_list_issues":
+        return list_issues(db, cfg.workspace_id, args, fields.get("s") or "")
     return create_issue(db, cfg.workspace_id, cfg.agent_name, fields.get("c") or "", args, fields.get("s") or "")
 
 
@@ -190,6 +261,9 @@ def run_note(reference: str) -> str:
         '"description": "...", "board": "<board name, optional>", "create_board": false, "assignee": "asker"}}. '
         'tool "workspace_list_boards" (args {}) names the boards. "assignee": "asker" gives it to the person '
         "who asked you; leave it out for no one. Say the issue's number (#12) in your reply. "
+        'To see the issues, tool "workspace_list_issues" (args {"board": "<optional>", "status": "active|open|'
+        'in_progress|paused|closed|all", "assignee": "asker|<email>|none", "limit": 20}). '
+        "These three tools are all there is: for anything else about issues, say so instead of trying another way. "
         "The reference works for this message only."
     )
 

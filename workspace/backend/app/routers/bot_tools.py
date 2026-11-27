@@ -72,9 +72,11 @@ def agent_tool(
         raise HTTPException(403, "This computer does not run that agent")
     if body.tool == "workspace_list_boards":
         return _answer(bot_issues._text(bot_issues.list_boards(db, workspace.id)))
-    if body.tool != "workspace_create_issue":
-        raise HTTPException(422, "Unknown tool")
     requester = (body.requester or "").strip().lower()
     asker = f"human:{requester}" if "@" in requester else ""
+    if body.tool == "workspace_list_issues":
+        return _answer(bot_issues.list_issues(db, workspace.id, body.args, asker))
+    if body.tool != "workspace_create_issue":
+        raise HTTPException(422, "Unknown tool")
     channel = body.channel.removeprefix("channel/")
     return _answer(bot_issues.create_issue(db, workspace.id, body.agent_name, f"channel/{channel}", body.args, asker))

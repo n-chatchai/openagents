@@ -78,6 +78,31 @@ def test_a_run_opens_an_issue_for_the_asker_on_a_board_it_makes(client, workspac
     assert "ขาย" in listed["text"]
 
 
+def test_a_run_lists_the_issues_open_ones_first_by_board_and_by_asker(client, workspace, db):
+    cfg = _team(db, workspace)
+    ref = bot_issues.run_reference(cfg, "channel/general", f"human:{ASKER}")
+    _post(client, {"reference": ref, "tool": "workspace_create_issue", "args": {"title": "ยอดตก", "assignee": "asker"}})
+    _post(client, {"reference": ref, "tool": "workspace_create_issue",
+                   "args": {"title": "หน้าเว็บช้า", "board": "เว็บ", "create_board": True}})
+    _post(client, {"reference": ref, "tool": "workspace_create_issue", "args": {"title": "ปิดแล้ว"}})
+    db.expire_all()
+    done = db.execute(select(Issue).where(Issue.workspace_id == workspace["id"], Issue.title == "ปิดแล้ว")).scalar_one()
+    done.status = "closed"
+    db.commit()
+
+    got = _post(client, {"reference": ref, "tool": "workspace_list_issues", "args": {}})
+    assert got["ok"] is True and "ยอดตก" in got["text"] and "หน้าเว็บช้า" in got["text"] and "ปิดแล้ว" not in got["text"]
+    assert "#1 ยอดตก | open | Team issues | " in got["text"]
+    assert "ปิดแล้ว" in _post(client, {"reference": ref, "tool": "workspace_list_issues", "args": {"status": "all"}})["text"]
+    by_board = _post(client, {"reference": ref, "tool": "workspace_list_issues", "args": {"board": "เว็บ"}})["text"]
+    assert "หน้าเว็บช้า" in by_board and "ยอดตก" not in by_board
+    mine = _post(client, {"reference": ref, "tool": "workspace_list_issues", "args": {"assignee": "asker"}})["text"]
+    assert "ยอดตก" in mine and "หน้าเว็บช้า" not in mine
+    assert _post(client, {"reference": ref, "tool": "workspace_list_issues", "args": {"board": "ไม่มี"}})["ok"] is False
+    one = _post(client, {"reference": ref, "tool": "workspace_list_issues", "args": {"limit": 1}})["text"]
+    assert "newest 1 of 2" in one
+
+
 def test_a_forged_or_stale_reference_does_nothing(client, workspace, db, monkeypatch):
     cfg = _team(db, workspace)
     assert _post(client, {"reference": "x.y", "tool": "workspace_list_boards"})["ok"] is False
