@@ -968,6 +968,7 @@ class WorkspaceApi {
     senderId?: string,
     source = 'human:user',
     replyTo?: string,
+    attachments?: { fileId: string; filename: string; contentType: string; url: string }[],
   ): Promise<ONMEvent> {
     const isAgent = counterpart.startsWith('openagents:');
     return this.sendEvent({
@@ -977,6 +978,7 @@ class WorkspaceApi {
       payload: {
         content,
         ...(replyTo ? { reply_to: replyTo } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
         sender_type: 'human',
         ...(senderId ? { sender_id: senderId } : {}),
         ...(senderId?.includes('@') ? { sender_email: senderId } : {}),
@@ -1189,7 +1191,16 @@ class WorkspaceApi {
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
-  /** Get the download URL for a file. */
+  /**
+   * A file's link as a message stores it: no token in it. Everyone who reads the
+   * message sees it, so the viewer's link is built from fileId when it is shown
+   * (getFileUrl); a stored link with this person's tokens would hand them out.
+   */
+  storedFileUrl(fileId: string): string {
+    return `${API_URL}/v1/files/${fileId}`;
+  }
+
+  /** Get the download URL for a file, for this viewer. */
   getFileUrl(fileId: string): string {
     const params = new URLSearchParams();
     if (this.token) params.set('token', this.token);

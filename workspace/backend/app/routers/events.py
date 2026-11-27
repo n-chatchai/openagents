@@ -399,7 +399,9 @@ def send_event(
     # as themselves, whatever source the client sent; machine / agent callers
     # keep the source they declared (agents reply to `event.source`).
     source = body.source
-    payload = body.payload
+    # An attachment's URL is stored without the sender's tokens (message_attachments.py).
+    from app.services.message_attachments import payload_without_credentials
+    payload = payload_without_credentials(body.payload)
     if (body.visibility or "") == "direct" or body.type in ("network.channel.create", "workspace.message.posted"):
         source, payload = _attribute_direct_sender(db, workspace, x_workspace_token, authorization,
                                                    source, payload)

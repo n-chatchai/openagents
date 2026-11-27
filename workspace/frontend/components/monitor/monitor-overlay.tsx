@@ -171,7 +171,7 @@ export function MonitorOverlay({ sessionId, session, initialMessages, open, onOp
             fileId: f.id,
             filename: f.filename,
             contentType: f.contentType,
-            url: workspaceApi.getFileUrl(f.id),
+            url: workspaceApi.storedFileUrl(f.id),
           }));
         }
 
