@@ -230,24 +230,37 @@ def create_app_code(body: AppCodeRequest, request: Request, db: Session = Depend
     return success_response({"code": sign_app_code(email, body.challenge), "expires_in": APP_CODE_TTL})
 
 
-APP_RETURN = "pixelteam://auth"
+# The apps a code may go back to, each at its own URL scheme and nowhere else:
+# a return address taken from the request would let a link send a sign-in code
+# wherever it liked. `app` names one of them; unnamed is this workspace's own
+# app. Pixel Bot (the personal app) signs a person in here to bring the
+# workspace's bots and their conversations into it. The frontend's /auth/app
+# keeps the same list (frontend/app/auth/app/page.tsx).
+APP_RETURNS = {"pixelteam": "pixelteam://auth", "pixelbot": "pixelbot://workspace"}
+APP_RETURN = APP_RETURNS["pixelteam"]
 
 
 @router.get("/app-start")
-def app_start(request: Request, challenge: str = "", db: Session = Depends(get_db)):
+def app_start(request: Request, challenge: str = "", app: str = "", db: Session = Depends(get_db)):
     """The phone app's sign-in, straight back to the app: no page of ours between.
 
-    The app opens the door's own sign-in, /oauth2/start?rd=/door/app-start?challenge=…,
-    in the system's sign-in sheet. Once the door has signed the person in it
-    sends them here, and this answers with a redirect to the app's scheme
-    carrying the code — or the reason there is none — which the sheet catches.
+    The app opens the door's own sign-in,
+    /oauth2/start?rd=/door/app-start?challenge=…[&app=pixelbot], in the system's
+    sign-in sheet. Once the door has signed the person in it sends them here,
+    and this answers with a redirect to that app's scheme carrying the code —
+    or the reason there is none — which the sheet catches. An app this server
+    does not know gets no code: the answer goes to the workspace's own app.
     """
     from urllib.parse import urlencode
     from fastapi.responses import RedirectResponse
 
-    def back(**params):
-        return RedirectResponse(f"{APP_RETURN}?{urlencode(params)}", status_code=302)
+    home = APP_RETURNS.get(app or "pixelteam")
 
+    def back(**params):
+        return RedirectResponse(f"{home or APP_RETURN}?{urlencode(params)}", status_code=302)
+
+    if not home:
+        return back(error="bad_request")
     header = config.DOOR_EMAIL_HEADER
     if not header or not workspace_session_enabled():
         return back(error="no_door")

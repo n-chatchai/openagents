@@ -14,10 +14,11 @@ import { useT, type MessageKey } from '@/lib/i18n';
  * The app trades code + secret at POST /v1/auth/app-session
  * (backend app/routers/door_auth.py). The page never sees the session.
  *
- * Only the app's own scheme is a return address: anything else would let a
- * link send a sign-in code wherever it liked.
+ * Only a known app's own scheme is a return address: anything else would let
+ * a link send a sign-in code wherever it liked. `?app=` names the app; unnamed
+ * is this workspace's own. The same list as the backend's APP_RETURNS.
  */
-const RETURN_TO = 'pixelteam://auth';
+const RETURNS: Record<string, string> = { pixelteam: 'pixelteam://auth', pixelbot: 'pixelbot://workspace' };
 const CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 
 type Phase = 'working' | 'done' | 'failed';
@@ -28,8 +29,10 @@ function AppAuth() {
   const [error, setError] = useState<MessageKey | null>(null);
 
   useEffect(() => {
-    const challenge = new URLSearchParams(window.location.search).get('challenge') || '';
-    if (!CHALLENGE.test(challenge)) {
+    const query = new URLSearchParams(window.location.search);
+    const challenge = query.get('challenge') || '';
+    const returnTo = RETURNS[query.get('app') || 'pixelteam'];
+    if (!CHALLENGE.test(challenge) || !returnTo) {
       setPhase('failed');
       setError('auth.appLinkInvalid');
       return;
@@ -49,7 +52,7 @@ function AppAuth() {
           return;
         }
         setPhase('done');
-        window.location.replace(`${RETURN_TO}?code=${encodeURIComponent(code)}`);
+        window.location.replace(`${returnTo}?code=${encodeURIComponent(code)}`);
       } catch {
         setPhase('failed');
         setError('auth.signInFailedRetry');

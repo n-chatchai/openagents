@@ -81,6 +81,27 @@ def test_app_start_says_why_to_the_app_rather_than_to_a_page(client, monkeypatch
     assert where(params={"challenge": CHALLENGE}, headers=DOOR) == "pixelteam://auth?error=no_door"
 
 
+def test_app_start_hands_a_named_app_its_code_at_its_own_scheme(client):
+    """Pixel Bot signs a person in to bring the workspace's bots into it."""
+    r = client.get("/door/app-start", params={"challenge": CHALLENGE, "app": "pixelbot"}, headers=DOOR,
+                   follow_redirects=False)
+    loc = r.headers["location"]
+    assert r.status_code == 302 and loc.startswith("pixelbot://workspace?code=")
+    from urllib.parse import parse_qs, urlparse
+    code = parse_qs(urlparse(loc).query)["code"][0]
+    ok = client.post("/v1/auth/app-session", json={"code": code, "verifier": VERIFIER})
+    assert ok.status_code == 200 and ok.json()["data"]["email"] == "somchai@team.test"
+    # Its refusals go to it too, not to the workspace's own app.
+    missing = client.get("/door/app-start", params={"challenge": CHALLENGE, "app": "pixelbot"}, follow_redirects=False)
+    assert missing.headers["location"] == "pixelbot://workspace?error=not_signed_in"
+
+
+def test_app_start_gives_no_code_to_an_app_it_does_not_know(client):
+    r = client.get("/door/app-start", params={"challenge": CHALLENGE, "app": "evil"}, headers=DOOR,
+                   follow_redirects=False)
+    assert r.headers["location"] == "pixelteam://auth?error=bad_request"
+
+
 
 # Name and photo from the door's Google sign-in (oauth2-proxy --pass-access-token)
 
