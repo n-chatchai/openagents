@@ -11,11 +11,12 @@ def test_reactions_are_personal_idempotent_and_do_not_dispatch(client,workspace,
     for _ in range(2):
         response=client.put(url,headers=_bearer('mia'),json={'emoji':'👍','active':True})
         assert response.status_code==200,response.text
-        assert response.json()['data']==[{'emoji':'👍','count':1,'mine':True}]
+        assert response.json()['data']==[{'emoji':'👍','count':1,'mine':True,'people':['mia@acme.test']}]
     response=client.put(url,headers=_bearer('adam'),json={'emoji':'👍','active':True})
-    assert response.json()['data']==[{'emoji':'👍','count':2,'mine':True}]
+    # Who gave it, in the order they did.
+    assert response.json()['data']==[{'emoji':'👍','count':2,'mine':True,'people':['mia@acme.test','adam@acme.test']}]
     response=client.put(url,headers=_bearer('mia'),json={'emoji':'👍','active':False})
-    assert response.json()['data']==[{'emoji':'👍','count':1,'mine':False}]
+    assert response.json()['data']==[{'emoji':'👍','count':1,'mine':False,'people':['adam@acme.test']}]
     assert len(db.execute(select(MessageReaction)).scalars().all())==1
     assert len(db.execute(select(EventRecord).where(EventRecord.type=='workspace.message.posted')).scalars().all())==1
     assert client.put(url,headers=_bearer('adam'),json={'emoji':'bad','active':True}).status_code==422
@@ -40,7 +41,7 @@ def test_people_react_to_a_bots_answer_but_not_its_status(client,workspace,peopl
     db.commit()
     response=client.put(f"/v1/reactions/bot-answer?network={workspace['id']}",headers=_bearer('mia'),json={'emoji':'✅','active':True})
     assert response.status_code==200,response.text
-    assert response.json()['data']==[{'emoji':'✅','count':1,'mine':True}]
+    assert response.json()['data']==[{'emoji':'✅','count':1,'mine':True,'people':['mia@acme.test']}]
     assert client.put(f"/v1/reactions/bot-status?network={workspace['id']}",headers=_bearer('mia'),json={'emoji':'✅','active':True}).status_code==404
     # A reaction is no message: nothing new for an agent to pick up.
     assert len(db.execute(select(EventRecord).where(EventRecord.type=='workspace.message.posted')).scalars().all())==2

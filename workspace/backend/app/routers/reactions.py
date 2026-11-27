@@ -33,13 +33,18 @@ def _visible(db, ctx, event):
 
 
 def _summary(db, ids, email):
+    # Who gave each emoji, in the order they gave it (Pixel Team shows their
+    # faces; founder, 2026-11-27: "it doesn't say who"). Only people who may
+    # read the message see this, as they see who wrote in it.
     result={key:[] for key in ids}
-    rows=db.execute(select(MessageReaction).where(MessageReaction.event_id.in_(ids))).scalars()
+    rows=db.execute(select(MessageReaction).where(MessageReaction.event_id.in_(ids))
+                    .order_by(MessageReaction.created_at, MessageReaction.user_email)).scalars()
     grouped={}
     for row in rows:
-        item=grouped.setdefault((row.event_id,row.emoji),{'emoji':row.emoji,'count':0,'mine':False})
+        item=grouped.setdefault((row.event_id,row.emoji),{'emoji':row.emoji,'count':0,'mine':False,'people':[]})
         item['count']+=1
         item['mine'] |= row.user_email==email
+        item['people'].append(row.user_email)
     for (event_id,emoji), item in sorted(grouped.items()):
         result[event_id].append(item)
     return result
