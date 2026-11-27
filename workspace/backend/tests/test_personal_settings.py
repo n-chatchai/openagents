@@ -48,3 +48,15 @@ def test_only_known_keys_and_valid_values(client, workspace, people):
         assert _put(client, workspace, mia, bad).status_code == 400, bad
     huge = {"projects": [{"id": f"p{i}", "name": "x" * 200, "color": 0} for i in range(2000)], "assignments": {}}
     assert _put(client, workspace, mia, huge).status_code == 400
+
+
+def test_pixel_teams_folders_sit_beside_the_webs_projects(client, workspace, people):
+    mia = _bearer("mia", workspace)
+    folders = {"folders": [{"id": "f1", "name": "ลูกค้า", "color": 1}],
+               "assignments": {"room:sales": "f1", "person:som@example.com": "f1", "bot:nok": "f1"}}
+    assert _put(client, workspace, mia, folders, key="thread_folders").status_code == 200
+    assert _put(client, workspace, mia, PROJECTS).status_code == 200
+    got = client.get("/v1/personal-settings/thread_folders", params={"network": workspace["id"]}, headers=mia)
+    assert got.json()["data"]["value"] == folders
+    for bad in ({"projects": []}, {"folders": [{"id": "f1", "name": "x"}]}, {"folders": [], "assignments": {"a": 1}}):
+        assert _put(client, workspace, mia, bad, key="thread_folders").status_code == 400, bad

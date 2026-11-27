@@ -8,6 +8,9 @@ PUT /v1/personal-settings/{key}            {network, value}
 
 Only known keys are accepted:
   thread_projects   {projects: [{id, name, color}], assignments: {thread: project_id}}
+  thread_folders    {folders: [{id, name, color}], assignments: {row: folder_id}}
+                    Pixel Team's own folders, apart from the web's projects: a
+                    row is "room:<name>", "person:<email>" or "bot:<name>".
 
 A bare workspace token or an agent has no person to keep settings for: reads
 come back empty and writes are refused.
@@ -29,7 +32,7 @@ from app.services.read_state import person_email
 # Synchronous SQLAlchemy sessions: keep handlers as `def` (threadpool).
 router = APIRouter(prefix="/v1", tags=["Personal settings"])
 
-KEYS = {"thread_projects"}
+KEYS = {"thread_projects", "thread_folders"}
 MAX_BYTES = 256 * 1024
 
 
@@ -52,6 +55,13 @@ def _valid_thread_projects(value: Any) -> bool:
                 and isinstance(p.get("color"), int) and not isinstance(p.get("color"), bool)):
             return False
     return all(isinstance(k, str) and isinstance(v, str) for k, v in value.get("assignments", {}).items())
+
+
+def _valid_thread_folders(value: Any) -> bool:
+    """The same shape as thread_projects, with folders in place of projects."""
+    if not isinstance(value, dict):
+        return False
+    return _valid_thread_projects({"projects": value.get("folders"), "assignments": value.get("assignments", {})})
 
 
 def _serialize(row: Optional[PersonalSetting]) -> dict:
@@ -96,6 +106,8 @@ def put_personal_setting(
         return json_response(ResponseCode.BAD_REQUEST, "Setting is too large")
     if key == "thread_projects" and not _valid_thread_projects(value):
         return json_response(ResponseCode.BAD_REQUEST, "Invalid thread projects")
+    if key == "thread_folders" and not _valid_thread_folders(value):
+        return json_response(ResponseCode.BAD_REQUEST, "Invalid thread folders")
     row = db.get(PersonalSetting, (str(workspace.id), email, key))
     if row is None:
         row = PersonalSetting(workspace_id=str(workspace.id), user_email=email, key=key, value=value)
