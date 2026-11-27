@@ -65,6 +65,27 @@ TOOLS = [
         },
     },
     {
+        "name": "workspace_update_issue",
+        "description": (
+            "Change an issue by its number: close or reopen it (status), move it to another board, "
+            "give it to someone, or rename it. Say what changed and the issue's number in your reply."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reference": {"type": "string", "description": "The wake payload's reference, exactly as received."},
+                "number": {"type": "integer", "description": "The issue's number (12 for #12)."},
+                "status": {"type": "string", "enum": ["open", "in_progress", "paused", "closed"]},
+                "board": {"type": "string", "description": "Move it to this board, by name (\"Team issues\" for the team's own)."},
+                "create_board": {"type": "boolean", "description": "Make the board when no board has this name."},
+                "assignee": {"type": "string", "description": "\"asker\" for the person who called you, a team member's email, or \"none\"."},
+                "title": {"type": "string", "description": "A new title."},
+            },
+            "required": ["reference", "number"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "workspace_create_issue",
         "description": (
             "Open an issue on a board, linked to this thread. Name the board; with create_board true, "
@@ -153,6 +174,107 @@ def list_issues(db, workspace_id: str, args: dict, asker: str = "") -> dict:
     return _text(f"Issues ({status}){more}\n" + "\n".join(lines))
 
 
+def update_issue(db, workspace_id: str, agent_name: str, args: dict, asker: str = "") -> dict:
+    """What a person may change on the Issues page (routers/issues.update_issue), asked of the bot.
+
+    Status, board and title, as anyone in the team may; who has it, only when
+    the bot or the person who asked it opened the issue or has it now, the
+    rule the page keeps. Each change is written on the issue as the page
+    writes it, and its people are told of a new status or assignee.
+    """
+    from fastapi import HTTPException
+
+    from app.routers.issues import _add_comment, _issue_people, _resolve_assignee, _signal_people, _snippet_of
+
+    wid = str(workspace_id)
+    number = args.get("number")
+    if isinstance(number, str) and number.strip().lstrip("#").isdigit():
+        number = int(number.strip().lstrip("#"))
+    if not isinstance(number, int) or isinstance(number, bool):
+        return _text("Name the issue by its number (12 for #12).", error=True)
+    issue = db.execute(select(Issue).where(Issue.workspace_id == wid, Issue.number == number)
+                       .with_for_update()).scalar_one_or_none()
+    if issue is None:
+        return _text(f"There is no issue #{number}. List the issues to find its number.", error=True)
+    workspace = db.get(Workspace, wid)
+    actor = f"openagents:{agent_name}"
+    member = db.get(WorkspaceMember, (wid, agent_name))
+    shown = member.display_name if member and member.display_name else agent_name
+    changed = []
+
+    status = args.get("status").strip().lower() if isinstance(args.get("status"), str) else ""
+    if status and status not in _STATUSES:
+        return _text("status is one of open, in_progress, paused, closed.", error=True)
+
+    wanted = args.get("assignee").strip() if isinstance(args.get("assignee"), str) else ""
+    new_assignee = new_name = None
+    if wanted:
+        asked_by = asker.lower() if asker.startswith("human:") else ""
+        allowed = {actor, asked_by} - {""}
+        if not allowed & {(issue.created_by or "").lower(), (issue.assignee or "").lower()}:
+            return _text(f"Only whoever opened #{number} or has it now may give it to someone else.", error=True)
+        if wanted.casefold() != "none":
+            email = asker.removeprefix("human:") if wanted.casefold() == "asker" else wanted.removeprefix("human:")
+            try:
+                new_assignee, new_name = _resolve_assignee(db, workspace, actor, f"human:{email}") if "@" in email else (None, None)
+            except HTTPException:
+                new_assignee = None
+            if not new_assignee:
+                return _text(f'"{wanted}" is not a person of this team. Use "asker", a team member\'s email, or "none".', error=True)
+
+    board_name = args.get("board").strip() if isinstance(args.get("board"), str) else ""
+    if board_name:
+        if board_name.casefold() in (TEAM_NAME.casefold(), "team"):
+            board_id, board_label = None, TEAM_NAME
+        else:
+            board = next((b for b in _boards(db, wid) if b.name.casefold() == board_name.casefold()), None)
+            if board is None:
+                if args.get("create_board") is not True:
+                    return _text(f'No board is named "{board_name}". List the boards, or call again with create_board true.', error=True)
+                owner = _owner_of(db, wid, agent_name)
+                board = IssueBoard(workspace_id=wid, name=board_name[:120],
+                                   created_by=f"human:{owner}" if owner else actor)
+                db.add(board)
+                db.flush()
+            board_id, board_label = board.id, board.name
+        if board_id != issue.board_id:
+            issue.board_id = board_id
+            _add_comment(db, issue, actor, f"moved this issue to {board_label}", "activity", author_name=shown)
+            changed.append(f'moved to "{board_label}"')
+
+    if wanted and new_assignee != issue.assignee:
+        if new_assignee:
+            roster = {p["source"]: p for p in issue.participants or []}
+            roster[new_assignee] = {"source": new_assignee, "name": new_name}
+            issue.participants = list(roster.values())
+        issue.assignee, issue.assignee_name = new_assignee, new_name
+        _add_comment(db, issue, actor, f"assigned this issue to {new_name}" if new_name else "removed the assignment",
+                     "activity", author_name=shown)
+        if new_assignee:
+            _signal_people(db, workspace, issue, actor, {new_assignee.removeprefix("human:")}, "issue",
+                           f"{shown} assigned you {issue.title}", _snippet_of(issue.description))
+        changed.append(f"given to {new_name}" if new_name else "given to no one")
+
+    title = args.get("title").strip() if isinstance(args.get("title"), str) else ""
+    if title and title != issue.title:
+        issue.title = title[:240]
+        changed.append(f'renamed "{issue.title}"')
+
+    if status and status != issue.status:
+        _add_comment(db, issue, actor, f"{issue.status} → {status}", "status", author_name=shown)
+        _signal_people(db, workspace, issue, actor, _issue_people(issue), "issue",
+                       f"{shown} updated {issue.title}", f"{issue.status} → {status}")
+        changed.append(f"{issue.status} → {status}")
+        issue.status = status
+
+    if not changed:
+        db.rollback()
+        return _text(f"#{number} already is that way; nothing changed.")
+    issue.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return _text(f"#{number} \"{issue.title}\": " + ", ".join(changed) + f". Say #{number} in your reply.")
+
+
 def _owner_of(db, workspace_id: str, agent_name: str) -> Optional[str]:
     m = db.get(WorkspaceMember, (str(workspace_id), agent_name))
     return (m.owner_email or "").strip().lower() or None if m else None
@@ -231,6 +353,8 @@ def call(db, name: str, cfg, fields: dict, args: dict) -> dict:
         return _text(list_boards(db, cfg.workspace_id))
     if name == "workspace_list_issues":
         return list_issues(db, cfg.workspace_id, args, fields.get("s") or "")
+    if name == "workspace_update_issue":
+        return update_issue(db, cfg.workspace_id, cfg.agent_name, args, fields.get("s") or "")
     return create_issue(db, cfg.workspace_id, cfg.agent_name, fields.get("c") or "", args, fields.get("s") or "")
 
 
@@ -267,8 +391,11 @@ def run_note(reference: str, tool_only: bool = False) -> str:
             'computer cannot reach it. tool "workspace_list_issues" lists the issues (board, status '
             'active|open|in_progress|paused|closed|all, assignee asker|<email>|none, limit); '
             '"workspace_create_issue" opens one (title, description, board, create_board, assignee "asker"); '
-            '"workspace_list_boards" names the boards. Say an issue\'s number (#12) in your reply. These three '
-            "are all there is: for anything else about issues, say so. The reference works for this message only."
+            '"workspace_update_issue" changes one by number (status open|in_progress|paused|closed to close or '
+            'reopen it, board and create_board to move it, assignee, title); '
+            '"workspace_list_boards" names the boards. Say an issue\'s number (#12) in your reply. These four '
+            "are all there is (no deleting: close it instead): for anything else about issues, say so. "
+            "The reference works for this message only."
         )
     return (
         "[Workspace issues] When asked to file work as an issue: with a workspace_issue tool, call it with url "
@@ -279,7 +406,10 @@ def run_note(reference: str, tool_only: bool = False) -> str:
         "who asked you; leave it out for no one. Say the issue's number (#12) in your reply. "
         'To see the issues, tool "workspace_list_issues" (args {"board": "<optional>", "status": "active|open|'
         'in_progress|paused|closed|all", "assignee": "asker|<email>|none", "limit": 20}). '
-        "These three tools are all there is: for anything else about issues, say so instead of trying another way. "
+        'To change one, tool "workspace_update_issue" (args {"number": 12, "status": "closed", "board": "...", '
+        '"assignee": "...", "title": "..."}, only what changes). '
+        "These four tools are all there is (no deleting: close it instead): for anything else about issues, "
+        "say so instead of trying another way. "
         "The reference works for this message only."
     )
 

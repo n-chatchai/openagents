@@ -115,6 +115,38 @@ def test_a_run_lists_the_issues_open_ones_first_by_board_and_by_asker(client, wo
     assert "newest 1 of 2" in one
 
 
+def test_a_run_closes_moves_and_reassigns_an_issue_by_number(client, workspace, db):
+    from app.models import IssueComment
+    cfg = _team(db, workspace)
+    ref = bot_issues.run_reference(cfg, "channel/general", f"human:{ASKER}")
+    _post(client, {"reference": ref, "tool": "workspace_create_issue", "args": {"title": "ยอดตก", "board": "เว็บ", "create_board": True}})
+    upd = lambda args: _post(client, {"reference": ref, "tool": "workspace_update_issue", "args": args})
+
+    got = upd({"number": 1, "status": "closed", "board": "Team issues", "assignee": "asker"})
+    assert got["ok"] is True and "#1" in got["text"] and "open → closed" in got["text"]
+    db.expire_all()
+    issue = db.execute(select(Issue).where(Issue.workspace_id == workspace["id"])).scalar_one()
+    assert issue.status == "closed" and issue.board_id is None and issue.assignee == f"human:{ASKER}"
+    kinds = {c.kind for c in db.execute(select(IssueComment).where(IssueComment.issue_id == issue.id)).scalars()}
+    assert {"status", "activity"} <= kinds
+    assert "nothing changed" in upd({"number": 1, "status": "closed"})["text"]
+    assert "#1" in upd({"number": "#1", "status": "open"})["text"]
+    assert upd({"number": 99, "status": "closed"})["ok"] is False
+    assert upd({"number": 1, "status": "gone"})["ok"] is False
+    assert upd({"number": 1, "board": "ไม่มี"})["ok"] is False
+
+
+def test_a_run_may_not_give_away_an_issue_neither_it_nor_its_asker_holds(client, workspace, db):
+    cfg = _team(db, workspace)
+    db.add(Issue(workspace_id=workspace["id"], number=1, title="ของคนอื่น", created_by="human:other@team.test"))
+    db.commit()
+    stranger = bot_issues.run_reference(cfg, "channel/general", "human:someone@team.test")
+    got = _post(client, {"reference": stranger, "tool": "workspace_update_issue", "args": {"number": 1, "assignee": "none"}})
+    assert got["ok"] is False and "opened" in got["text"]
+    closed = _post(client, {"reference": stranger, "tool": "workspace_update_issue", "args": {"number": 1, "status": "closed"}})
+    assert closed["ok"] is True
+
+
 def test_a_forged_or_stale_reference_does_nothing(client, workspace, db, monkeypatch):
     cfg = _team(db, workspace)
     assert _post(client, {"reference": "x.y", "tool": "workspace_list_boards"})["ok"] is False

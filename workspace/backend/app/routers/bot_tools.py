@@ -76,6 +76,8 @@ def agent_tool(
     asker = f"human:{requester}" if "@" in requester else ""
     if body.tool == "workspace_list_issues":
         return _answer(bot_issues.list_issues(db, workspace.id, body.args, asker))
+    if body.tool == "workspace_update_issue":
+        return _answer(bot_issues.update_issue(db, workspace.id, body.agent_name, body.args, asker))
     if body.tool != "workspace_create_issue":
         raise HTTPException(422, "Unknown tool")
     channel = body.channel.removeprefix("channel/")
