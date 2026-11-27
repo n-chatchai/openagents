@@ -537,6 +537,11 @@ def thread_text(db, cfg, fields: dict) -> str:
         if knowledge:
             text += "\n\n" + knowledge
         text += "\n\nThe message addressed to you:\n" + addressed
+    # The tools a plugin lists are fixed when it is added: one added before the
+    # issue tools came has none, and the bot should say why, not that it cannot.
+    text += ("\n\nAsked to file work as an issue: workspace_create_issue with this same reference "
+             "(workspace_list_boards names the boards). If your tools have no workspace_create_issue, "
+             "say that your owner has to refresh the plugin's tools (or add it again), so you get it.")
     text += "\n\nAnswer with workspace_post_reply and this same reference."
     return text
 
