@@ -88,3 +88,49 @@ def test_a_pixel_bot_or_hermes_run_carries_it(workspace, db, monkeypatch):
     (text,) = sent
     assert "14 วัน" in text
     assert text.rstrip().endswith("@nok คืนเงินได้กี่วัน")
+
+
+def test_an_entry_the_message_names_goes_first_and_whole(workspace, db):
+    _bot(db, workspace)
+    _entry(db, workspace, "คู่มือใหญ่", "เนื้อหา " * 3000)
+    named = _entry(db, workspace, "สัญญาลูกค้า", "ข้อ 7: ยกเลิกได้ภายใน 30 วัน " + "ค" * 6000)
+    slug = db.get(KnowledgeEntry, named).slug
+    got = bot_knowledge.context_for(db, workspace["id"], "nok", f"@nok ดู @knowledge:{slug} ข้อ 7 ว่าไง")
+    assert got.split("\n\n")[1].startswith(f"## สัญญาลูกค้า (@knowledge:{slug}")
+    assert "ยกเลิกได้ภายใน 30 วัน" in got
+
+
+def test_naming_a_private_entry_does_not_open_it(workspace, db):
+    _bot(db, workspace)
+    db.add(ResourceGrant(workspace_id=workspace["id"], resource_kind="agent", resource_id="nok",
+                         grantee_kind="human", grantee_id="somying@team.test", rights=["read", "act"]))
+    db.commit()
+    secret = _entry(db, workspace, "เงินเดือน", "ระดับ C ได้ 80,000", "private", f"human:{OWNER}")
+    slug = db.get(KnowledgeEntry, secret).slug
+    assert "80,000" not in bot_knowledge.context_for(db, workspace["id"], "nok", f"อ่าน @knowledge:{slug}")
+
+
+def test_the_read_tool_takes_a_slug(workspace, db):
+    _bot(db, workspace)
+    e = _entry(db, workspace, "ราคา", "Hobby 249 บาท")
+    slug = db.get(KnowledgeEntry, e).slug
+    assert "Hobby 249" in bot_knowledge.read(db, workspace["id"], "nok", OWNER, f"@knowledge:{slug}")
+
+
+def test_an_entry_named_by_id_goes_too(workspace, db):
+    _bot(db, workspace)
+    _entry(db, workspace, "คู่มือใหญ่", "เนื้อหา " * 3000)
+    named = _entry(db, workspace, "นโยบายคืนเงิน", "คืนเงินได้ภายใน 14 วัน " + "ค" * 6000)
+    got = bot_knowledge.context_for(db, workspace["id"], "nok", f"@nok ดู @knowledge:{named}")
+    assert got.split("\n\n")[1].startswith("## นโยบายคืนเงิน")
+
+
+def test_a_thai_slug_is_read_too(workspace, db):
+    _bot(db, workspace)
+    _entry(db, workspace, "คู่มือใหญ่", "เนื้อหา " * 3000)
+    named = _entry(db, workspace, "นโยบายคืนเงิน", "คืนเงินได้ภายใน 14 วัน " + "ค" * 6000)
+    e = db.get(KnowledgeEntry, named)
+    e.slug = "นโยบายคนเงน"
+    db.commit()
+    got = bot_knowledge.context_for(db, workspace["id"], "nok", "@nok ดู @knowledge:นโยบายคนเงน หน่อย")
+    assert got.split("\n\n")[1].startswith("## นโยบายคืนเงิน")
