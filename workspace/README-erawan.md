@@ -39,6 +39,7 @@ opening. Polling stops when the live connection opens.
 | `APNS_KEY`, `APNS_KEY_ID` | A person: the APNs key for `cloud.erawan.pixelteam`. Without them iPhones get no push. |
 | `FIREBASE_CREDENTIALS_JSON` | A person: the FCM service account. Without it Android gets no push. |
 | `ERAWAN_BUILDER_KEY` | A person: the key Erawan Builder and the Workspace share. |
+| `WORKSPACE_SESSION_SECRET_PREVIOUS` | A person: the in-cluster Workspace's session secret from before the move (`ERAWAN_OPENAGENTS_SESSION_SECRET` in Erawan's `erawan-secrets`). The Grok Bot and ChatGPT dot connection keys given out before 2026-11-28 were signed with it: with it here they keep working; without it each owner has to paste a new key into xAI or ChatGPT. It only verifies, never signs. |
 
 ## Env
 
@@ -73,6 +74,12 @@ ERAWAN_BUILDER_PROGRESS_URL=https://api.erawan.cloud/v1/builder/workspace/progre
 door lets in.
 
 ## What other services expect
+
+- Grok Bot's plugin and ChatGPT dots call `/v1/mcp/grok` and `/v1/mcp/dots/<key>`
+  with a connection key. Plugins set up before the move still use
+  `pace6.erawan.cloud/v1/…`, which Erawan routes here too. A client whose key
+  fails looks for OAuth under `/.well-known/`: the door lets that path through,
+  so it gets a plain 404 rather than Google's sign-in page.
 
 - Pixel Bot's gateway reaches the Workspace at its public `https://` address.
 - Erawan Builder calls `/v1/erawan/builder` with `ERAWAN_BUILDER_KEY`; the

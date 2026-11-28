@@ -52,6 +52,11 @@ class Config:
     # bearer alongside Firebase / Apple ID tokens, so a signed-in browser never
     # has to talk to Google. Unset = the endpoint is disabled (503).
     WORKSPACE_SESSION_SECRET: str = os.environ.get("WORKSPACE_SESSION_SECRET", "")
+    # Secrets this server signed with before, comma-separated: what they signed
+    # still verifies (Grok Bot and ChatGPT dot connection keys, wake references),
+    # nothing new is signed with them. Erawan: the old in-cluster Workspace's
+    # secret, so keys given out before the move keep working (README-erawan.md).
+    WORKSPACE_SESSION_SECRET_PREVIOUS: str = os.environ.get("WORKSPACE_SESSION_SECRET_PREVIOUS", "")
     # The header an authenticating proxy in front of this backend puts the
     # signed-in person's email in (oauth2-proxy: X-Forwarded-Email). Set only
     # when the backend is reachable through that proxy alone — see

@@ -101,6 +101,24 @@ def test_mcp_lists_its_tools_for_the_right_key_only(client, workspace):
     assert forged.status_code == 403
 
 
+def test_a_key_given_out_before_the_secret_changed_still_works(client, workspace, monkeypatch):
+    # The server moved and its secret was made anew (Erawan, 2026-11-28): keys
+    # signed with the old one keep working when it is kept as PREVIOUS, and
+    # nothing new is signed with it.
+    _add_grok(client, workspace)
+    old_key = _setup(client, workspace)["connectionKey"]
+    monkeypatch.setattr(config, "WORKSPACE_SESSION_SECRET", "a-new-secret-after-the-move-0123")
+    assert _mcp(client, old_key, "tools/list").status_code == 401
+    monkeypatch.setattr(config, "WORKSPACE_SESSION_SECRET_PREVIOUS", "unrelated, test-secret-0123456789abcdef")
+    assert _mcp(client, old_key, "tools/list").status_code == 200
+    new_key = _setup(client, workspace)["connectionKey"]
+    assert new_key != old_key
+    assert _mcp(client, new_key, "tools/list").status_code == 200
+    # A previous secret alone never signs: without the current one, nothing does.
+    monkeypatch.setattr(config, "WORKSPACE_SESSION_SECRET_PREVIOUS", "")
+    assert _mcp(client, old_key, "tools/list").status_code == 401
+
+
 def test_a_key_does_nothing_once_its_owner_has_no_grok_bot_here(client, workspace):
     _add_grok(client, workspace)
     key = _setup(client, workspace)["connectionKey"]

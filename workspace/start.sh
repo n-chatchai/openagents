@@ -62,6 +62,7 @@ oauth2-proxy \
   --pass-access-token=true \
   --api-route='^/door/' \
   --skip-auth-route='^/v1/' \
+  --skip-auth-route='^/\.well-known/' \
   --silence-ping-logging=true &
 
 wait -n

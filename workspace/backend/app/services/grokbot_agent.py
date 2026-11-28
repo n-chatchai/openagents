@@ -100,12 +100,21 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _mac(purpose: str, body: str) -> str:
-    secret = config.WORKSPACE_SESSION_SECRET
+def _mac(purpose: str, body: str, secret: Optional[str] = None) -> str:
+    secret = secret if secret is not None else config.WORKSPACE_SESSION_SECRET
     if not secret:
         raise RuntimeError("WORKSPACE_SESSION_SECRET is not set")
     digest = hmac.new(secret.encode(), f"{purpose}\0{body}".encode(), hashlib.sha256).digest()
     return _b64(digest)
+
+
+def _verifies(purpose: str, body: str, mac: str) -> bool:
+    """Signed with the current secret, or one this server used before (keys
+    given out then keep working); only the current one ever signs."""
+    if hmac.compare_digest(mac, _mac(purpose, body)):
+        return True
+    previous = [s.strip() for s in (config.WORKSPACE_SESSION_SECRET_PREVIOUS or "").split(",") if s.strip()]
+    return any(hmac.compare_digest(mac, _mac(purpose, body, s)) for s in previous)
 
 
 def _sign(purpose: str, fields: dict) -> str:
@@ -115,7 +124,7 @@ def _sign(purpose: str, fields: dict) -> str:
 
 def _unsign(purpose: str, token: str, max_age: Optional[float] = None) -> Optional[dict]:
     body, _, mac = (token or "").strip().partition(".")
-    if not body or not mac or not hmac.compare_digest(mac, _mac(purpose, body)):
+    if not body or not mac or not _verifies(purpose, body, mac):
         return None
     try:
         fields = json.loads(_unb64(body))
