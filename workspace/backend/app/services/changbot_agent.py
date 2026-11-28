@@ -46,8 +46,9 @@ def _root() -> str:
 
 
 def _ops_root() -> str:
-    base = os.environ.get("ERAWAN_OPS_WORKSPACE_URL",
-                          "http://erawan-api.erawan.svc.cluster.local:9001/internal/ops/workspace")
+    # Erawan's public API: this Workspace runs as an app on Erawan Cloud, which
+    # cannot reach Erawan's in-cluster port (2026-11-28).
+    base = os.environ.get("ERAWAN_OPS_WORKSPACE_URL", "https://api.erawan.cloud/v1/ops/workspace")
     return f"{base.rstrip('/')}/v1"
 
 

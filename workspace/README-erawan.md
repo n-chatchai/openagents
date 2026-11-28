@@ -72,3 +72,6 @@ door lets in.
 - Erawan Builder calls `/v1/erawan/builder` with `ERAWAN_BUILDER_KEY`; the
   Workspace's agent `erawan-builder` calls back at
   `https://api.erawan.cloud/v1/builder/workspace` with the same key.
+- Erawan OPS, brought into a room with an operator's key, is called at
+  `https://api.erawan.cloud/v1/ops/workspace` (`ERAWAN_OPS_WORKSPACE_URL`
+  overrides it).
