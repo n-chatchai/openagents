@@ -10,6 +10,9 @@ components:
     port: 8080
     public: true
     disk: true
+    resources:
+      requests: {cpu: 500m, memory: 512Mi}
+      limits: {cpu: "2", memory: 2Gi}
     # A person's to set, on the app's Secrets tab (README-erawan.md, Keys).
     secrets:
       - GOOGLE_CLIENT_ID

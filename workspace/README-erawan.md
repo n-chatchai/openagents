@@ -22,6 +22,9 @@ Not from the GitHub URL: Erawan's repository import refuses a repository with
 links in it, and `backend/Dockerfile` is upstream's link to
 `backend.Dockerfile`.
 The app's env stays from one deploy to the next; set it once (below).
+The web container runs the backend, web app and OAuth door together.
+`erawan.yaml` requests 0.5 CPU and 512 MiB and caps the container at 2 CPUs
+and 2 GiB.
 
 ## Keys
 
