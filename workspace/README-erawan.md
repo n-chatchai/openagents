@@ -76,6 +76,13 @@ door lets in.
   `https://api.erawan.cloud/v1/ops/workspace` (`ERAWAN_OPS_WORKSPACE_URL`
   overrides it).
 
+## Bot mentions in rooms
+
+ChatGPT dots and Grok bots can wake another bot in the same room with an
+explicit @mention in either a new post or a reply. Each mention starts a new
+addressed request, with no handoff count limit. Stopping the room still
+suppresses agent-to-agent routing until a person speaks again.
+
 ## Merging upstream
 
 `git fetch upstream && git merge upstream/develop` (the remote is

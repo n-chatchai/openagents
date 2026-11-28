@@ -970,6 +970,7 @@ async def _post_response(
     in_reply_to: Optional[str] = None,
     trigger_source: Optional[str] = None,
     extra_metadata: Optional[dict] = None,
+    dispatch_room_mentions: bool = False,
 ) -> None:
     """Post the cloud agent's response back through the event pipeline.
 
@@ -1036,6 +1037,8 @@ async def _post_response(
         workspace=workspace,
         token=workspace.password_hash,
     )
+    if dispatch_room_mentions:
+        context.extra["route_room_mentions"] = True
 
     try:
         await pipeline.process(event, context)
@@ -1073,19 +1076,19 @@ async def _post_response(
     except Exception:
         logger.exception("cloud_agent: push fan-out failed for %s", agent_name)
 
+    snapshot = {
+        "id": event.id,
+        "type": event.type,
+        "source": event.source,
+        "target": event.target,
+        "payload": event.payload,
+        "metadata": event.metadata,
+        "timestamp": event.timestamp,
+    }
     # Publish to Redis so SSE clients receive the event in real-time
     try:
         from app import cache
 
-        snapshot = {
-            "id": event.id,
-            "type": event.type,
-            "source": event.source,
-            "target": event.target,
-            "payload": event.payload,
-            "metadata": event.metadata,
-            "timestamp": event.timestamp,
-        }
         cache.publish_event(
             f"ws:{workspace_id}:events",
             _json.dumps(snapshot, default=str, separators=(",", ":")).encode(),
@@ -1143,7 +1146,13 @@ async def _post_response(
     # Cloud replies do not pass through the HTTP endpoint's background
     # dispatch hook. Continue the server-authorized chain here as well.
     # completion_routing owns its persisted per-request handoff limit.
-    if _coordinated_handoff(event.metadata):
+    if dispatch_room_mentions and explicit_targets and set(explicit_targets).intersection(
+        event.metadata.get("target_agents") or []
+    ):
+        # Queue after commit so an answering webhook can return before the next
+        # bot runs. Explicit MCP room mentions start a new addressed request.
+        _cloud_executor.submit(_run_cloud_invocation, workspace_id, snapshot)
+    elif _coordinated_handoff(event.metadata):
         await invoke_cloud_agents(workspace_id, {
             'id': event.id, 'type': event.type, 'source': event.source,
             'target': event.target, 'payload': event.payload,

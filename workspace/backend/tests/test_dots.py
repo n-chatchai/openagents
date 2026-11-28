@@ -325,22 +325,31 @@ def _posts(db, source="openagents:dot", target=CHANNEL):
     ).scalars().all()
 
 
-def test_a_dot_posts_a_new_message_in_a_room_it_is_in(client, workspace, db):
+def test_a_dot_posts_a_new_message_in_a_room_it_is_in(client, workspace, db, monkeypatch):
+    from unittest.mock import Mock
+
+    from app.services import cloud_agent
+
+    dispatch = Mock()
+    monkeypatch.setattr(cloud_agent._cloud_executor, "submit", dispatch)
     _add_dot(client, workspace)
+    _add_dot(client, workspace, "golf")
     key = _key(_setup(client, workspace))
     _room(db, workspace, bots=("dot", "golf"))
 
-    rooms = _call(client, key, "workspace_list_rooms", {})
+    rooms = _call(client, key, "workspace_list_rooms", {"bot": "dot"})
     assert rooms["isError"] is False and "#Bug Report (general)" in rooms["content"][0]["text"]
 
     posted = _call(client, key, "workspace_post_message",
-                   {"room": "#bug report", "text": "Nightly report: 2 failures. @golf look?", "key": "r-1"})
+                   {"bot": "dot", "room": "#bug report", "text": "Nightly report: 2 failures. @golf look?", "key": "r-1"})
     assert posted["isError"] is False, posted
     (msg,) = _posts(db)
     assert msg.payload["content"].startswith("Nightly report")
     meta = msg.metadata_ or {}
     assert meta.get("explicit_targets") == ["golf"] and meta.get("post_key") == "r-1"
     assert "in_reply_to" not in meta
+    dispatch.assert_called_once()
+    assert dispatch.call_args.args[2]["metadata"]["target_agents"] == ["golf"]
 
 
 def test_a_retry_with_the_same_key_posts_once(client, workspace, db):

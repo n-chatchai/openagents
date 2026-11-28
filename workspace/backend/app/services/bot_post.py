@@ -131,7 +131,7 @@ def _posted_before(db, cfg, target: str, key: str) -> bool:
     return any((m or {}).get("post_key") == key for m in rows)
 
 
-def _called(db, channel, bot: str, text: str) -> list:
+def called_room_bots(db, channel, bot: str, text: str) -> list:
     # Exact handles only, outside code and quotes (as in routers/issues.py).
     prose = re.sub(r"```[\s\S]*?```|`[^`\n]*`|(?m:^>.*$)", "", text)
     members = db.execute(
@@ -171,7 +171,8 @@ async def call(db, name: str, link, provider: str, args: dict) -> dict:
 
     await _post_response(
         db, cfg.workspace_id, target, cfg.agent_name, text, 0,
-        explicit_targets=_called(db, channel, cfg.agent_name, text),
+        explicit_targets=called_room_bots(db, channel, cfg.agent_name, text),
+        dispatch_room_mentions=True,
         extra_metadata={"post_key": key} if key else None,
     )
     grok.touch_contact(db, cfg)

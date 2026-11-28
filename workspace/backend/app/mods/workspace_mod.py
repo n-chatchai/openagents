@@ -2544,6 +2544,8 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
             channel.name,
         )
         targets = []
+    elif ctx.extra.get("route_room_mentions") and explicit is not None:
+        targets = explicit
     elif (event.source.startswith("openagents:")
           and config.COMPLETION_ROUTING_ENABLED and len(real_participants) >= 2
           and (channel.orchestration_mode or 'dynamic') == 'dynamic'

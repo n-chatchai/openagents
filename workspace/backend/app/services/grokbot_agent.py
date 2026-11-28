@@ -564,8 +564,24 @@ async def post_text(db, cfg, fields: dict, text) -> dict:
         return _tool_text("Nothing to post: text is empty.", error=True)
     if len(text) > _REPLY_CHARS:
         text = text[:_REPLY_CHARS] + "\n\n(cut at 16,000 characters)"
+    target = fields["c"]
+    channel = None
+    if target.startswith("channel/"):
+        from app.models import Channel, ChannelMember
+
+        channel = db.execute(
+            select(Channel).join(ChannelMember, ChannelMember.channel_id == Channel.id).where(
+                Channel.workspace_id == cfg.workspace_id,
+                Channel.name == target.removeprefix("channel/"),
+                Channel.status == "active",
+                ChannelMember.agent_name == cfg.agent_name,
+            )
+        ).scalar_one_or_none()
+    called = bot_post.called_room_bots(db, channel, cfg.agent_name, text) if channel else None
     await _post_response(
-        db, cfg.workspace_id, fields["c"], cfg.agent_name, text, int(fields.get("d") or 0),
+        db, cfg.workspace_id, target, cfg.agent_name, text,
+        0 if called else int(fields.get("d") or 0),
+        explicit_targets=called, dispatch_room_mentions=channel is not None,
         in_reply_to=fields.get("e"), trigger_source=fields.get("s") or None,
     )
     return _tool_text("Posted in the thread.")
