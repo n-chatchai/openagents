@@ -1,7 +1,7 @@
 # The Workspace as one Erawan app (erawan.yaml): the door (oauth2-proxy) on
 # $PORT in front of the backend (uvicorn, 127.0.0.1:8000) and the web app (Next
 # standalone, 127.0.0.1:3000). Postgres and Redis are Erawan add-ons; files
-# live on the app's disk. One image serves any address: the web app is built
+# live on the app's disk, at /data. One image serves any address: the web app is built
 # against a placeholder that start.sh replaces with $PUBLIC_URL.
 #
 #   cd workspace && erawan deploy . --name pixelteam-workspace   (README-erawan.md)
@@ -36,8 +36,7 @@ COPY --from=node:20-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=web /web/.next/standalone /web
 COPY --from=door /bin/oauth2-proxy /usr/local/bin/oauth2-proxy
 COPY start.sh /start.sh
-RUN chmod +x /start.sh && useradd -u 1000 -m app && mkdir -p /disk \
- && chown -R app /disk /web
+RUN chmod +x /start.sh && useradd -u 1000 -m app && chown -R app /web
 USER 1000
 ENV PYTHONPATH=/app PYTHONUNBUFFERED=1 PORT=8080
 EXPOSE 8080
