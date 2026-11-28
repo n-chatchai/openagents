@@ -461,6 +461,9 @@ def send_event(
         workspace=workspace,
         token=x_workspace_token,
         bearer_token=_extract_bearer(authorization),
+        # A person's message answers before the routing model is asked
+        # (services/deferred_routing.py, queued below after the commit).
+        defer_routing=body.type == "workspace.message.posted" and str(source).startswith("human:"),
     )
 
     if body.idempotency_key:
@@ -529,6 +532,9 @@ def send_event(
         or str(getattr(result, "visibility", None) or body.visibility or "channel"),
     }
     background_tasks.add_task(fanout_for_event, str(workspace.id), event_snapshot)
+    if (result.metadata or {}).get("routing_deferred"):
+        from app.services.deferred_routing import route_deferred
+        background_tasks.add_task(route_deferred, str(workspace.id), result.id)
 
     # Slack-like person notifications: a DM to a person, or an @mention of a
     # person in a thread, files an inbox notification addressed to them (and

@@ -96,6 +96,20 @@ explicit @mention in either a new post or a reply. Each mention starts a new
 addressed request, with no handoff count limit. Stopping the room still
 suppresses agent-to-agent routing until a person speaks again.
 
+## A person's message with no @
+
+In a room of several bots (or several people), a person's message that names
+no bot asks the routing model (`MESSAGE_ROUTER_*`) which bot it is for. The
+send no longer waits for that answer: `POST /v1/events` stores the message
+with no bot woken and `metadata.routing_deferred = {candidates}`, answers at
+once, and `services/deferred_routing.py` asks the model after the response.
+A pick wakes that bot by a hidden copy of the message carrying
+`routing_assignment` (the same as a person's own pick from a routing choice;
+clients leave it out of the timeline), an unclear answer becomes the
+message's pending `routing_choice`, and "stop" wakes nobody. Without a
+routing model configured the send decides at once, as before. Pixel Team
+re-reads the room until `routing_deferred` is gone.
+
 ## Merging upstream
 
 `git fetch upstream && git merge upstream/develop` (the remote is

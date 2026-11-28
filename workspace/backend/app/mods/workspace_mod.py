@@ -48,11 +48,14 @@ class WorkspaceMod(TransformMod):
             event.metadata["target_agents"] = [context.extra["approved_service_agent"]]
             apply_instructions(event, context)
             return event
-        # An authenticated routing-choice endpoint supplies this in server
+        # An authenticated routing-choice endpoint (one agent) or the deferred
+        # router (services/deferred_routing.py, its picks) supplies this in server
         # context, never in user-controlled event metadata. Keep approval gates.
-        if context.extra.get("routing_assignment_agent") and event.type == WorkspaceEventTypes.MESSAGE_POSTED:
+        assigned = context.extra.get("routing_assignment_agents") or (
+            [context.extra["routing_assignment_agent"]] if context.extra.get("routing_assignment_agent") else None)
+        if assigned and event.type == WorkspaceEventTypes.MESSAGE_POSTED:
             from app.services.service_requests import gate_requests
-            event.metadata["target_agents"] = [context.extra["routing_assignment_agent"]]
+            event.metadata["target_agents"] = list(assigned)
             result = await gate_requests(event, context)
             apply_instructions(result, context)
             return result
@@ -1363,8 +1366,12 @@ def _has_response_mode(channel) -> bool:
     return not channel.name.startswith(("dm:", "routine:", "routines:", "task:"))
 
 
-async def _conversation_targets(event, channel, db, workspace, known_agents):
-    """None defers agent coordination; [] explicitly means no agent response."""
+async def _conversation_targets(event, channel, db, workspace, known_agents, defer=False):
+    """None defers agent coordination; [] explicitly means no agent response.
+
+    ``defer``: a person's send answers before the routing model is asked;
+    services/deferred_routing.py asks it after the commit and wakes the pick.
+    """
     if not _has_response_mode(channel):
         return None
     content = str((event.payload or {}).get("content") or "")
@@ -1433,6 +1440,11 @@ async def _conversation_targets(event, channel, db, workspace, known_agents):
     if not config.ROUTER_LLM_ENABLED:
         event.metadata["router_unavailable"] = True
         return _routing_choice(event, candidates)
+    # Only a real model call is worth deferring; without a key the router answers at once.
+    has_model = bool((config.MESSAGE_ROUTER_MODEL and config.MESSAGE_ROUTER_API_KEY) or _get_router_api_key())
+    if defer and has_model and channel.orchestration_mode != "workflow":
+        event.metadata["routing_deferred"] = {"candidates": list(dict.fromkeys(candidates))}
+        return []
     targets = await _route_with_llm(
         channel, event, db, workspace,
         workflow_instruction=channel.orchestration_instruction if channel.orchestration_mode == "workflow" else None,
@@ -2532,7 +2544,8 @@ async def _handle_message_posted(event: Event, ctx: PipelineContext) -> Optional
         if p.agent_name != "__no_response__" and p.agent_name not in protected
     ]
     conversation_targets = director_targets if director_targets is not None else await _conversation_targets(
-        event, channel, db, workspace, [n for n in known_agents if n not in protected]
+        event, channel, db, workspace, [n for n in known_agents if n not in protected],
+        defer=bool(ctx.extra.get("defer_routing")),
     )
     if event.source.startswith("openagents:") and _agent_chat_stopped(db, workspace, channel):
         # The user stopped this thread. Route nothing from one agent to
