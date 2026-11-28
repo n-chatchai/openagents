@@ -290,9 +290,12 @@ def _can_manage_channel(db: Session, ctx: _Ctx, channel: Channel) -> bool:
     from app.services.access_model import can_manage_thread_settings
     if can_manage_thread_settings(db, ctx.viewer, channel):
         return True
-    if not ctx.viewer.email or ctx.viewer.email not in channel_participant_emails(db, channel):
-        return False
-    return bool(channel.participants_can_invite or not _norm(channel.owner_email))
+    participant = bool(ctx.viewer.email and ctx.viewer.email in channel_participant_emails(db, channel))
+    return _participants_can_invite(channel, participant)
+
+
+def _participants_can_invite(channel, participant):
+    return participant and bool(channel.participants_can_invite or not _norm(channel.owner_email))
 
 
 def _can_manage_agent(ctx: _Ctx, member: WorkspaceMember) -> bool:
@@ -369,9 +372,11 @@ def list_participants(
             ).scalars().all()
         }
     usable = agent_usable_by(db, ctx.wid, agent_names)
-    from app.services.thread_agent_requests import request_access
-    from app.services.agent_sharing_requests import pending_request
-    people = channel_participant_emails(db, ch)
+    from app.services.thread_agent_requests import request_access_for_room
+    from app.services.agent_sharing_requests import pending_requests_for_agents
+    people = {h.user_email for h in human_rows}
+    request_access = request_access_for_room(db, ctx.wid, ch, list(members.values()), ctx.viewer.email, people)
+    direct_requests, thread_requests = pending_requests_for_agents(db, ctx.wid, ch.name, agent_names, ctx.viewer.email)
     owner_names = _display_names(db, [m.owner_email for m in members.values() if m.owner_email])
     agents = []
     for name in agent_names:
@@ -385,18 +390,18 @@ def list_participants(
             "visibility": legacy_agent_visibility(usable.get(name, {})),
             "usable_by": usable.get(name),
             "owner_display_name": owner_names.get(_norm(m.owner_email)) if m else None,
-            "request_access": request_access(db, ctx.wid, ch, m, ctx.viewer.email),
+            "request_access": request_access.get(name, "no"),
             "can_request_sharing": bool(m and m.status != "removed" and ctx.viewer.kind == "human"
                 and ctx.viewer.email in people and _norm(m.owner_email) in people
                 and _norm(m.owner_email) != ctx.viewer.email and not ch.service_id),
-            "sharing_requested": bool(ctx.viewer.email and pending_request(db, ctx.wid, ch.name, name, ctx.viewer.email)),
-            "thread_access_requested": bool(ctx.viewer.email and pending_request(db, ctx.wid, ch.name, name, ctx.viewer.email, thread_only=True)),
+            "sharing_requested": name in direct_requests,
+            "thread_access_requested": name in thread_requests,
         })
 
     from app.models import ChannelAgentSharing
     from app.services.access_model import can_manage_thread_settings
-    participant = bool(ctx.viewer.email and ctx.viewer.email in channel_participant_emails(db, ch))
-    manage = can_manage_thread_settings(db, ctx.viewer, ch)
+    participant = bool(ctx.viewer.email and ctx.viewer.email in people)
+    manage = can_manage_thread_settings(db, ctx.viewer, ch, people=people)
     own_agents = [a for a in agents if ctx.viewer.email and _norm(a["owner_email"]) == ctx.viewer.email]
     from app.services.thread_agent_requests import sharing_mode
     from app.config import config
@@ -407,7 +412,7 @@ def list_participants(
         "collaboration": collaboration_settings(db, ctx.wid, ch.name) if config.THREAD_COLLABORATION_ENABLED else {},
         "thread_access_requests_supported": config.THREAD_AGENT_ACCESS_ENABLED,
         "can_manage": manage and not personal,
-        "can_add_people": _can_manage_channel(db, ctx, ch),
+        "can_add_people": not personal and (manage or _participants_can_invite(ch, participant)),
         "can_add_agents": not personal and (manage or bool(participant and ch.members_can_add_agents)),
         "is_participant": participant,
         "sharing_my_agents": bool(sharing and sharing.enabled),

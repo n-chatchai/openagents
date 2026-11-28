@@ -265,7 +265,7 @@ def role_for_email(db: Session, workspace: Workspace, email: Optional[str]) -> O
     return None
 
 
-def can_manage_thread_settings(db, principal, channel):
+def can_manage_thread_settings(db, principal, channel, *, people=None):
     """Normal thread controls require ownership or an admin who has joined."""
     if principal.machine:
         return True
@@ -274,7 +274,7 @@ def can_manage_thread_settings(db, principal, channel):
         return False
     if email == _norm(channel.owner_email):
         return True
-    return principal.is_admin and email in channel_participant_emails(db, channel)
+    return principal.is_admin and email in (channel_participant_emails(db, channel) if people is None else people)
 
 
 def resolve_principal(db: Session, workspace: Union[Workspace, str, None], token: Optional[str],
@@ -1034,6 +1034,17 @@ def _hidden_channel_names(db: Session, workspace_id: str, principal: Principal) 
 
 def can_start_agent_thread(db, workspace_id, principal, member):
     return explain(db, principal, resource_for_agent(member), "act", workspace_id, include_thread_sharing=False).allowed
+
+
+def explicit_agent_access(db, workspace_id, principal, members):
+    """Owner and grant access for ordinary agents and a human principal."""
+    pairs = _identity_pairs(db, workspace_id, principal)
+    resources = [resource_for_agent(member) for member in members]
+    granted = {grant.resource_id for grant in grants_for_pairs(
+        db, workspace_id, pairs, "agent", [resource.id for resource in resources]
+    ) if _has_right(grant.rights, "act")}
+    return granted | {resource.id for resource in resources
+                      if _owner_matches(db, workspace_id, principal, resource.owner)}
 
 
 def can_use_agent(db: Session, workspace_id: str, principal: Principal, member: WorkspaceMember) -> bool:

@@ -1,5 +1,6 @@
 from sqlalchemy import select
 from app.models import EventRecord, MessageReaction
+from app.routers import reactions
 from tests.test_visibility import people, no_push, _bearer, _create_thread
 
 
@@ -32,6 +33,35 @@ def test_reactions_respect_private_threads_and_dms(client,workspace,people,db):
     result=client.post(f"/v1/reactions/query?network={workspace['id']}",headers=_bearer('adam'),json={'ids':['private','dm','agent']})
     assert result.json()['data']=={}
     assert client.put(f"/v1/reactions/dm?network={workspace['id']}",headers=_bearer('mia'),json={'emoji':'❤️','active':True}).status_code==200
+
+
+def test_query_checks_each_room_once_per_request(client, workspace, people, db, monkeypatch):
+    _create_thread(client, workspace, name="visible-room", by="mia", visibility="public")
+    _create_thread(client, workspace, name="hidden-room", by="mia")
+    rooms = {"visible-room": 20, "hidden-room": 2}
+    ids = []
+    for room, count in rooms.items():
+        for index in range(count):
+            msg_id = f"{room}-{index}"
+            ids.append(msg_id)
+            db.add(EventRecord(id=msg_id, network_id=workspace["id"], type="workspace.message.posted",
+                               source="human:mia@acme.test", target=f"channel/{room}",
+                               payload={"content": "Hello"}, timestamp=index))
+    db.commit()
+
+    checked = []
+    original = reactions.can_view_channel
+
+    def record_check(db, workspace_id, viewer, channel):
+        checked.append(channel.name)
+        return original(db, workspace_id, viewer, channel)
+
+    monkeypatch.setattr(reactions, "can_view_channel", record_check)
+    result = client.post(f"/v1/reactions/query?network={workspace['id']}",
+                         headers=_bearer("adam"), json={"ids": ids})
+    assert result.status_code == 200, result.text
+    assert set(result.json()["data"]) == set(ids[:20])
+    assert sorted(checked) == sorted(rooms)
 
 
 def test_people_react_to_a_bots_answer_but_not_its_status(client,workspace,people,db):

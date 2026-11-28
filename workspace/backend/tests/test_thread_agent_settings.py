@@ -1,6 +1,7 @@
 """Thread settings enforce membership controls beyond the UI."""
 from sqlalchemy import select, update
-from app.models import Channel, WorkspaceMember
+from sqlalchemy import event as sqlalchemy_event
+from app.models import Channel, ChannelMember, WorkspaceMember
 from tests.test_visibility import _bearer, _create_thread, people, no_push  # noqa: F401
 from tests.test_groups_grants import _patch_thread
 
@@ -108,6 +109,9 @@ def test_personal_agent_sharing_tracks_thread_roster(client, workspace, people, 
     assert _explain(client, workspace, adam, 'agent', 'agent-alpha', 'act')['allowed'] is False
     roster = client.get(f"/v1/channels/settings-test/participants?network={workspace['id']}", headers=mia).json()['data']
     assert roster['sharing_my_agents'] is True and roster['own_agent_count'] == 1
+    roster_as_vic = client.get(f"/v1/channels/settings-test/participants?network={workspace['id']}", headers=vic).json()['data']
+    agent_row = next(agent for agent in roster_as_vic['agents'] if agent['agent_name'] == 'agent-alpha')
+    assert agent_row['request_access'] == 'yes'
     assert toggle(mia, False).status_code == 200
     assert 'agent-alpha' not in _discover(client, workspace, vic)[1]
     # Another person's setting never changes the agent owner's choice.
@@ -159,3 +163,41 @@ def test_expired_identity_cannot_fall_back_to_workspace_token(client, workspace,
     assert client.patch(url, headers=headers, json={'response_mode': 'passive'}).status_code == 401
     principal = resolve_principal(db, db.get(Workspace, workspace['id']), workspace['token'], headers['Authorization'])
     assert not principal.machine and not principal.email
+
+
+def test_participants_uses_constant_queries_as_agent_roster_grows(client, workspace, people, db):
+    setup_thread(client, workspace, db)
+    channel = db.execute(select(Channel).where(Channel.name == "settings-test")).scalar_one()
+    wid = workspace["id"]
+    url = f"/v1/channels/settings-test/participants?network={wid}"
+    bind = db.get_bind()
+
+    def read_roster():
+        statements = []
+
+        def count_selects(conn, cursor, statement, params, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        sqlalchemy_event.listen(bind, "before_cursor_execute", count_selects)
+        try:
+            result = client.get(url, headers=_bearer("mia", workspace))
+        finally:
+            sqlalchemy_event.remove(bind, "before_cursor_execute", count_selects)
+        assert result.status_code == 200, result.text
+        return len(statements), {agent["agent_name"]: agent["request_access"]
+                                 for agent in result.json()["data"]["agents"]}
+
+    before, roster = read_roster()
+    assert roster == {"agent-alpha": "yes"}
+    for index in range(9):
+        name = f"private-agent-{index}"
+        db.add(WorkspaceMember(workspace_id=wid, agent_name=name, owner_email="vic@acme.test"))
+        db.add(ChannelMember(channel_id=channel.id, agent_name=name))
+    db.commit()
+
+    after, roster = read_roster()
+    assert len(roster) == 10
+    assert roster.pop("agent-alpha") == "yes"
+    assert set(roster.values()) == {"no"}
+    assert after == before

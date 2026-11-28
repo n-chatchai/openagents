@@ -11,15 +11,35 @@ KIND = "agent_sharing_request"
 THREAD_KIND = "thread_agent_access_request"
 
 
-def pending_request(db, workspace_id, channel, agent, email, *, thread_only=False):
-    return db.execute(select(ApprovalRequest).where(
+def _pending_requests(workspace_id, channel, email):
+    return select(ApprovalRequest).where(
         ApprovalRequest.workspace_id == workspace_id,
         ApprovalRequest.channel_name == channel,
-        ApprovalRequest.requested_by == agent,
-        ApprovalRequest.kind == (THREAD_KIND if thread_only else KIND),
         ApprovalRequest.status == "pending",
         ApprovalRequest.policy_requirements["share_requester"].as_string() == email,
-    )).scalars().first()
+    )
+
+
+def pending_request(db, workspace_id, channel, agent, email, *, thread_only=False):
+    return db.scalars(_pending_requests(workspace_id, channel, email).where(
+        ApprovalRequest.requested_by == agent,
+        ApprovalRequest.kind == (THREAD_KIND if thread_only else KIND),
+    )).first()
+
+
+def pending_requests_for_agents(db, workspace_id, channel, agents, email):
+    if not agents or not email:
+        return set(), set()
+    statement = _pending_requests(workspace_id, channel, email).with_only_columns(
+        ApprovalRequest.requested_by, ApprovalRequest.kind
+    ).where(
+        ApprovalRequest.requested_by.in_(agents),
+        ApprovalRequest.kind.in_((KIND, THREAD_KIND)),
+    )
+    direct, thread = set(), set()
+    for name, kind in db.execute(statement):
+        (direct if kind == KIND else thread).add(name)
+    return direct, thread
 
 
 def create_request(db, workspace, channel, member, requester, requester_label, *, thread_only=False):
