@@ -13,6 +13,9 @@ ENV NEXT_PUBLIC_INLINE_LOGIN=${NEXT_PUBLIC_INLINE_LOGIN}
 # Behind an authenticating proxy that is the login (lib/door.ts).
 ARG NEXT_PUBLIC_DOOR_LOGIN=
 ENV NEXT_PUBLIC_DOOR_LOGIN=${NEXT_PUBLIC_DOOR_LOGIN}
+# The user guide the Help menu opens; blank means the public guide.
+ARG NEXT_PUBLIC_DOCS_URL=
+ENV NEXT_PUBLIC_DOCS_URL=${NEXT_PUBLIC_DOCS_URL}
 
 # Install dependencies
 COPY package.json package-lock.json ./

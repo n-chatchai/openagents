@@ -30,7 +30,8 @@ class FakeAcenta:
             self.usage_params = kwargs["params"]
             return {"has_account": True, "billing_enabled": True, "balance_enabled": True, "balance_cents": 1234,
                     "spent_this_month_cents": 150, "auto_topup": False, "manage_url": "https://acenta.test/dashboard",
-                    "offer": {"name": "Black Friday", "percent_off": 40, "months": 6, "tiers": ["standard", "smart"], "ends_at": "2026-11-28T07:59:59+00:00", "eligible": True, "url": "https://acenta.test/pricing"},
+                    "offer": {"name": "Black Friday", "percent_off": 40, "months": 6, "tiers": ["standard", "smart"], "ends_at": "2026-11-28T07:59:59+00:00", "eligible": True, "url": "https://acenta.test/pricing",
+                              "monthly_prices": {"standard": {"price_cents": 2500, "offer_cents": 1500}}},
                     "agents": [{"agent_id": "box-9", "mode": "usage", "tier": "standard", "status": "active",
                                 "spent_this_month_cents": 150, "renewal_at": None}]}
         if method == "POST" and path == "":
@@ -40,7 +41,7 @@ class FakeAcenta:
         if method == "GET" and path == "/box-1":
             if self.status_error:
                 raise hosting.ProviderError("gone", self.status_error)
-            return {"id": "box-1", "state": self.state, "launch_url": self.launch_url}
+            return {"id": "box-1", "state": self.state, "launch_url": self.launch_url, "workspace_connected": self.state == "ready"}
         if method == "GET" and path == "":
             self.listed = kwargs["params"]
             return {"has_account": True, "agent_limit": 3, "agents": [
@@ -104,7 +105,7 @@ def test_provider_listing_reflects_configuration(client, monkeypatch):
 
 
 def test_launch_mints_dedicated_connection_and_placeholder(client, db, workspace, people, acenta):
-    r = _launch(client, workspace)
+    r = _launch(client, workspace, name="研究助手")
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert data["agentName"] == "acenta-1a2b3c4d" and data["presence"] == "offline"
@@ -114,12 +115,13 @@ def test_launch_mints_dedicated_connection_and_placeholder(client, db, workspace
     assert node.device_type == "hosted" and node.owner_email == "mia@acme.test"
     # Acenta gets the per-agent connection token, never the shared workspace token.
     sent = acenta.launched
+    assert sent["name"] == "研究助手" and data["displayName"] == "研究助手"
     assert sent["workspace"]["token"] == node.token != workspace["token"]
     assert sent["user"] == {"subject": "mia@acme.test", "email": "mia@acme.test", "display_name": "Mia"}
     assert sent["request_key"] == hosted.id
 
     member = db.query(WorkspaceMember).filter_by(agent_name="acenta-1a2b3c4d").one()
-    assert member.display_name == "Research helper" and member.node_id == node.id
+    assert member.display_name == "研究助手" and member.node_id == node.id
     assert member.owner_email == "mia@acme.test" and member.agent_type == "opencode"
 
 
@@ -198,7 +200,10 @@ def test_paid_launch_sends_owner_to_acenta_then_activates(client, db, workspace,
     acenta.state, acenta.launch_url = "queued", None
     listed = client.get(f"/v1/hosted-agents?network={workspace['id']}", headers=_bearer("mia", workspace))
     row = listed.json()["data"]["hosted_agents"][0]
-    assert row["status"] == "active" and row["setupUrl"] is None
+    assert row["status"] == "starting" and row["setupUrl"] is None
+    acenta.state = "ready"
+    listed = client.get(f"/v1/hosted-agents?network={workspace['id']}", headers=_bearer("mia", workspace))
+    assert listed.json()["data"]["hosted_agents"][0]["status"] == "active"
 
 
 def test_abandoned_checkout_is_cleaned_up(client, db, workspace, people, acenta):
@@ -307,7 +312,8 @@ def test_usage_passes_through_for_members_and_sends_email_only_once_verified(cli
                                "spentThisMonthCents": 150, "renewalAt": None}]
     assert data["manageUrl"] == "https://acenta.test/dashboard"
     assert data["offer"] == {"name": "Black Friday", "percentOff": 40, "months": 6, "tiers": ["standard", "smart"],
-                             "endsAt": "2026-11-28T07:59:59+00:00", "eligible": True, "url": "https://acenta.test/pricing"}
+                             "endsAt": "2026-11-28T07:59:59+00:00", "eligible": True, "url": "https://acenta.test/pricing",
+                             "monthlyPrices": {"standard": {"price_cents": 2500, "offer_cents": 1500}}}
     # Not verified yet: Acenta must not match an account by the typed address.
     assert acenta.usage_params == {"subject": "mia@acme.test", "email": ""}
     from datetime import datetime, timezone

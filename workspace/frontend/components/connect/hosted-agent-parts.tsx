@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { ArrowUpRight, Tag, Trash2, Wallet } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Tag, Trash2, Wallet } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/components/ui/item';
 import { Spinner } from '@/components/ui/spinner';
@@ -10,8 +10,6 @@ import { useI18n, useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { destructiveIconClass } from '@/lib/destructive-icon';
 import type { AcentaOffer, AcentaUsage, HostedAgent } from '@/lib/types';
-
-const STARTUP_WINDOW_MS = 30 * 60 * 1000;
 
 export function formatUsd(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -32,12 +30,12 @@ export function FinishSetupLink({ href }: { href: string }) {
 export function HostedPresence({ agent }: { agent: HostedAgent }) {
   const t = useT();
   if (agent.status === 'setup' && agent.setupUrl) return <FinishSetupLink href={agent.setupUrl} />;
-  const online = agent.presence === 'online';
-  const starting = !online && !!agent.createdAt && Date.now() - Date.parse(agent.createdAt) < STARTUP_WINDOW_MS;
+  const online = agent.presence === 'online' && (agent.status === 'active' || agent.status === 'linked');
+  const starting = agent.status === 'starting' || agent.status === 'launching';
   return (
     <span className={cn('flex items-center gap-1.5 text-xs', online ? 'text-success' : 'text-muted-foreground')}>
       {starting && <Spinner className="size-3" />}
-      {online ? t('connect.acentaOnline') : starting ? t('connect.acentaStarting') : t('connect.acentaOffline')}
+      {online ? t('connect.acentaOnline') : starting ? t('connect.acentaStarting') : agent.status === 'attention' ? t('connect.acentaNeedsAttention') : t('connect.acentaOffline')}
     </span>
   );
 }
@@ -96,7 +94,7 @@ export function HostedUsageBar({ usage, lowBalance }: { usage: AcentaUsage; lowB
 }
 
 /** Acenta's running offer (e.g. Black Friday), for people who still qualify. Hidden once it ends. */
-export function HostedOfferBar({ offer }: { offer: AcentaOffer }) {
+export function HostedOfferBar({ offer, onViewPrices }: { offer: AcentaOffer; onViewPrices?: () => void }) {
   const t = useT();
   const { locale } = useI18n();
   const ends = new Date(offer.endsAt);
@@ -105,21 +103,35 @@ export function HostedOfferBar({ offer }: { offer: AcentaOffer }) {
   // The last day, in California time like acenta.ai.
   const date = new Date(ends.getTime() - 1000).toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'long', day: 'numeric', timeZone: 'America/Los_Angeles' });
   const name = offer.name === 'Black Friday' ? t('connect.acentaOfferBlackFriday') : offer.name;
+  const prices = Object.entries(offer.monthlyPrices ?? {});
   return (
     // Acenta's orange, so the offer stands out from the neutral cards around it.
-    <div className="flex items-center gap-3 rounded-lg border border-[#ef6a3a]/35 bg-[#ef6a3a]/10 px-3 py-2.5 text-sm">
-      <Tag className="size-4 shrink-0 text-[#d9531f]" />
-      <span className="min-w-0 flex-1">
-        <span className="font-semibold text-[#c2410c]">{name}</span>{' '}
-        {t('connect.acentaOffer', { percent: offer.percentOff, discount: 10 - offer.percentOff / 10, months: offer.months, date })}
-      </span>
-      {offer.url && (
-        <Button variant="link" size="xs" className="shrink-0 px-0 text-[#d9531f]" asChild>
-          <a href={offer.url} target="_blank" rel="noreferrer">
+    <div className="rounded-lg border border-[#ef6a3a]/35 bg-[#ef6a3a]/10 px-3 py-2.5 text-sm">
+      <div className="flex items-center gap-3">
+        <Tag className="size-4 shrink-0 text-[#d9531f]" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="font-semibold text-[#c2410c]">{name}</span>{' '}
+          {t('connect.acentaOffer', { percent: offer.percentOff, discount: 10 - offer.percentOff / 10, months: offer.months, date })}
+        </span>
+        {onViewPrices && (
+          <Button variant="link" size="xs" className="shrink-0 px-0 text-[#c2410c]" onClick={onViewPrices}>
             {t('connect.acentaOfferPrices')}
-            <ArrowUpRight data-icon="inline-end" />
-          </a>
-        </Button>
+            <ArrowRight data-icon="inline-end" />
+          </Button>
+        )}
+      </div>
+      {!onViewPrices && prices.length > 0 && (
+        <dl className="mt-2 grid gap-1.5 border-t border-[#ef6a3a]/25 pt-2">
+          {prices.map(([tier, price]) => (
+            <div key={tier} className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+              <dt className="font-medium">{tier === 'byok' ? t('connect.acentaOfferOwnModel') : tier.charAt(0).toUpperCase() + tier.slice(1)}</dt>
+              <dd className="text-xs">
+                <strong>{t('connect.acentaOfferMonthlyPrice', { price: formatUsd(price.offer_cents).replace(/\.00$/, '') })}</strong>
+                {' · '}{t('connect.acentaOfferRegularPrice', { price: formatUsd(price.price_cents).replace(/\.00$/, '') })}
+              </dd>
+            </div>
+          ))}
+        </dl>
       )}
     </div>
   );

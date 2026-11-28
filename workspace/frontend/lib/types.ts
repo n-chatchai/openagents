@@ -1,3 +1,5 @@
+import { guestDisplayName, isGuestMessage } from './guest-sender';
+
 export interface Workspace {
   /** Workspace-wide setup state; absent until a compatible backend responds. */
   needsFirstDevice?: boolean;
@@ -477,6 +479,9 @@ export interface BrowserTabActivity {
   action: string;
   actor: string;
   at: string;
+  /** Thread or DM the action was explicitly made for, verified by the backend.
+   * Absent for unattributed (legacy) calls, which never open a preview on their own. */
+  channel?: string | null;
 }
 
 export interface BrowserTab {
@@ -1001,6 +1006,7 @@ export interface AcentaOffer {
   /** False once this user has had a monthly agent (the offer is for new customers). */
   eligible: boolean;
   url: string | null;
+  monthlyPrices?: Record<string, { price_cents: number; offer_cents: number }>;
 }
 
 /** An agent whose runtime a provider hosts; it joins like any other agent. */
@@ -1008,7 +1014,7 @@ export interface HostedAgent {
   agentName: string;
   displayName: string;
   provider: string;
-  status: 'launching' | 'setup' | 'active' | 'terminating' | 'linked';
+  status: 'launching' | 'setup' | 'active' | 'terminating' | 'linked' | 'starting' | 'attention' | 'offline';
   /** Added here from the owner's Acenta account; removing only disconnects it. */
   linked?: boolean;
   externalId?: string | null;
@@ -1163,7 +1169,10 @@ export interface DMConversation {
 export function eventToMessage(event: ONMEvent): WorkspaceMessage {
   const isHuman = event.source.startsWith('human:');
   const payload = (event.payload || {}) as Record<string, unknown>;
-  const senderName = (payload.sender_name as string) || event.source.replace(/^(openagents:|human:)/, '');
+  // A shared-thread guest's address (`guest-…@guest.invalid`) is never a name.
+  const senderName = isGuestMessage({ senderAddress: event.source, metadata: event.metadata })
+    ? guestDisplayName({ metadata: event.metadata }, payload.sender_name)
+    : (payload.sender_name as string) || event.source.replace(/^(openagents:|human:)/, '');
 
   return {
     messageId: event.id,

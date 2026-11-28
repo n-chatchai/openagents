@@ -184,6 +184,13 @@ function claudeSafePlanArgs(opts) {
   return args.filter((a) => a !== 'Edit(/**)');
 }
 
+// A guest of a shared thread (OpenAgents Share) may make this agent read its
+// own folder and the web, never run commands or change files. The CLI runs
+// headless, so a tool outside the allowed list is refused, not prompted.
+const GUEST_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'];
+const GUEST_ERROR_TEXT = 'I couldn\'t finish this request. The person who shared me can see why on their computer.';
+const GUEST_DISALLOWED_TOOLS = ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'KillShell', 'BashOutput', 'Task'];
+
 class ClaudeAdapter extends BaseAdapter {
   /**
    * The env the spawned `claude` CLI runs with. Pure — takes the agent's env
@@ -631,6 +638,18 @@ class ClaudeAdapter extends BaseAdapter {
     return null;
   }
 
+  /** Save a channel's CLI session — never one a guest's turn ran in. */
+  _rememberSession(pp, sessionId) {
+    if (!sessionId || pp.spawnMode === 'guest' || this._effectiveMode(pp.msgChannel) === 'guest') return;
+    this._channelSessions[pp.msgChannel] = sessionId;
+    this._saveSessions();
+  }
+
+  /** Guest turns run read-only (see GUEST_ALLOWED_TOOLS). */
+  get supportsGuestRuns() {
+    return true;
+  }
+
   _buildClaudeCmd(prompt, channelName, { skipResume = false, browserEnabled = false, glossary = null, posture = null } = {}) {
     const claudeBin = this._findClaudeBinary();
     if (!claudeBin) {
@@ -645,11 +664,14 @@ class ClaudeAdapter extends BaseAdapter {
     // The builder emits the correct tool-reference block for toolMode directly
     // (mcp → workspace_* tools, skills → openagents-workspace skill), so there
     // is no post-hoc string replacement to drift out of sync.
+    // A guest's turn reads and proposes like plan mode, under the guest tool
+    // policy below (no shell, no writes), whatever mode the owner set.
+    const runMode = this._effectiveMode(channelName);
     const systemPrompt = '\n' + buildClaudeSystemPrompt({
       agentName: this.agentName,
       workspaceId: this.workspaceId,
       channelName,
-      mode: this._mode,
+      mode: runMode === 'guest' ? 'plan' : runMode,
       model: this.modelLabel(),
       browserEnabled,
       toolMode: this.toolMode,
@@ -664,7 +686,9 @@ class ClaudeAdapter extends BaseAdapter {
       cmd.push('--model', this.workspaceModel);
     }
     const disallowedTools = ['AskUserQuestion', 'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'];
-    if (browserEnabled) {
+    if (runMode === 'guest') {
+      disallowedTools.push(...GUEST_DISALLOWED_TOOLS);
+    } else if (browserEnabled) {
       // Hard-ban the native WebFetch: it can't render JS and bypasses the
       // workspace fetch chain. Prompt-level bans proved insufficient.
       // WebSearch stays allowed (pure search, no page fetching).
@@ -677,7 +701,13 @@ class ClaudeAdapter extends BaseAdapter {
     }
     cmd.push('--disallowedTools', ...disallowedTools);
 
-    // Resume existing conversation (skipped on retry after stale session)
+    // Resume existing conversation (skipped on retry after stale session).
+    // A guest's turn never resumes the owner's session, nor is it saved as
+    // one (see _rememberSession): each side keeps its own conversation, so a
+    // guest's read-only turns neither see nor colour the owner's work — the
+    // model once carried "I'm in plan mode" from a guest turn into the
+    // owner's next request. The thread's recent messages come in the prompt.
+    if (runMode === 'guest') skipResume = true;
     const sessionId = this._channelSessions[channelName];
     let seeded = false;
     if (sessionId && !skipResume) {
@@ -793,7 +823,10 @@ class ClaudeAdapter extends BaseAdapter {
    */
   _buildSkillsCmd(cmd, channelName) {
     const posture = this._posture || this._approvalGate();
-    if (posture.mode === 'plan') {
+    if (this._effectiveMode(channelName) === 'guest') {
+      cmd.push('--permission-mode', 'default');
+      cmd.push('--allowedTools', ...GUEST_ALLOWED_TOOLS);
+    } else if (posture.mode === 'plan') {
       cmd.push(...this._safePlanArgs([], workspaceSkillName(this.agentName)));
     } else if (posture.unrestricted) {
       // Allowed on this computer for this agent only (policy.json).
@@ -887,7 +920,11 @@ class ClaudeAdapter extends BaseAdapter {
     mcpWriteTools.push(`${pfx}workspace_put_todos`, `${pfx}workspace_create_timer`, `${pfx}workspace_cancel_timer`, `${pfx}workspace_create_routine`, `${pfx}workspace_update_routine`, `${pfx}workspace_cancel_routine`);
 
     const posture = this._posture || this._approvalGate();
-    if (posture.mode === 'plan') {
+    if (this._effectiveMode(channelName) === 'guest') {
+      // Read-only workspace tools plus the guest set; never the write tools.
+      cmd.push('--permission-mode', 'default');
+      cmd.push('--allowedTools', ...mcpTools, ...GUEST_ALLOWED_TOOLS);
+    } else if (posture.mode === 'plan') {
       // Read-only workspace tools; file reads stay in the working directory
       // and off the credential folders, as in execute mode.
       cmd.push(...this._safePlanArgs(mcpTools));
@@ -1185,7 +1222,7 @@ class ClaudeAdapter extends BaseAdapter {
       // the next message resumes the conversation; drop everything else.
       if (pp.userStopped) {
         if (eventType === 'result' && event.session_id) {
-          this._channelSessions[pp.msgChannel] = event.session_id;
+          this._rememberSession(pp, event.session_id);
           this._saveSessions();
         }
         if (eventType === 'result' && pp.messageResolve) {
@@ -1243,10 +1280,7 @@ class ClaudeAdapter extends BaseAdapter {
       } else if (eventType === 'result') {
         pp.awaitingToolResult = false;
         const sessionId = event.session_id;
-        if (sessionId) {
-          this._channelSessions[pp.msgChannel] = sessionId;
-          this._saveSessions();
-        }
+        if (sessionId) this._rememberSession(pp, sessionId);
         if (event.is_error) {
           // Capture the error so _handleMessage can surface it to the user.
           // Without this, an auth/API failure (e.g. 401 invalid token) is only
@@ -1488,6 +1522,16 @@ class ClaudeAdapter extends BaseAdapter {
    * the UI never hangs on "thinking…".
    */
   async _postTurnOutcome(pp, msgChannel, finalResponse) {
+    if (pp.lastErrorText && this._effectiveMode(msgChannel) === 'guest') {
+      // A guest sees the thread, not this computer: the CLI's own error text
+      // (account, model and request details) stays in the owner's log.
+      const answer = String(finalResponse || '').split(pp.lastErrorText).join('').trim();
+      if (answer) {
+        try { await this.sendResponse(msgChannel, answer, { statusKind: 'error', model: pp.responseModel }); } catch {}
+      }
+      try { await this.sendError(msgChannel, GUEST_ERROR_TEXT); } catch {}
+      return;
+    }
     if (finalResponse) {
       try { await this.sendResponse(msgChannel, finalResponse, { statusKind: pp.lastErrorText ? 'error' : 'completed', model: pp.responseModel }); } catch {}
     } else if (pp.lastErrorText) {
@@ -1682,11 +1726,12 @@ class ClaudeAdapter extends BaseAdapter {
       // Everything below was baked into the process at spawn time — the
       // system prompt AND the CLI permission flags (plan mode is read-only,
       // execute runs inside Claude Code's permission checks and sandbox, or
-      // skips them only when opted in here) — so a process spawned under
-      // another posture can never be reused. This check is deliberately
-      // independent of the pinned fingerprint: a failed knowledge fetch must
-      // not keep a read-only plan process serving execute requests.
-      const modeStale = existingPP.spawnMode !== this._mode;
+      // skips them only when opted in here; a guest's turn is read-only) — so
+      // a process spawned under another posture can never be reused. This
+      // check is deliberately independent of the pinned fingerprint: a failed
+      // knowledge fetch must not keep a read-only plan process serving
+      // execute requests.
+      const modeStale = existingPP.spawnMode !== this._effectiveMode(msgChannel);
       const postureStale = (existingPP.spawnUnrestricted === true) !== posture.unrestricted;
       const pinnedStale = pinnedHash !== null && existingPP.pinnedHash !== pinnedHash;
       const modelStale = (existingPP.spawnModel || null) !== (this.workspaceModel || null);
@@ -1695,7 +1740,7 @@ class ClaudeAdapter extends BaseAdapter {
         // conversation (it lives in the CLI transcript), while the new spawn
         // carries the current mode / model flags (and the current pins).
         this._log(modeStale
-          ? `Mode changed to ${this._mode} for ${msgChannel} — respawning with resume`
+          ? `Mode changed to ${this._effectiveMode(msgChannel)} for ${msgChannel} — respawning with resume`
           : postureStale
             ? `Approval policy changed for ${this.agentName} (${posture.unrestricted ? 'unrestricted' : 'within Claude Code\'s permission checks'}) — respawning ${msgChannel} with resume`
             : `Model changed to ${this.workspaceModel || '(default)'} for ${msgChannel} — respawning with resume`);
@@ -1812,7 +1857,7 @@ class ClaudeAdapter extends BaseAdapter {
         pp.pinnedHash = pinnedHash !== null ? pinnedHash : pinnedFingerprint([
           { entryId: glossaryOpt && glossaryOpt.entryId, content: glossaryOpt && glossaryOpt.content },
         ]);
-        pp.spawnMode = this._mode;
+        pp.spawnMode = this._effectiveMode(msgChannel);
         pp.spawnUnrestricted = posture.unrestricted === true;
         pp.spawnModel = this.workspaceModel || null;
         const resumed = attempt === 0 && (!!this._channelSessions[msgChannel] || seeded);

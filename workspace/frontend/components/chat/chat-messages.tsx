@@ -15,6 +15,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { WorkspaceMessage, WorkspaceAgent } from '@/lib/types';
 import { isControlMessage } from '@/lib/control-messages';
+import { requestDecisions, requestStatus, shareRequestOf } from '@/lib/share-requests';
 import { useT } from '@/lib/i18n';
 import { filterThreadSteps, groupKey, groupMessages, isTerminalStatus } from './chat-message-groups';
 import { useChatScroll } from './use-chat-scroll';
@@ -25,6 +26,7 @@ import { useMessageTarget, useScrollToTarget } from './use-message-target';
 interface ChatMessagesProps {
   messages: WorkspaceMessage[];
   agents?: WorkspaceAgent[];
+  agentDisplayFallback?: { agentName: string; name: string } | null;
   className?: string;
   /** Increment to force scroll to bottom (e.g. after user sends a message). */
   scrollKey?: number;
@@ -44,7 +46,7 @@ interface ChatMessagesProps {
   targetSessionId?: string | null;
 }
 
-function ChatMessagesContent({ messages, agents, className, scrollKey, loadOlder, hasOlder, loadingOlder, onSuggestion, onMentionPerson, onReply, onSaveKnowledge, targetSessionId }: ChatMessagesProps) {
+function ChatMessagesContent({ messages, agents, agentDisplayFallback, className, scrollKey, loadOlder, hasOlder, loadingOlder, onSuggestion, onMentionPerson, onReply, onSaveKnowledge, targetSessionId }: ChatMessagesProps) {
   const t = useT();
   const target = useMessageTarget(targetSessionId);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -72,6 +74,8 @@ function ChatMessagesContent({ messages, agents, className, scrollKey, loadOlder
 
   // Group into chat messages and intermediate step clusters
   const groups = useMemo(() => groupMessages(filteredMessages), [filteredMessages]);
+  // OpenAgents Share: decisions on guests' held requests, from the thread's notices.
+  const shareDecisions = useMemo(() => requestDecisions(messages), [messages]);
 
   const hasTerminalStatus = realMessages.some(isTerminalStatus);
 
@@ -179,12 +183,14 @@ function ChatMessagesContent({ messages, agents, className, scrollKey, loadOlder
                     <ChatMessage
                       message={group.message}
                       agents={agents}
+                      fallbackLabel={agentDisplayFallback?.agentName === group.message.senderName ? agentDisplayFallback.name : undefined}
                       isLast={index === groups.length - 1}
                       onSuggestion={onSuggestion}
                       onMentionPerson={onMentionPerson}
                       onReply={onReply}
                       onSaveKnowledge={onSaveKnowledge}
                       onRecall={recall}
+                      shareRequestStatus={(() => { const req = shareRequestOf(group.message); return req ? requestStatus(req, shareDecisions) : undefined; })()}
                     />
                   ) : (
                     <IntermediateSteps

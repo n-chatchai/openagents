@@ -75,3 +75,24 @@ door lets in.
 - Erawan OPS, brought into a room with an operator's key, is called at
   `https://api.erawan.cloud/v1/ops/workspace` (`ERAWAN_OPS_WORKSPACE_URL`
   overrides it).
+
+## Merging upstream
+
+`git fetch upstream && git merge upstream/develop` (the remote is
+`openagents-org/openagents`). Two things to check before the merge commit:
+
+- **Alembic revisions.** This branch's own migrations took `101` and `102`
+  before upstream did, and the running database is stamped with them. So
+  upstream's migrations from 101 on are renumbered here with a `u`
+  (`u101`, `u102`, …), chained after this branch's head: keep the file names,
+  change `revision`/`down_revision` (and the docstring) only. A merge that
+  brings a new upstream migration gives it the next `u` number and points it
+  at the previous one; this branch's own new ones take `e103`, `e104`, … and
+  go after the current head. Check with `alembic heads`: one head, always.
+  `tests/test_migration_schema.py` cannot catch a clash, since it counts
+  revisions as a set.
+- **`packages/agent-connector/src/adapters/claude.js`.** Execute mode here
+  runs inside Claude Code's permission checks and sandbox unless the
+  computer's policy.json opts the agent out; upstream skips the checks.
+  Keep that posture when upstream changes the permission flags, and run
+  `node --test test/*.test.js` in `packages/agent-connector`.

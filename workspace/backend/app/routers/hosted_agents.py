@@ -51,7 +51,7 @@ _LAUNCH_ROLES = ("member", "admin", "owner")
 def _format(hosted: HostedAgent, member: Optional[WorkspaceMember]) -> dict:
     return {
         "agentName": hosted.agent_name,
-        "displayName": hosted.display_name,
+        "displayName": (member.display_name if member else None) or hosted.display_name,
         "provider": hosted.provider,
         "status": hosted.status,
         "linked": hosted.status == "linked",
@@ -95,8 +95,11 @@ def list_hosted_agents(
         if hosted.status in ("terminating", "unlinking"):
             hosting.schedule_termination(hosted.id)  # retry cleanup Acenta has not confirmed
             continue
-        if hosted.status == "setup":
-            # The owner may have just returned from Acenta's launch page.
+        member = members.get(hosted.agent_name)
+        if hosted.status in ("setup", "starting", "attention", "offline") or (
+            hosted.status == "active" and (not member or effective_agent_status(member) != "online")
+        ):
+            # Refresh launch and recovery states; linked agents use their local presence.
             try:
                 result = hosting.status(hosted)
             except hosting.ProviderError as error:
@@ -260,7 +263,7 @@ def _offer(offer):
         return None
     return {"name": offer.get("name") or "", "percentOff": offer.get("percent_off") or 0, "months": offer.get("months") or 0,
             "tiers": offer.get("tiers"), "endsAt": offer.get("ends_at"), "eligible": bool(offer.get("eligible")),
-            "url": offer.get("url")}
+            "url": offer.get("url"), "monthlyPrices": offer.get("monthly_prices") or {}}
 
 
 class ConnectAcentaAgentRequest(BaseModel):

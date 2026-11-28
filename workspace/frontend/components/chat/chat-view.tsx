@@ -15,6 +15,7 @@ import { useThreadBrowserMessages } from '@/hooks/use-thread-browser-messages';
 import { useComposingSignal } from '@/hooks/use-composing-signal';
 import { Spinner } from '@/components/ui/spinner';
 import { ShareDialog } from './share-dialog';
+import { isGuestAddress } from '@/lib/guest-sender';
 import { HumanProfile } from './human-profile';
 import { arrangeQueuedMessages } from './use-queued-messages';
 import { useLayout } from '@/components/layout/layout-context';
@@ -36,14 +37,19 @@ import { usePendingQueue } from './use-pending-queue';
 import { useThreadActivity } from './use-thread-activity';
 import { useThreadDm } from './use-thread-dm';
 import { useChatSend, type ReplyTargets } from './use-chat-send';
+import { AcentaStarterCards } from './acenta-starter-cards';
 import { ChatViewHeader } from './chat-view-header';
 import { ConnectAgentNotice, OfflineAgentsBanner, ProbeFailureBanner, type FailingProbe } from './chat-view-banners';
+import { KeepWorkspaceBanner } from '@/components/share/keep-workspace-banner';
+import { WorkspaceGuestRequests } from '@/components/share/workspace-guest-requests';
+import { isSharedThreadName } from '@/lib/guest-links';
+import { isReleasedCopy } from '@/lib/share-requests';
 import { NoThreadSelected, ThreadEmpty } from './chat-view-empty';
 
 export { resetOptimisticStoreForTests } from './chat-message-cache';
 
 export function ChatView() {
-  const { workspace, agents, loading: workspaceLoading, workspaceLoadError, currentUser, currentSessionId, setCurrentSessionId, sessions, markSessionUnarchived, consumeSkipFocus, createRoutine, routines, updateRoutine, knowledge } = useWorkspace();
+  const { workspace, token: workspaceToken, agents, loading: workspaceLoading, workspaceLoadError, currentUser, currentSessionId, setCurrentSessionId, sessions, markSessionUnarchived, consumeSkipFocus, createRoutine, routines, updateRoutine, knowledge } = useWorkspace();
   const hasConnectedAgent = agents.some((agent) => !agent.builtin && agent.status === 'online');
   const needsConnection = !workspaceLoading && !workspaceLoadError && !hasConnectedAgent;
   const t = useT();
@@ -119,7 +125,8 @@ export function ChatView() {
   const browserMessages = useThreadBrowserMessages(displayMessages);
   const { sessionPendingQueue, setPendingQueue } = usePendingQueue(currentSessionId);
   // Queued messages wait in the Queue tab, not in the chat log.
-  const chatLogMessages = useMemo(() => arrangeQueuedMessages(displayMessages, sessionPendingQueue), [displayMessages, sessionPendingQueue]);
+  // A guest request approved by the owner is re-posted for the agent; the original stays in the log.
+  const chatLogMessages = useMemo(() => arrangeQueuedMessages(displayMessages.filter((m) => !isReleasedCopy(m)), sessionPendingQueue), [displayMessages, sessionPendingQueue]);
   useThreadActivity(currentSessionId, chatLogMessages, displayMessages);
 
   const handleSend = useChatSend({
@@ -147,6 +154,16 @@ export function ChatView() {
   const hasInlineWelcome = !!lastMessage && isYumiWelcome(lastMessage, yumi);
   const showYumiGuide = hasYumi && !loading && !hasInlineWelcome && (!isYumiDm || displayMessages.length > 0);
   const canCompose = !isDM || dmWritable;
+  const acentaWelcome = dmWritable && dmCounterpart?.startsWith('openagents:acenta-')
+    ? displayMessages.find(message => message.metadata?.acenta_welcome === true &&
+        message.senderAddress === dmCounterpart && Array.isArray(message.metadata.suggestions))
+    : undefined;
+  const starterPrompts = Array.isArray(acentaWelcome?.metadata?.suggestions)
+    ? acentaWelcome.metadata.suggestions.filter((entry): entry is string => typeof entry === 'string').slice(0, 4)
+    : [];
+  const hasTriedStarter = !!acentaWelcome && displayMessages.some(message =>
+    message.senderType === 'human' || message.senderType === 'user'
+  );
   const appendMention = (email: string) => {
     const separator = currentDraft && !/\s$/.test(currentDraft) ? ' ' : '';
     handleDraftChange(`${currentDraft}${separator}@${email} `);
@@ -166,6 +183,18 @@ export function ChatView() {
       />
       <ThreadResources key={currentSessionId} messages={browserMessages} queueMessages={displayMessages} pendingQueue={sessionPendingQueue} />
 
+      {workspace && workspaceToken && !workspace.creatorEmail
+        && Boolean((workspace.settings as Record<string, unknown> | undefined)?.openagents_share) && (
+        <KeepWorkspaceBanner
+          workspaceId={workspace.workspaceId}
+          slug={workspace.slug}
+          threadName={currentSessionId || undefined}
+          token={workspaceToken}
+          share={Boolean((workspace.settings as Record<string, unknown> | undefined)?.openagents_share)}
+          claimed={Boolean(workspace.creatorEmail)}
+        />
+      )}
+      {!isDM && currentSessionId && isSharedThreadName(currentSessionId) && <WorkspaceGuestRequests key={currentSessionId} channel={currentSessionId} />}
       {!needsConnection && <OfflineAgentsBanner participants={participants} agents={agents} />}
       <ProbeFailureBanner failing={failingProbes} retesting={retesting} onRetest={retestAgent} onDismiss={dismissProbe} />
       {needsConnection && !dmWithPerson && !hasYumi && <ConnectAgentNotice onConnect={() => openView('connect')} />}
@@ -184,6 +213,7 @@ export function ChatView() {
           <ChatMessages
             messages={chatLogMessages}
             agents={agents}
+            agentDisplayFallback={dm.ownedAcenta}
             scrollKey={scrollKey}
             loadOlder={loadOlder}
             hasOlder={hasOlder}
@@ -192,7 +222,8 @@ export function ChatView() {
             onReply={canCompose ? (message) => {
               setReplyTargets(previous => ({ ...previous, [currentSessionId]: message }));
               const email = message.senderType === 'agent' ? normalizeAgentAddress(message.senderAddress || message.senderName) : (message.senderAddress || '').replace(/^human:/, '');
-              if (email && (message.senderType === 'agent' || email.includes('@')) && !currentDraft.includes(`@${email}`)) appendMention(email);
+              // A shared-thread guest has no mentionable address; the citation names them.
+              if (email && !isGuestAddress(email) && (message.senderType === 'agent' || email.includes('@')) && !currentDraft.includes(`@${email}`)) appendMention(email);
               focusComposer();
             } : undefined}
             onSaveKnowledge={canCompose ? (message) => {
@@ -209,9 +240,9 @@ export function ChatView() {
               appendMention(email);
               focusComposer();
             } : undefined}
-            onSuggestion={(text) => {
+            onSuggestion={canCompose ? (text) => {
               void handleSend(text);
-            }}
+            } : undefined}
             className="flex-1 overflow-y-auto px-4 py-3 lg:px-8"
           />
         )}
@@ -224,6 +255,17 @@ export function ChatView() {
         {canCompose && (
           <div className="mx-auto w-full max-w-3xl px-3 pt-1 pb-2 lg:px-5 lg:pb-3 xl:max-w-4xl 2xl:max-w-6xl">
             <ThreadStatusBar channelName={currentSessionId} />
+            {hasTriedStarter && acentaWelcome && starterPrompts.length > 0 && (
+              <details key={currentSessionId} className="mb-1 text-sm">
+                <summary className="w-fit cursor-pointer rounded px-1.5 py-1 font-medium text-muted-foreground hover:text-foreground">
+                  {t('connect.acentaStarterTitle')}
+                </summary>
+                <div className="max-h-[40dvh] overflow-y-auto">
+                  <AcentaStarterCards agentName={acentaWelcome.senderName} suggestions={starterPrompts}
+                    onSuggestion={text => { void handleSend(text); }} />
+                </div>
+              </details>
+            )}
             {replyTarget && <ReplyCitation citation={citationFor(replyTarget)} onCancel={() => setReplyTargets(previous => ({ ...previous, [currentSessionId]: undefined }))} />}
             <ChatInput conversationId={currentSessionId}
               onSend={handleSend}
