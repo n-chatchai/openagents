@@ -10,5 +10,14 @@ components:
     port: 8080
     public: true
     disk: true
-    secrets: [GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET]
+    # A person's to set, on the app's Secrets tab (README-erawan.md, Keys).
+    secrets:
+      - GOOGLE_CLIENT_ID
+      - GOOGLE_CLIENT_SECRET
+      - ROUTER_LLM_API_KEY
+      - MESSAGE_ROUTER_API_KEY
+      - APNS_KEY
+      - APNS_KEY_ID
+      - FIREBASE_CREDENTIALS_JSON
+      - ERAWAN_BUILDER_KEY
     generated_secrets: [DOOR_COOKIE_KEY, WORKSPACE_SESSION_SECRET]
