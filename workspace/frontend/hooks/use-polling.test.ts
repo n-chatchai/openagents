@@ -90,6 +90,24 @@ it('reconnects after a stream error with fresh auth and stops fallback polling',
   expect(h.poll).toHaveBeenCalledTimes(count);
 });
 
+it('receives messages while waiting for a thread stream to open', async () => {
+  const host = document.createElement('div');
+  root = createRoot(host);
+  function View() {
+    const { messages } = useMessagePolling({ sessionId: 'thread' });
+    return React.createElement('div', null, messages.map(m => m.content).join(','));
+  }
+  h.poll.mockResolvedValueOnce({ messages: [message('thread', 'Arrived during connection')], hasMore: false });
+  await act(async () => root.render(React.createElement(View)));
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(host.textContent).toBe('Arrived during connection');
+  expect(FakeSource.instances[0].close).not.toHaveBeenCalled();
+  await act(async () => FakeSource.instances[0].onopen?.());
+  const count = h.poll.mock.calls.length;
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(h.poll).toHaveBeenCalledTimes(count);
+});
+
 it('does not restart an in-flight fallback loop when the stream recovers', async () => {
   await act(async () => root.render(React.createElement(Channel)));
   await act(async () => FakeSource.instances[0].onerror?.());

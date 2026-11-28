@@ -353,7 +353,7 @@ export function useMessagePolling({ sessionId, enabled = true, initialMessages }
       };
     }
 
-    // Try SSE first for instant updates, fall back to polling
+    // Keep receiving messages while the per-thread stream connects.
     const isDM = sessionId.startsWith('dm:');
     let eventSource: EventSource | null = null;
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -458,8 +458,8 @@ export function useMessagePolling({ sessionId, enabled = true, initialMessages }
         retry();
       }
     };
-    if (isDM) startPolling();
-    else connect();
+    startPolling();
+    if (!isDM) connect();
 
     return () => {
       cancelled = true;

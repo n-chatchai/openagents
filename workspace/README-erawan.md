@@ -26,6 +26,9 @@ The web container runs the backend, web app and OAuth door together.
 `erawan.yaml` requests 0.5 CPU and 512 MiB and caps the container at 2 CPUs
 and 2 GiB.
 
+The web chat starts its polling fallback while a thread's live connection is
+opening. Polling stops when the live connection opens.
+
 ## Keys
 
 | Name | Who sets it |
