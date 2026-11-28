@@ -39,7 +39,7 @@ opening. Polling stops when the live connection opens.
 | `APNS_KEY`, `APNS_KEY_ID` | A person: the APNs key for `cloud.erawan.pixelteam`. Without them iPhones get no push. |
 | `FIREBASE_CREDENTIALS_JSON` | A person: the FCM service account. Without it Android gets no push. |
 | `ERAWAN_BUILDER_KEY` | A person: the key Erawan Builder and the Workspace share. |
-| `WORKSPACE_SESSION_SECRET_PREVIOUS` | Not set (optional, not declared in `erawan.yaml`). Secrets this server signed with before, comma-separated: what they signed still verifies, nothing new is signed with them. Set it, and declare it, only when the session secret is replaced while the old one is still at hand. The in-cluster secret from before the 2026-11-28 move was gone by then, so the Grok Bot and ChatGPT dot keys given out before it had to be given out again. |
+| `WORKSPACE_SESSION_SECRET_PREVIOUS` | Declared in `erawan.yaml`. The in-cluster Workspace's session secret, recovered on 2026-11-28 and set by a person: the Grok Bot and ChatGPT dot keys given out before the move still verify with it; nothing new is signed with it. Comma-separated if there are ever more. |
 
 ## Env
 

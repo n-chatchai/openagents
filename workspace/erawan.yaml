@@ -23,4 +23,7 @@ components:
       - APNS_KEY_ID
       - FIREBASE_CREDENTIALS_JSON
       - ERAWAN_BUILDER_KEY
+      # The in-cluster Workspace's session secret, recovered 2026-11-28: Grok Bot
+      # and ChatGPT dot keys given out before the move still verify with it.
+      - WORKSPACE_SESSION_SECRET_PREVIOUS
     generated_secrets: [DOOR_COOKIE_KEY, WORKSPACE_SESSION_SECRET]
