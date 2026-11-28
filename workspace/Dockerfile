@@ -4,7 +4,7 @@
 # live on the app's disk. One image serves any address: the web app is built
 # against a placeholder that start.sh replaces with $PUBLIC_URL.
 #
-#   erawan deploy https://github.com/pace6/openagents --ref erawan --subdir workspace
+#   cd workspace && erawan deploy . --name pixelteam-workspace   (README-erawan.md)
 
 FROM node:20-bookworm-slim AS web
 WORKDIR /web

@@ -12,11 +12,15 @@ Pixel Team's Workspace (team.erawan.cloud) runs as one Erawan Cloud app,
 
 ## Deploy
 
+From a checkout of the `erawan` branch:
+
 ```
-erawan deploy https://github.com/pace6/openagents --ref erawan --subdir workspace --name pixelteam-workspace
+cd workspace && erawan deploy . --name pixelteam-workspace
 ```
 
-Or from a checkout: `cd workspace && erawan deploy . --name pixelteam-workspace`.
+Not from the GitHub URL: Erawan's repository import refuses a repository with
+links in it, and `backend/Dockerfile` is upstream's link to
+`backend.Dockerfile`.
 The app's env stays from one deploy to the next; set it once (below).
 
 ## Keys
