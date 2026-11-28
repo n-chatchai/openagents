@@ -1,0 +1,12 @@
+**/node_modules
+**/.next
+**/__pycache__
+**/.venv
+**/*.db
+**/.env
+**/.env.*
+docs
+operations
+scripts
+deploy
+backend/tests

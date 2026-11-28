@@ -44,7 +44,7 @@ class Config:
     # login-handoff custom token via the Identity Toolkit REST API on behalf of
     # browsers that cannot reach Google themselves (mainland China).
     FIREBASE_WEB_API_KEY: str = os.environ.get(
-        "FIREBASE_WEB_API_KEY", "AIzaSyCXgN-7HfgAQiN0pRKqGi8jMbGGo9e9X34"
+        "FIREBASE_WEB_API_KEY", ""
     )
 
     # Workspace-issued login session (HS256 JWT). Minted by POST /v1/auth/session

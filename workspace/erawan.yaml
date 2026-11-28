@@ -1,0 +1,14 @@
+# The Workspace as one Erawan app (Dockerfile). Postgres and Redis are add-ons;
+# the two keys the server signs with are Erawan's to make and keep. The Google
+# sign-in client is a person's to provide; the rest is in the app's env
+# (PUBLIC_URL and the settings listed in README-erawan.md).
+version: 1
+addons: [postgres, redis]
+components:
+  web:
+    path: .
+    port: 8080
+    public: true
+    disk: true
+    secrets: [GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET]
+    generated_secrets: [DOOR_COOKIE_KEY, WORKSPACE_SESSION_SECRET]

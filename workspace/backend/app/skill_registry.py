@@ -25,6 +25,8 @@ from app.storage import get_file_store
 PUBLIC_LICENSES = {"MIT", "Apache-2.0", "CC-BY-4.0", "CC-BY-SA-4.0"}
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 _BIDI = {"\u202a", "\u202b", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069"}
+# Any PEM private key (PKCS#8, RSA, EC, OpenSSH, encrypted).
+_PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _BOOTSTRAP_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,7 @@ def scan_public_markdown(data: bytes) -> tuple[dict, dict]:
         raise ValueError("Skill Markdown is empty")
     if "\x00" in text or any(ch in text for ch in _BIDI):
         raise ValueError("Skill contains hidden or bidirectional control characters")
-    if "-----BEGIN PRIVATE KEY-----" in text:
+    if _PRIVATE_KEY.search(text):
         raise ValueError("Skill appears to contain a private key")
     fm = markdown_frontmatter(text)
     if not fm.get("name") or not fm.get("description"):

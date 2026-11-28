@@ -11,7 +11,8 @@ import {
 } from 'firebase/auth';
 
 const firebaseConfig = {
-  apiKey: 'AIzaSyCXgN-7HfgAQiN0pRKqGi8jMbGGo9e9X34',
+  // Public web config, but per deployment: openagents.org sets it at build.
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || 'unset',
   authDomain: 'openagentsweb.firebaseapp.com',
   projectId: 'openagentsweb',
   storageBucket: 'openagentsweb.firebasestorage.app',
